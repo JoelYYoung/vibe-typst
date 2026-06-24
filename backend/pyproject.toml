@@ -1,0 +1,13 @@
+[project]
+name = "typst-comment-bridge-backend"
+version = "0.1.0"
+description = "Backend + MCP server for annotating Typst slides with Claude-actionable comments"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "mcp>=1.2",
+    "pycrdt>=0.14,<0.15",
+    "pycrdt-websocket>=0.16,<0.17",
+    "websockets>=12",
+]

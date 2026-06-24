@@ -1,0 +1,51 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.venv/
+*.egg-info/
+
+# ── Node / frontend ───────────────────────────────────────────────────────────
+**/node_modules/
+frontend/dist/
+
+# ── Rust ──────────────────────────────────────────────────────────────────────
+resolver/target/
+
+# ── Control-plane runtime data (secrets, DB, logs) ───────────────────────────
+control/data/
+# Generated session secret (never commit)
+*.secret
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.local.json
+
+# ── Private / infra-specific scripts and notes ───────────────────────────────
+notes/
+explain_error.md
+scripts/
+
+# ── Claude Code project settings ─────────────────────────────────────────────
+.claude/
+
+# ── Build / dist tarballs (O3-specific, never in source) ─────────────────────
+**/*.venv.tar.gz
+**/node-claude.tar.gz
+
+# ── Temporary render output ───────────────────────────────────────────────────
+/tmp/tcb-render/
+
+# ── Database files (runtime state, not source) ────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.backup
+*.log
+docs/figure/demo.mov

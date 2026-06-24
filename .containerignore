@@ -1,0 +1,14 @@
+**/target
+**/node_modules
+**/dist
+**/.venv
+**/__pycache__
+**/*.pyc
+.git
+**/*.backup
+# Allow pre-compiled artifacts (built natively on O3 outside Docker to avoid crun/ICE issues)
+!resolver/target/release/tcb-resolver
+!frontend/dist
+# .venv dir excluded (1000+ files → Podman pthread_create failures under pids.max=1200)
+# Use the pre-built tar instead: backend/.venv.tar.gz is COPY'd and extracted in one tar step.
+!backend/.venv.tar.gz
