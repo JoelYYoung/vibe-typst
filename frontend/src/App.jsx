@@ -10,7 +10,7 @@ import TermPanel from './TermPanel.jsx'
 
 const FILTERS = ['pending', 'done', 'all']
 const selKey = (s) => (s.kind === 'page' ? `p${s.page_no}` : `${s.page}:${s.text}`)
-const CLAUDE_MSG = '我已经加了新的 comments，请你通过 MCP 获取，并根据 comments 修改一下'
+const CLAUDE_MSG = "I've added new comments. Please fetch them via MCP and revise the deck according to the comments."
 
 // keep full path if short, else "…/last/three/levels"
 function shortPath(p, threshold = 5, keep = 3) {
@@ -116,7 +116,7 @@ export default function App({ onBackToProjects }) {
     setMsg('✓ ' + (r.main || 'opened'))
     loadComments()
     // auto-setup workdir silently (install .mcp.json + CLAUDE.md) — both local & server, so
-    // `claude` in the project dir always finds the web-typst MCP
+    // `claude` in the project dir always finds the vibe-typst MCP
     if (!r.workdir_ready) {
       try { await api.setupWorkdir() } catch {}
     }

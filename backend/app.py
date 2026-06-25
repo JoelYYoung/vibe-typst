@@ -863,7 +863,7 @@ async def open_project(project_id: str):
     runtime.backup()
     await docstore.ensure_room()
     resolver.start()
-    # Auto-set-up the workdir (.mcp.json + CLAUDE.md + enabled web-typst MCP server) on every
+    # Auto-set-up the workdir (.mcp.json + CLAUDE.md + enabled vibe-typst MCP server) on every
     # project open, in BOTH local and server mode — so `claude` run in the project dir finds the
     # MCP. (Local mode previously never wrote a .mcp.json, so the MCP couldn't be found.)
     try:

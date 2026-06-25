@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import store  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
-mcp = FastMCP("web-typst")
+mcp = FastMCP("vibe-typst")
 
 BACKEND = os.environ.get("TCB_BACKEND_URL", "http://127.0.0.1:8787").rstrip("/")
 

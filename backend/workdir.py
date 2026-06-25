@@ -1,5 +1,5 @@
 """Initialize the opened file's directory as a Claude working directory (VS Code-like):
-write/merge a `.mcp.json` (the web-typst MCP server) and an auto-managed section in
+write/merge a `.mcp.json` (the vibe-typst MCP server) and an auto-managed section in
 `CLAUDE.md` instructing Claude to edit ONLY through our MCP tools (never Read/Edit/Write),
 so human + Claude edits stay merged in the one live document.
 """
@@ -13,8 +13,8 @@ _HERE = Path(__file__).resolve().parent
 _VENV_PY = _HERE / ".venv" / "bin" / "python"
 _MCP_SERVER = _HERE / "mcp_server.py"
 
-MCP_NAME = "web-typst"           # the MCP server name Claude sees
-_OLD_MCP_NAMES = ("slide-comments",)  # migrate away from these old names
+MCP_NAME = "vibe-typst"          # the MCP server name Claude sees
+_OLD_MCP_NAMES = ("slide-comments", "web-typst")  # migrate away from these old names
 
 _BEGIN = "<!-- TYPST-COMMENT-BRIDGE:BEGIN (auto-managed — edits here will be overwritten) -->"
 _END = "<!-- TYPST-COMMENT-BRIDGE:END -->"
@@ -42,7 +42,7 @@ each other's work:
   `anchor_text` + `comment`, locate it via `find_in_document(anchor_text)`, apply the change
   with the edit tools above, recompile-check, then `mark_comment_done` (or
   `mark_comment_dismissed` if unclear/obsolete). Comments live in a separate store (the
-  `web-typst` MCP), NOT in the `.typ`; you never edit them by hand.
+  `vibe-typst` MCP), NOT in the `.typ`; you never edit them by hand.
 
 ### This is a TOUYING deck — always write touying
 This `.typ` is a **touying** presentation (`#import "@preview/touying:0.6.1": *` + a theme via
@@ -74,7 +74,7 @@ same anchor tools). They export to a `.pdfpc` file the human downloads for the p
   text-to-speech and the pdfpc presenter).
 
 ### How the tools load
-- **MCP** (`web-typst` server): defined in `.mcp.json` and auto-enabled in
+- **MCP** (`vibe-typst` server): defined in `.mcp.json` and auto-enabled in
   `.claude/settings.local.json` (`enabledMcpjsonServers`), so `claude` run from this
   directory loads `get_document`, `find_in_document`, the edit tools, and the comment tools
   with no extra step. The web backend must be running (its URL is set in `.mcp.json`).
