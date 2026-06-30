@@ -1,6 +1,11 @@
 **/target
 **/node_modules
 **/dist
+!resolver/target/
+!resolver/target/release/
+!resolver/target/release/tcb-resolver
+!frontend/dist/
+!frontend/dist/**
 **/.venv
 **/__pycache__
 **/*.pyc

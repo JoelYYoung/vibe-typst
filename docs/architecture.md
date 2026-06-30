@@ -72,6 +72,10 @@ This design gives strong isolation — one user's files and processes cannot int
 
 The Cloudflare tunnel means the control plane doesn't need a public IP or open firewall ports. The tunnel terminates at localhost; all traffic is end-to-end encrypted between the browser and Cloudflare.
 
+The control plane also tracks authenticated HTTP and WebSocket activity. Workspaces that are
+idle past the configured threshold are stopped and their sessions are cleared; the next login
+starts the existing container again.
+
 ---
 
 ## Component map
@@ -95,5 +99,6 @@ control plane  (server mode only)
   ├── FastAPI               Auth, session management, user admin
   ├── SQLite                Users, sessions
   ├── Podman                Per-user container lifecycle
+  ├── Idle sweeper          Stops inactive workspaces and clears sessions
   └── HTTP/WS proxy         Routes requests to the right container
 ```

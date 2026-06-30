@@ -175,6 +175,8 @@ Environment variables read by `start.sh` / `main.py`:
 | `TCB_IMAGE` | `tcb-workspace:latest` | Workspace image name |
 | `BASE_PORT` | `9001` | First port for workspace containers |
 | `SESSION_SECRET` | auto-generated | Cookie signing secret (persisted to `data/session.secret`) |
+| `IDLE_STOP_SECONDS` | `1800` | Stop a user's workspace and clear sessions after this many idle seconds; set `0` to disable |
+| `IDLE_SWEEP_SECONDS` | `60` | How often the control plane scans for idle workspaces |
 | `ANTHROPIC_API_KEY` | — | Passed into workspace containers for Claude |
 
 ### 4. Create the first admin user
@@ -187,6 +189,20 @@ bash add-user.sh admin <your-password>
 
 After that, use the **Admin panel** in the web UI to invite additional users. There is no
 public signup.
+
+### Idle shutdown
+
+By default, the control plane treats a user as active when it sees authenticated HTTP or
+WebSocket traffic. If a workspace is idle for 30 minutes (`IDLE_STOP_SECONDS=1800`), the
+control plane:
+
+1. stops that user's container with `podman stop`;
+2. clears that user's sessions so the next browser access returns to `/login`;
+3. leaves the user's workspace directory and stopped container intact.
+
+The next successful login starts the existing stopped container again when possible, preserving
+its writable layer. To keep workspaces running indefinitely, set `IDLE_STOP_SECONDS=0` before
+starting `control/start.sh`.
 
 ### 5. Configure Cloudflare tunnel
 

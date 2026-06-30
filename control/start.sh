@@ -8,17 +8,35 @@ UV="${UV_BIN:-uv}"
 
 if [ ! -d "$VENV" ]; then
   echo "[start] Creating virtualenv…"
-  "$UV" venv "$VENV" --python python3.11
-  "$UV" pip install --python "$VENV/bin/python" \
-    "fastapi>=0.115" "uvicorn[standard]>=0.34" \
-    "httpx>=0.28" "aiofiles>=24.1" \
-    "python-multipart>=0.0.20" "websockets>=12.0"
+  if command -v "$UV" >/dev/null 2>&1; then
+    "$UV" venv "$VENV" --python python3.11
+    "$UV" pip install --python "$VENV/bin/python" \
+      "fastapi>=0.115" "uvicorn[standard]>=0.34" \
+      "httpx>=0.28" "aiofiles>=24.1" \
+      "python-multipart>=0.0.20" "websockets>=12.0"
+  else
+    python3 -m venv "$VENV"
+    "$VENV/bin/pip" install --upgrade pip
+    "$VENV/bin/pip" install \
+      "fastapi>=0.115" "uvicorn[standard]>=0.34" \
+      "httpx>=0.28" "aiofiles>=24.1" \
+      "python-multipart>=0.0.20" "websockets>=12.0"
+  fi
 fi
 
 export PORT="${PORT:-8090}"
 export CONTROL_DATA="${CONTROL_DATA:-$CTRL_DIR/data}"
-export WORKSPACE_BASE="${WORKSPACE_BASE:-/workspaces}"
 export PODMAN_ENV="${PODMAN_ENV:-}"
+if [ -z "${WORKSPACE_BASE:-}" ]; then
+  if [ "${CONTAINER_RUNTIME:-}" = "podman" ] || { [ -z "${CONTAINER_RUNTIME:-}" ] && [ -n "$PODMAN_ENV" ]; }; then
+    export WORKSPACE_BASE="/workspaces"
+  else
+    export WORKSPACE_BASE="$(cd "$CTRL_DIR/.." && pwd)/workspaces"
+  fi
+else
+  export WORKSPACE_BASE
+fi
+export CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-}"
 export TCB_IMAGE="${TCB_IMAGE:-tcb-workspace:latest}"
 export BASE_PORT="${BASE_PORT:-9001}"
 

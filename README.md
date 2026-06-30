@@ -80,7 +80,7 @@ Speaker notes live inline in the source as `#speaker-note["…"]`, so Claude can
 - **Projects** — create, rename, duplicate, delete; per-project git versioning (save and restore named versions)
 - **File manager** — multi-select, rename, duplicate, delete files; supports images and data files alongside `.typ`
 - **Comment history** — each comment has a full append-only log; Pending / Done / All views
-- **User accounts** (server mode) — invite-only, admin panel, per-user isolated workspace
+- **User accounts** (server mode) — invite-only, admin panel, per-user isolated workspace, idle auto-stop
 
 ---
 
