@@ -188,7 +188,10 @@ bash add-user.sh admin <your-password>
 ```
 
 After that, use the **Admin panel** in the web UI to invite additional users. There is no
-public signup.
+public signup. Admins can also reset passwords, change roles, lock/unlock accounts, force a
+user offline, and delete accounts. Locking or forcing a user offline clears their sessions and
+stops their workspace container; locking additionally prevents new logins until the account is
+unlocked.
 
 ### Idle shutdown
 

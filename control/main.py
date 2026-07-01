@@ -94,11 +94,13 @@ def init_db():
         cols = [r[1] for r in db.execute("PRAGMA table_info(users)").fetchall()]
         if "role" not in cols:
             db.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+        if "locked" not in cols:
+            db.execute("ALTER TABLE users ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
         db.execute("UPDATE users SET role='admin' WHERE username='admin'")
-        if not db.execute("SELECT 1 FROM users WHERE role='admin' LIMIT 1").fetchone():
+        if not db.execute("SELECT 1 FROM users WHERE role='admin' AND locked=0 LIMIT 1").fetchone():
             row = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
             if row:
-                db.execute("UPDATE users SET role='admin' WHERE id=?", (row[0],))
+                db.execute("UPDATE users SET role='admin', locked=0 WHERE id=?", (row[0],))
 
 def _user_by_name(username: str) -> Optional[dict]:
     with _db() as db:
@@ -131,7 +133,7 @@ def _set_password(uid: str, password: str):
 def _public_user(u: dict) -> dict:
     """A user dict safe to send to the client (no password hash)."""
     return {"id": u["id"], "username": u["username"], "role": u.get("role", "user"),
-            "created_at": u.get("created_at")}
+            "locked": bool(u.get("locked", 0)), "created_at": u.get("created_at")}
 
 # ── Auth ───────────────────────────────────────────────────────────────────────
 
@@ -179,7 +181,16 @@ def _del_sessions_for_user(user_id: str):
 
 def _current_user(req) -> Optional[dict]:
     """Extract logged-in user from a Request or WebSocket (both have .cookies)."""
-    return _session_user(req.cookies.get(COOKIE, ""))
+    user = _session_user(req.cookies.get(COOKIE, ""))
+    if user and user.get("locked"):
+        return None
+    return user
+
+def _unlocked_admin_count() -> int:
+    with _db() as db:
+        return db.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND locked=0",
+        ).fetchone()[0]
 
 # ── Activity tracking ─────────────────────────────────────────────────────────
 
@@ -305,6 +316,13 @@ def _stop_workspace(user: dict) -> bool:
         return False
     return True
 
+def _force_user_offline(user: dict) -> bool:
+    stopped = _stop_workspace(user)
+    _del_sessions_for_user(user["id"])
+    _last_activity.pop(user["username"], None)
+    _active_ws.pop(user["username"], None)
+    return stopped
+
 async def _idle_sweeper():
     if IDLE_STOP_SECONDS <= 0:
         return
@@ -346,10 +364,8 @@ async def _idle_sweeper():
             if idle_for < IDLE_STOP_SECONDS:
                 continue
 
-            stopped = await loop.run_in_executor(None, _stop_workspace, user)
+            stopped = await loop.run_in_executor(None, _force_user_offline, user)
             if stopped:
-                _del_sessions_for_user(user["id"])
-                _last_activity.pop(username, None)
                 print(
                     f"[idle] stopped {username} after {int(idle_for)}s idle and cleared sessions",
                     file=sys.stderr,
@@ -529,7 +545,7 @@ async def do_login(request: Request,
                    username: str = Form(...),
                    password: str = Form(...)):
     user = _user_by_name(username)
-    if not user or not _check_pw(password, user["pw_hash"]):
+    if not user or user.get("locked") or not _check_pw(password, user["pw_hash"]):
         async with aiofiles.open(str(LOGIN_HTML)) as f:
             html = await f.read()
         html = html.replace(
@@ -657,14 +673,46 @@ async def admin_set_role(uid: str, request: Request):
     role = body.get("role")
     if role not in ("admin", "user"):
         raise HTTPException(400, "role must be 'admin' or 'user'")
-    if role == "user" and target.get("role") == "admin":
-        with _db() as db:
-            n = db.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0]
-        if n <= 1:
+    if role == "user" and target.get("role") == "admin" and not target.get("locked"):
+        if _unlocked_admin_count() <= 1:
             raise HTTPException(400, "can't remove the last admin")
     with _db() as db:
         db.execute("UPDATE users SET role=? WHERE id=?", (role, uid))
     return {"ok": True}
+
+
+@app.post("/admin/users/{uid}/locked")
+async def admin_set_locked(uid: str, request: Request):
+    admin = _require_admin(request)
+    target = _user_by_id(uid)
+    if not target:
+        raise HTTPException(404, "no such user")
+    body = await request.json() or {}
+    locked = bool(body.get("locked"))
+    if target["id"] == admin["id"] and locked:
+        raise HTTPException(400, "you can't lock your own account")
+    if locked and target.get("role") == "admin" and not target.get("locked"):
+        if _unlocked_admin_count() <= 1:
+            raise HTTPException(400, "can't lock the last admin")
+    with _db() as db:
+        db.execute("UPDATE users SET locked=? WHERE id=?", (1 if locked else 0, uid))
+    if locked:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _force_user_offline, target)
+    return {"ok": True}
+
+
+@app.post("/admin/users/{uid}/offline")
+async def admin_force_offline(uid: str, request: Request):
+    admin = _require_admin(request)
+    target = _user_by_id(uid)
+    if not target:
+        raise HTTPException(404, "no such user")
+    if target["id"] == admin["id"]:
+        raise HTTPException(400, "you can't force your own account offline")
+    loop = asyncio.get_event_loop()
+    stopped = await loop.run_in_executor(None, _force_user_offline, target)
+    return {"ok": True, "stopped": stopped}
 
 
 @app.delete("/admin/users/{uid}")
@@ -675,10 +723,8 @@ async def admin_delete_user(uid: str, request: Request):
         raise HTTPException(404, "no such user")
     if target["id"] == admin["id"]:
         raise HTTPException(400, "you can't delete your own account")
-    if target.get("role") == "admin":
-        with _db() as db:
-            n = db.execute("SELECT COUNT(*) FROM users WHERE role='admin'").fetchone()[0]
-        if n <= 1:
+    if target.get("role") == "admin" and not target.get("locked"):
+        if _unlocked_admin_count() <= 1:
             raise HTTPException(400, "can't delete the last admin")
     try: _container("rm", "-f", _cname(target["username"]))
     except Exception: pass
@@ -774,10 +820,10 @@ if __name__ == "__main__":
 
     elif args.cmd == "list-users":
         with _db() as db:
-            rows = db.execute("SELECT username,role,port,created_at FROM users ORDER BY port").fetchall()
+            rows = db.execute("SELECT username,role,locked,port,created_at FROM users ORDER BY port").fetchall()
         for r in rows:
             print(
-                f"  {r['username']:20s}  role={r['role']:5s}  "
+                f"  {r['username']:20s}  role={r['role']:5s}  locked={bool(r['locked'])!s:5s}  "
                 f"port={r['port']}  created={time.ctime(r['created_at'])}"
             )
 

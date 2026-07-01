@@ -44,6 +44,10 @@ export const adminResetPassword = (id, neu) =>
   fetch(`/admin/users/${id}/password`, { method: 'POST', headers: JSONHDR, body: JSON.stringify({ new: neu }) }).then(JD)
 export const adminSetRole = (id, role) =>
   fetch(`/admin/users/${id}/role`, { method: 'POST', headers: JSONHDR, body: JSON.stringify({ role }) }).then(JD)
+export const adminSetLocked = (id, locked) =>
+  fetch(`/admin/users/${id}/locked`, { method: 'POST', headers: JSONHDR, body: JSON.stringify({ locked }) }).then(JD)
+export const adminForceOffline = (id) =>
+  fetch(`/admin/users/${id}/offline`, { method: 'POST', headers: JSONHDR, body: JSON.stringify({}) }).then(JD)
 export const adminDeleteUser = (id) => fetch(`/admin/users/${id}`, { method: 'DELETE' }).then(JD)
 export const browse = (path) => fetch('/api/browse' + (path ? `?path=${encodeURIComponent(path)}` : '')).then(J)
 export const openFile = (path) => POST('/api/open-file', { path })

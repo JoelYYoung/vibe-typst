@@ -29,14 +29,14 @@ function PromptDialog({ label, password, confirmLabel, onConfirm, onCancel }) {
   )
 }
 
-function ConfirmDialog({ msg, onConfirm, onCancel }) {
+function ConfirmDialog({ msg, confirmLabel, onConfirm, onCancel }) {
   return (
     <div className="fm-confirm-overlay" onClick={onCancel}>
       <div className="fm-confirm-box" onClick={e => e.stopPropagation()}>
         <div className="fm-confirm-msg">{msg}</div>
         <div className="fm-confirm-actions">
           <button className="mini" onClick={onCancel}>Cancel</button>
-          <button className="mini primary warn" onClick={onConfirm}>Delete</button>
+          <button className="mini primary warn" onClick={onConfirm}>{confirmLabel || 'Confirm'}</button>
         </div>
       </div>
     </div>
@@ -53,6 +53,7 @@ export default function AdminPage({ onBack }) {
   const [np, setNp] = useState('')
   const [nrole, setNrole] = useState('user')
   const [dialog, setDialog] = useState(null) // {kind, user}
+  const [menuUserId, setMenuUserId] = useState(null)
 
   const load = useCallback(async () => {
     try { const r = await api.adminListUsers(); setUsers(r.users || []) }
@@ -60,6 +61,11 @@ export default function AdminPage({ onBack }) {
     finally { setLoading(false) }
   }, [])
   useEffect(() => { load(); api.whoami().then(setMe).catch(() => {}) }, [load])
+  useEffect(() => {
+    const close = () => setMenuUserId(null)
+    window.addEventListener('click', close)
+    return () => window.removeEventListener('click', close)
+  }, [])
 
   async function create(e) {
     e.preventDefault()
@@ -75,6 +81,7 @@ export default function AdminPage({ onBack }) {
   }
 
   async function toggleRole(u) {
+    setMenuUserId(null)
     const role = u.role === 'admin' ? 'user' : 'admin'
     try { await api.adminSetRole(u.id, role); await load() }
     catch (e) { toast.error(e.message || 'Failed') }
@@ -88,6 +95,22 @@ export default function AdminPage({ onBack }) {
     setDialog(null)
     try { await api.adminDeleteUser(u.id); toast.success(`Deleted “${u.username}”`); await load() }
     catch (e) { toast.error(e.message || 'Failed') }
+  }
+  async function setLocked(u, locked) {
+    setDialog(null)
+    try {
+      await api.adminSetLocked(u.id, locked)
+      toast.success(`${locked ? 'Locked' : 'Unlocked'} “${u.username}”`)
+      await load()
+    } catch (e) { toast.error(e.message || 'Failed') }
+  }
+  async function forceOffline(u) {
+    setDialog(null)
+    try {
+      await api.adminForceOffline(u.id)
+      toast.success(`Forced “${u.username}” offline`)
+      await load()
+    } catch (e) { toast.error(e.message || 'Failed') }
   }
 
   return (
@@ -132,7 +155,7 @@ export default function AdminPage({ onBack }) {
         ) : (
           <div className="admin-table">
             <div className="admin-row admin-head">
-              <span>User</span><span>Role</span><span>Workspace</span><span>Created</span><span className="admin-actions-col">Actions</span>
+              <span>User</span><span>Role</span><span>Account</span><span>Workspace</span><span>Created</span><span className="admin-actions-col">Actions</span>
             </div>
             {users.map(u => (
               <div key={u.id} className="admin-row">
@@ -142,11 +165,24 @@ export default function AdminPage({ onBack }) {
                   {me && u.id === me.id && <span className="admin-you">you</span>}
                 </span>
                 <span><span className={'admin-role ' + u.role}>{u.role}</span></span>
+                <span><span className={'admin-state' + (u.locked ? ' locked' : '')}>{u.locked ? 'locked' : 'active'}</span></span>
                 <span className={'admin-ws' + (u.running ? ' on' : '')}><span className="admin-ws-dot" />{u.running ? 'running' : 'stopped'}</span>
                 <span className="admin-date">{fmtDate(u.created_at)}</span>
                 <span className="admin-actions-col">
-                  <button className="ghostbtn" onClick={() => toggleRole(u)} title={u.role === 'admin' ? 'Demote to user' : 'Promote to admin'}>{u.role === 'admin' ? 'Make user' : 'Make admin'}</button>
-                  <button className="ghostbtn" onClick={() => setDialog({ kind: 'pw', user: u })}>Reset password</button>
+                  <span className="admin-actions-menu" onClick={e => e.stopPropagation()}>
+                    <button className="iconbtn" onClick={() => setMenuUserId(menuUserId === u.id ? null : u.id)} title="More actions" aria-label={`More actions for ${u.username}`}>⋯</button>
+                    {menuUserId === u.id && (
+                      <div className="admin-action-popover">
+                        <button onClick={() => toggleRole(u)}>{u.role === 'admin' ? 'Make user' : 'Make admin'}</button>
+                        <button onClick={() => { setMenuUserId(null); setDialog({ kind: 'pw', user: u }) }}>Reset password</button>
+                        <button disabled={me && u.id === me.id} onClick={() => { setMenuUserId(null); setDialog({ kind: 'offline', user: u }) }}>Force offline</button>
+                        <button disabled={me && u.id === me.id} className={u.locked ? '' : 'danger'} onClick={() => {
+                          setMenuUserId(null)
+                          u.locked ? setLocked(u, false) : setDialog({ kind: 'lock', user: u })
+                        }}>{u.locked ? 'Unlock' : 'Lock'}</button>
+                      </div>
+                    )}
+                  </span>
                   <button className="ghostbtn danger" onClick={() => setDialog({ kind: 'del', user: u })} title="Delete user">Delete</button>
                 </span>
               </div>
@@ -159,9 +195,17 @@ export default function AdminPage({ onBack }) {
         <PromptDialog label={`New password for “${dialog.user.username}”:`} password confirmLabel="Reset"
           onConfirm={(pw) => resetPw(dialog.user, pw)} onCancel={() => setDialog(null)} />
       )}
+      {dialog?.kind === 'offline' && (
+        <ConfirmDialog msg={`Force “${dialog.user.username}” offline? Their sessions are cleared and their workspace container is stopped.`}
+          confirmLabel="Force offline" onConfirm={() => forceOffline(dialog.user)} onCancel={() => setDialog(null)} />
+      )}
+      {dialog?.kind === 'lock' && (
+        <ConfirmDialog msg={`Lock “${dialog.user.username}”? They will be signed out, their workspace container will be stopped, and they will not be able to log in until unlocked.`}
+          confirmLabel="Lock" onConfirm={() => setLocked(dialog.user, true)} onCancel={() => setDialog(null)} />
+      )}
       {dialog?.kind === 'del' && (
         <ConfirmDialog msg={`Delete “${dialog.user.username}”? Their account is removed and their workspace container stopped (files on disk are kept).`}
-          onConfirm={() => del(dialog.user)} onCancel={() => setDialog(null)} />
+          confirmLabel="Delete" onConfirm={() => del(dialog.user)} onCancel={() => setDialog(null)} />
       )}
     </div>
   )
