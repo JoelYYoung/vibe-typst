@@ -240,6 +240,9 @@ def _is_running(username: str) -> bool:
     r = _container("inspect", "--format", "{{.State.Running}}", _cname(username))
     return r.returncode == 0 and r.stdout.strip() == "true"
 
+def _container_exists(username: str) -> bool:
+    return _container("container", "inspect", _cname(username)).returncode == 0
+
 def _workspace_up(user: dict) -> bool:
     if _port_open(user["port"]):
         return True
@@ -249,10 +252,6 @@ def _workspace_up(user: dict) -> bool:
         return False
 
 def _start_workspace(user: dict) -> bool:
-    if not _image_exists():
-        print(f"[orchestrator] image {TCB_IMAGE!r} not ready yet", file=sys.stderr)
-        return False
-
     name = _cname(user["username"])
     port = user["port"]
     wsdir = _wsdir(user["username"])
@@ -261,11 +260,15 @@ def _start_workspace(user: dict) -> bool:
         return False
 
     # Preserve an existing stopped container's writable layer when possible.
-    if _container("container", "inspect", name).returncode == 0:
+    if _container_exists(user["username"]):
         r = _container("start", name)
         if r.returncode == 0:
             return True
         _container("rm", "-f", name)
+
+    if not _image_exists():
+        print(f"[orchestrator] image {TCB_IMAGE!r} not ready yet", file=sys.stderr)
+        return False
 
     env_args = [
         "-e", "APP_MODE=server",
@@ -719,7 +722,8 @@ async def catch_all(request: Request, path: str):
 
     if not _workspace_up(user):
         loop = asyncio.get_event_loop()
-        image_ready = await loop.run_in_executor(None, _image_exists)
+        has_container = await loop.run_in_executor(None, _container_exists, user["username"])
+        image_ready = has_container or await loop.run_in_executor(None, _image_exists)
         if not image_ready:
             return HTMLResponse(
                 _loading_html(
