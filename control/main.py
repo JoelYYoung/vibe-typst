@@ -255,12 +255,7 @@ def _container_exists(username: str) -> bool:
     return _container("container", "inspect", _cname(username)).returncode == 0
 
 def _workspace_up(user: dict) -> bool:
-    if _port_open(user["port"]):
-        return True
-    try:
-        return _is_running(user["username"])
-    except Exception:
-        return False
+    return _port_open(user["port"])
 
 def _start_workspace(user: dict) -> bool:
     name = _cname(user["username"])
@@ -341,7 +336,7 @@ async def _idle_sweeper():
         for user in users:
             username = user["username"]
             try:
-                running = await loop.run_in_executor(None, _workspace_up, user)
+                running = await loop.run_in_executor(None, _is_running, username)
             except Exception as exc:
                 print(f"[idle] failed to inspect {username}: {exc}", file=sys.stderr)
                 continue
@@ -403,14 +398,23 @@ async def _proxy_http(request: Request, port: int) -> Response:
     rp = _client.build_request(request.method, url, headers=fwd_headers, content=body)
     try:
         resp = await _client.send(rp, stream=True)
-    except httpx.ConnectError:
+    except httpx.HTTPError as exc:
+        print(f"[proxy] workspace on port {port} not ready: {exc}", file=sys.stderr)
         return HTMLResponse(
             _loading_html("Starting your workspace…",
                           "Your container is warming up. This page will refresh."),
             status_code=503,
         )
+
+    async def stream_body():
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+        except httpx.HTTPError as exc:
+            print(f"[proxy] stream interrupted on port {port}: {exc}", file=sys.stderr)
+
     return StreamingResponse(
-        resp.aiter_raw(),
+        stream_body(),
         status_code=resp.status_code,
         headers={k: v for k, v in resp.headers.items() if k.lower() not in _HOP},
         background=BackgroundTask(resp.aclose),
@@ -742,6 +746,10 @@ async def ws_room(websocket: WebSocket, path: str):
     if not user:
         await websocket.close(code=1008)
         return
+    if not _workspace_up(user):
+        asyncio.create_task(_ensure_workspace(user))
+        await websocket.close(code=1013)
+        return
     await _proxy_ws(websocket, user["port"], f"ws/{path}", user)
 
 
@@ -750,6 +758,10 @@ async def ws_pty(websocket: WebSocket):
     user = _current_user(websocket)
     if not user:
         await websocket.close(code=1008)
+        return
+    if not _workspace_up(user):
+        asyncio.create_task(_ensure_workspace(user))
+        await websocket.close(code=1013)
         return
     await _proxy_ws(websocket, user["port"], "pty", user)
 
