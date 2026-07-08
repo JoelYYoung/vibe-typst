@@ -1,0 +1,31 @@
+.DS_Store
+*.pyc
+__pycache__/
+
+# Local runtime state
+.codex/
+control/.venv/
+control/data/
+workspaces/
+local.vibe-typst.plist
+com.vibe-typst.plist
+com.vibe-typst.docker-start.plist
+com.vibe-typst.colima.daemon.plist
+com.vibe-typst.control.daemon.plist
+
+# Build/cache output
+frontend/node_modules/
+resolver/target/
+backend/.venv/
+backend/.pytest_cache/
+.pytest_cache/
+
+# Large prebuilt deployment artifacts kept locally only
+.venv.tar.gz
+node-claude.tar.gz
+
+# Logs and temporary files
+*.log
+*.pid
+*.bak.*
+tmp/

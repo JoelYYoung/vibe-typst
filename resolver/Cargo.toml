@@ -1,0 +1,26 @@
+[package]
+name = "tcb-resolver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+typst = "0.15"
+typst-layout = "0.15"
+typst-ide = "0.15"
+typst-svg = "0.15"
+typst-kit = { version = "0.15", features = ["embedded-fonts", "scan-fonts", "system-files", "system-downloader"] }
+typst-syntax = "0.15"
+comemo = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.dev]
+opt-level = 1
+
+# Workaround: O3 (AMD EPYC 9254 / Zen 4 with AVX-512, Rust 1.95+1.96) triggers LLVM ICEs
+# across many typst transitive deps (svgtypes, either, codex, etc.) when targeting the
+# native CPU with AVX-512 instructions. Build with:
+#   RUSTFLAGS='-C target-cpu=x86-64' cargo +1.95.0 build --release --jobs 32
+# That disables AVX-512 and fixes all ICEs. opt-level=2 is fine with generic x86-64.
+[profile.release]
+opt-level = 2
