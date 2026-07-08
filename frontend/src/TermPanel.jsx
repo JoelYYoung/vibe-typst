@@ -18,15 +18,15 @@ const TermPanel = forwardRef(function TermPanel(_props, ref) {
       if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'i', d: cmd + '\n' }))
     },
     // type text into the shell WITHOUT a trailing newline — lets the user review and press
-    // Enter themselves (e.g. a prompt for Claude's TUI, where a stray newline is just a blank line)
+    // Enter themselves (e.g. an agent TUI prompt, where a stray newline is just a blank line)
     typeText(text) {
       const ws = wsRef.current
       if (ws && ws.readyState === 1) ws.send(JSON.stringify({ t: 'i', d: text }))
     },
     // type text and SUBMIT it. Uses '\r' (carriage return = the Enter key), which a TUI like
-    // Claude's interprets as "run", unlike '\n' which it treats as a newline-in-input. We send
+    // Agent TUIs interpret as "run", unlike '\n' which they treat as a newline-in-input. We send
     // the text, then the Enter a beat later so the TUI has registered the input first.
-    runInClaude(text) {
+    runInAgent(text) {
       const ws = wsRef.current
       if (!ws || ws.readyState !== 1) return
       ws.send(JSON.stringify({ t: 'i', d: text }))
