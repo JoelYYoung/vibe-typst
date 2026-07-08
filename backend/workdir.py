@@ -15,8 +15,8 @@ _HERE = Path(__file__).resolve().parent
 _VENV_PY = _HERE / ".venv" / "bin" / "python"
 _MCP_SERVER = _HERE / "mcp_server.py"
 
-MCP_NAME = "web-typst"           # the MCP server name Claude sees
-_OLD_MCP_NAMES = ("slide-comments",)  # migrate away from these old names
+MCP_NAME = "vibe-typst"           # the MCP server name agents see
+_OLD_MCP_NAMES = ("slide-comments", "web-typst")  # migrate away from these old names
 
 _BEGIN = "<!-- TYPST-COMMENT-BRIDGE:BEGIN (auto-managed — edits here will be overwritten) -->"
 _END = "<!-- TYPST-COMMENT-BRIDGE:END -->"
@@ -46,7 +46,7 @@ each other's work:
   `anchor_text` + `comment`, locate it via `find_in_document(anchor_text)`, apply the change
   with the edit tools above, recompile-check, then `mark_comment_done` (or
   `mark_comment_dismissed` if unclear/obsolete). Comments live in a separate store (the
-  `web-typst` MCP), NOT in the `.typ`; you never edit them by hand.
+  `vibe-typst` MCP), NOT in the `.typ`; you never edit them by hand.
 
 ### This is a TOUYING deck — always write touying
 This `.typ` is a **touying** presentation (`#import "@preview/touying:0.6.1": *` + a theme via
@@ -78,7 +78,7 @@ same anchor tools). They export to a `.pdfpc` file the human downloads for the p
   text-to-speech and the pdfpc presenter).
 
 ### How the tools load
-- **MCP** (`web-typst` server): defined for Claude in `.mcp.json` and auto-enabled in
+- **MCP** (`vibe-typst` server): defined for Claude in `.mcp.json` and auto-enabled in
   `.claude/settings.local.json` (`enabledMcpjsonServers`), and defined for Codex in
   `.codex/config.toml`. Running `claude` or `codex` from this directory loads
   `get_document`, `find_in_document`, the edit tools, and the comment tools with no extra

@@ -10,7 +10,7 @@ Launch is configured by the web app's "Run Claude" button, or add it yourself:
 
   {
     "mcpServers": {
-      "web-typst": {
+      "vibe-typst": {
         "command": "uv",
         "args": ["run", "python", "/Users/joel/Projects/typst-comment-bridge/backend/mcp_server.py"],
         "env": {
@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import store  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
-mcp = FastMCP("web-typst")
+mcp = FastMCP("vibe-typst")
 
 BACKEND = os.environ.get("TCB_BACKEND_URL", "http://127.0.0.1:8787").rstrip("/")
 
