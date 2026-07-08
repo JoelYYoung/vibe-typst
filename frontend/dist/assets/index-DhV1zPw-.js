@@ -36098,7 +36098,7 @@ WARNING: This link could potentially be dangerous`)) {
               d: l
             }));
           },
-          runInClaude(l) {
+          runInAgent(l) {
             const a = r.current;
             !a || a.readyState !== 1 || (a.send(JSON.stringify({
               t: "i",
@@ -36236,7 +36236,9 @@ WARNING: This link could potentially be dangerous`)) {
           tokens: {}
         }), ee = x.useRef(0), [ie, V] = x.useState([]), [se, ke] = x.useState("pending"), [de, Ue] = x.useState([]), [vi, Xt] = x.useState(null), [Qi, ps] = x.useState(""), [Bi, pe] = x.useState(false), [gs, jt] = x.useState(""), [zh, Cf] = x.useState(460), [K, oe] = x.useState(380), [ge, Pi] = x.useState(false), [Al, Hh] = x.useState(false), [vM, Ef] = x.useState(false), [yM, wM] = x.useState(220), [Tl, SM] = x.useState(false), [bM, kM] = x.useState(false), [to, xM] = x.useState({
           cwd: null,
-          claude: false
+          claude: false,
+          codex: false,
+          agent: false
         }), fr = x.useRef(null), pr = x.useRef(null), Ll = e.project || "";
         async function K0(B) {
           if (Ef(false), !(!B || !B.file) && (i((Y) => ({
@@ -36257,7 +36259,7 @@ WARNING: This link could potentially be dangerous`)) {
           pr.current && Ll && pr.current.runCommand(`cd ${JSON.stringify(Ll)}`);
         }
         function EM() {
-          pr.current && pr.current.runInClaude(E$);
+          pr.current && pr.current.runInAgent(E$);
         }
         x.useEffect(() => {
           if (!Tl) return;
@@ -36730,16 +36732,16 @@ WARNING: This link could potentially be dangerous`)) {
                                     g.jsx("span", {
                                       className: "grow"
                                     }),
-                                    to.cwd && Ll && !M$(to.cwd, Ll) && !to.claude && g.jsx("button", {
+                                    to.cwd && Ll && !M$(to.cwd, Ll) && !to.agent && g.jsx("button", {
                                       className: "cdbtn",
                                       onClick: CM,
                                       title: `cd ${Ll}`,
                                       children: "cd to deck"
                                     }),
-                                    to.claude && g.jsx("button", {
+                                    to.agent && g.jsx("button", {
                                       className: "askbtn",
                                       onClick: EM,
-                                      title: "ask Claude to fetch & apply the new comments",
+                                      title: "ask the active agent to fetch & apply the new comments",
                                       children: "\u2726 apply comments"
                                     })
                                   ]

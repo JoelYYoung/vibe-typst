@@ -92,7 +92,7 @@ export default function App({ onBackToProjects }) {
   // it (display:none) so the shell session, scrollback, and any running command survive a
   // hide/show cycle. Remounting would fork a fresh shell and wipe the session.
   const [termMounted, setTermMounted] = useState(false)
-  const [termInfo, setTermInfo] = useState({ cwd: null, claude: false })
+  const [termInfo, setTermInfo] = useState({ cwd: null, claude: false, codex: false, agent: false })
   const editorRef = useRef(null)
   const termRef = useRef(null)
   const projectDir = meta.project || ''
@@ -115,8 +115,8 @@ export default function App({ onBackToProjects }) {
     setSelections([]); setEditorSel(null)
     setMsg('✓ ' + (r.main || 'opened'))
     loadComments()
-    // auto-setup workdir silently (install .mcp.json + CLAUDE.md) — both local & server, so
-    // `claude` in the project dir always finds the vibe-typst MCP
+    // auto-setup workdir silently — both local & server, so agent CLIs in the project dir
+    // always find the vibe-typst MCP
     if (!r.workdir_ready) {
       try { await api.setupWorkdir() } catch {}
     }
@@ -125,12 +125,12 @@ export default function App({ onBackToProjects }) {
   function cdTerminal() {
     if (termRef.current && projectDir) termRef.current.runCommand(`cd ${JSON.stringify(projectDir)}`)
   }
-  function tellClaude() {
-    // type the prompt AND submit it (real Enter), so Claude starts on it immediately
-    if (termRef.current) termRef.current.runInClaude(CLAUDE_MSG)
+  function tellAgent() {
+    // type the prompt AND submit it (real Enter), so the active agent starts on it immediately
+    if (termRef.current) termRef.current.runInAgent(CLAUDE_MSG)
   }
 
-  // poll the live terminal state (cwd + whether claude is running) while it's open
+  // poll the live terminal state (cwd + whether an agent is running) while it's open
   useEffect(() => {
     if (!termOpen) return
     // panel was just un-hidden: xterm was 0x0 while display:none, so re-measure it
@@ -496,11 +496,11 @@ export default function App({ onBackToProjects }) {
                     <div className="term-head">
                       <span className="termpath" title={termInfo.cwd || ''}><TerminalIcon size={13} /> {shortPath(termInfo.cwd) || '~'}</span>
                       <span className="grow" />
-                      {termInfo.cwd && projectDir && !samePath(termInfo.cwd, projectDir) && !termInfo.claude && (
+                      {termInfo.cwd && projectDir && !samePath(termInfo.cwd, projectDir) && !termInfo.agent && (
                         <button className="cdbtn" onClick={cdTerminal} title={`cd ${projectDir}`}>cd to deck</button>
                       )}
-                      {termInfo.claude && (
-                        <button className="askbtn" onClick={tellClaude} title="ask Claude to fetch & apply the new comments">✦ apply comments</button>
+                      {termInfo.agent && (
+                        <button className="askbtn" onClick={tellAgent} title="ask the active agent to fetch & apply the new comments">✦ apply comments</button>
                       )}
                     </div>
                     <TermPanel ref={termRef} />

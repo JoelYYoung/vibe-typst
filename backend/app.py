@@ -377,13 +377,13 @@ def _proc_cwd(pid: int):
     return None
 
 
-def _has_claude_descendant(pid: int) -> bool:
-    """True if a `claude` process is running under the terminal's shell."""
+def _agent_descendants(pid: int) -> dict:
+    """Which supported agent CLIs are running under the terminal's shell."""
     try:
         r = subprocess.run(["ps", "-axo", "pid=,ppid=,command="],
                            capture_output=True, text=True, timeout=2)
     except Exception:
-        return False
+        return {"claude": False, "codex": False}
     children: dict[int, list[int]] = {}
     cmd: dict[int, str] = {}
     for line in r.stdout.splitlines():
@@ -396,6 +396,7 @@ def _has_claude_descendant(pid: int) -> bool:
             continue
         children.setdefault(pp, []).append(p)
         cmd[p] = parts[2] if len(parts) > 2 else ""
+    found = {"claude": False, "codex": False}
     stack, seen = [pid], set()
     while stack:
         cur = stack.pop()
@@ -403,25 +404,29 @@ def _has_claude_descendant(pid: int) -> bool:
             continue
         seen.add(cur)
         for ch in children.get(cur, []):
-            c = cmd.get(ch, "")
-            if "claude" in c and "tcb-resolver" not in c:
-                return True
+            c = cmd.get(ch, "").lower()
+            if "tcb-resolver" not in c:
+                if "claude" in c:
+                    found["claude"] = True
+                if "codex" in c:
+                    found["codex"] = True
             stack.append(ch)
-    return False
+    return found
 
 
 @app.get("/api/terminal/info")
 def terminal_info():
-    """Live terminal state: the shell's cwd and whether Claude is running in it."""
+    """Live terminal state: the shell's cwd and whether an agent is running in it."""
     pid = _term.get("pid")
     if not pid:
-        return {"cwd": None, "claude": False}
+        return {"cwd": None, "claude": False, "codex": False, "agent": False}
     try:
         os.kill(pid, 0)
     except OSError:
         _term["pid"] = None
-        return {"cwd": None, "claude": False}
-    return {"cwd": _proc_cwd(pid), "claude": _has_claude_descendant(pid)}
+        return {"cwd": None, "claude": False, "codex": False, "agent": False}
+    agents = _agent_descendants(pid)
+    return {"cwd": _proc_cwd(pid), **agents, "agent": agents["claude"] or agents["codex"]}
 
 
 @app.post("/api/preview/start")
