@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vibe Typst — Sign In</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+  :root {
+    --bg:     #0f0f1a;
+    --card:   #181828;
+    --border: #2a2a44;
+    --text:   #c9c9e3;
+    --muted:  #6a6a8a;
+    --accent: #7c6af7;
+    --accent-h: #9580ff;
+    --err:    #f07070;
+    --input-bg: #1c1c2e;
+  }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    width: 100%;
+    max-width: 380px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 2.5rem 2rem;
+  }
+  .logo-row {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    margin-bottom: 1.75rem;
+  }
+  .logo-icon {
+    width: 40px; height: 40px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 1.1rem; color: #fff;
+    flex-shrink: 0;
+  }
+  .logo-text { font-size: 1.15rem; font-weight: 600; }
+  .logo-sub  { font-size: .78rem; color: var(--muted); margin-top: 1px; }
+  h2 {
+    margin: 0 0 1.5rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .field { margin-bottom: 1rem; }
+  label {
+    display: block;
+    font-size: .8rem;
+    color: var(--muted);
+    margin-bottom: .35rem;
+    font-weight: 500;
+    letter-spacing: .02em;
+  }
+  input[type=text], input[type=password] {
+    width: 100%;
+    background: var(--input-bg);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    color: var(--text);
+    font-size: .95rem;
+    padding: .6rem .75rem;
+    outline: none;
+    transition: border-color .15s;
+  }
+  input[type=text]:focus, input[type=password]:focus {
+    border-color: var(--accent);
+  }
+  button[type=submit] {
+    width: 100%;
+    margin-top: .5rem;
+    padding: .7rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    font-size: .95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  button[type=submit]:hover { background: var(--accent-h); }
+  .error {
+    display: none;
+    background: rgba(240,112,112,.08);
+    border: 1px solid rgba(240,112,112,.3);
+    color: var(--err);
+    border-radius: 7px;
+    padding: .55rem .75rem;
+    font-size: .85rem;
+    margin-bottom: 1rem;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo-row">
+    <div class="logo-icon">Vt</div>
+    <div>
+      <div class="logo-text">Vibe Typst</div>
+      <div class="logo-sub">Multi-user workspace</div>
+    </div>
+  </div>
+
+  <h2>Sign in to your workspace</h2>
+
+  <div id="error" class="error">Invalid username or password.</div>
+
+  <form method="post" action="/login">
+    <div class="field">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username"
+             required autofocus autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password"
+             required autocomplete="current-password">
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+</div>
+</body>
+</html>
