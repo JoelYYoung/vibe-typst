@@ -193,6 +193,8 @@ export default function App({ onBackToProjects }) {
   const loadState = useCallback(async () => {
     const s = await api.getState()
     setMeta({ project: s.project, project_name: s.project_name || '', mode: s.mode || 'local', file: s.file, main: s.main, room: s.room, store: s.store })
+    const externalEditSeq = Number.isFinite(s.external_edit_seq) ? s.external_edit_seq : 0
+    lastRenderRef.current = { ...lastRenderRef.current, room: s.room || null, externalEditSeq }
     setPages(s.pages || [])
     setTokens(s.tokens || {})
     setPpi(s.ppi || 120)
@@ -231,7 +233,19 @@ export default function App({ onBackToProjects }) {
           lastRenderRef.current = { ...last, externalEditSeq }
         }
         if (externalEditChanged) {
-          setEditorSyncSeq((n) => n + 1)
+          try {
+            const d = await api.getDocument()
+            if (typeof d.source === 'string') {
+              const editor = editorRef.current
+              if (editor && editor.getText && editor.getText() !== d.source) {
+                if (!editor.replaceAll || !editor.replaceAll(d.source)) {
+                  setEditorSyncSeq((n) => n + 1)
+                }
+              }
+            }
+          } catch {
+            setEditorSyncSeq((n) => n + 1)
+          }
         }
         if (r.room) setMeta((m) => (r.room !== m.room ? { ...m, room: r.room } : m))
         setCompileError((cur) => {
