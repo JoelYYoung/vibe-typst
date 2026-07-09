@@ -181,6 +181,7 @@ async def _activate_current() -> dict:
         "pages": typst_service.list_pages(),
         "preview": resolver.status(),
         "workdir_ready": workdir.is_ready(),
+        "external_edit_seq": docstore.external_edit_seq,
     }
 
 
