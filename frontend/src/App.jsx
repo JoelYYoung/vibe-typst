@@ -95,7 +95,6 @@ export default function App({ onBackToProjects }) {
   const [termMounted, setTermMounted] = useState(false)
   const [termInfo, setTermInfo] = useState({ cwd: null, claude: false, codex: false, agent: false })
   const editorRef = useRef(null)
-  const pendingEditorSourceRef = useRef(null)
   const termRef = useRef(null)
   const projectDir = meta.project || ''
 
@@ -205,37 +204,6 @@ export default function App({ onBackToProjects }) {
     setComments(await api.getComments())
   }, [])
 
-  async function syncEditorToBackendSource() {
-    try {
-      const d = await api.getDocument()
-      if (typeof d.source !== 'string') return
-      const editor = editorRef.current
-      if (!editor || !editor.getText) {
-        pendingEditorSourceRef.current = d.source
-        setEditorSyncSeq((n) => n + 1)
-        return
-      }
-      if (editor.getText() !== d.source) {
-        pendingEditorSourceRef.current = d.source
-        if (editor.replaceAll && editor.replaceAll(d.source)) {
-          pendingEditorSourceRef.current = null
-        } else {
-          setEditorSyncSeq((n) => n + 1)
-        }
-      }
-    } catch {
-      setEditorSyncSeq((n) => n + 1)
-    }
-  }
-
-  function onEditorReady() {
-    const pending = pendingEditorSourceRef.current
-    const editor = editorRef.current
-    if (typeof pending === 'string' && editor && editor.replaceAll) {
-      if (editor.replaceAll(pending)) pendingEditorSourceRef.current = null
-    }
-  }
-
   useEffect(() => { loadState(); loadComments() }, [loadState, loadComments])
 
   // fast poll for live preview re-render (resolver bumps the version ~instantly), and
@@ -264,7 +232,7 @@ export default function App({ onBackToProjects }) {
         } else if (externalEditSeq !== last.externalEditSeq) {
           lastRenderRef.current = { ...last, externalEditSeq }
         }
-        if (externalEditChanged || roomChanged) syncEditorToBackendSource()
+        if (externalEditChanged || roomChanged) setEditorSyncSeq((n) => n + 1)
         if (r.room) setMeta((m) => (r.room !== m.room ? { ...m, room: r.room } : m))
         setCompileError((cur) => {
           const next = r.error && r.error.length ? r.error : null
@@ -524,7 +492,7 @@ export default function App({ onBackToProjects }) {
               </div>
               <div className="editor-area">
                 {meta.room ? (
-                  <TypstEditor key={`${meta.room}:${editorSyncSeq}`} room={meta.room} ref={editorRef} onSelect={setEditorSel} onReady={onEditorReady} onCursor={onEditorCursor} onDocChange={() => setMsg('rendering…')} />
+                  <TypstEditor key={`${meta.room}:${editorSyncSeq}`} room={meta.room} ref={editorRef} onSelect={setEditorSel} onCursor={onEditorCursor} onDocChange={() => setMsg('rendering…')} />
                 ) : (
                   <div className="empty">connecting…</div>
                 )}
