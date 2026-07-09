@@ -23,7 +23,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # nobody (gid 65534) don't exist in the mapped namespace — disable the sandbox.
 RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/50podman-rootless.conf && \
     apt-get update && apt-get install -y --no-install-recommends \
-      python3 ca-certificates curl git bash nodejs npm \
+      python3 ca-certificates curl git bash nodejs npm bubblewrap \
       procps lsof xz-utils libssl3 \
     && rm -rf /var/lib/apt/lists/*
 # CJK fonts (Noto Sans/Serif CJK) so Chinese/Japanese/Korean text renders instead of tofu.
