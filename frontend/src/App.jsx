@@ -55,6 +55,7 @@ export default function App({ onBackToProjects }) {
   const [tokens, setTokens] = useState({}) // per-page content token {name: hash} → SVG URL cache-buster
   const [ppi, setPpi] = useState(120)
   const [rv, setRv] = useState(nextRv) // monotonic "deck changed" tick (drives non-image refreshes)
+  const [editorSyncSeq, setEditorSyncSeq] = useState(0) // remount editor after MCP/API edits
   const [compileError, setCompileError] = useState(null) // array of compile-error strings, or null
   const [locateMark, setLocateMark] = useState(null) // {page,x,y,key} reverse-locate marker
   const [pdfBusy, setPdfBusy] = useState(false)
@@ -211,19 +212,26 @@ export default function App({ onBackToProjects }) {
   // v1 — the preview would keep showing the PREVIOUS project's render ("historical data").
   // So we refresh whenever the ROOM changes (project switched) OR the version changes, and we
   // bump `rv` MONOTONICALLY so the per-page SVG URL (?v=rv) can never collide across projects.
-  const lastRenderRef = useRef({ room: null, version: -1 })
+  const lastRenderRef = useRef({ room: null, version: -1, externalEditSeq: null })
   useEffect(() => {
     const t = setInterval(async () => {
       try {
         const r = await api.renderVersion()
         const last = lastRenderRef.current
         const roomChanged = !!r.room && r.room !== last.room
+        const externalEditSeq = Number.isFinite(r.external_edit_seq) ? r.external_edit_seq : 0
+        const externalEditChanged = last.externalEditSeq != null && externalEditSeq !== last.externalEditSeq
         if (roomChanged || r.version !== last.version) {
-          lastRenderRef.current = { room: r.room || last.room, version: r.version }
+          lastRenderRef.current = { room: r.room || last.room, version: r.version, externalEditSeq }
           setPages(r.pages || [])
           setTokens(r.tokens || {})  // per-page content tokens → only changed pages get a new URL
           setRv(nextRv())
           setMsg(`✓ ${(r.pages || []).length} pages`)  // deck loaded / auto-render finished
+        } else if (externalEditSeq !== last.externalEditSeq) {
+          lastRenderRef.current = { ...last, externalEditSeq }
+        }
+        if (externalEditChanged) {
+          setEditorSyncSeq((n) => n + 1)
         }
         if (r.room) setMeta((m) => (r.room !== m.room ? { ...m, room: r.room } : m))
         setCompileError((cur) => {
@@ -484,7 +492,7 @@ export default function App({ onBackToProjects }) {
               </div>
               <div className="editor-area">
                 {meta.room ? (
-                  <TypstEditor key={meta.room} room={meta.room} ref={editorRef} onSelect={setEditorSel} onCursor={onEditorCursor} onDocChange={() => setMsg('rendering…')} />
+                  <TypstEditor key={`${meta.room}:${editorSyncSeq}`} room={meta.room} ref={editorRef} onSelect={setEditorSel} onCursor={onEditorCursor} onDocChange={() => setMsg('rendering…')} />
                 ) : (
                   <div className="empty">connecting…</div>
                 )}

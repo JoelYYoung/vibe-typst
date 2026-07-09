@@ -122,7 +122,8 @@ def state():
 def render_version():
     st = resolver.status()
     return {"version": st["version"], "pages": typst_service.list_pages(),
-            "room": docstore.room_name(), "error": st.get("error")}
+            "room": docstore.room_name(), "error": st.get("error"),
+            "external_edit_seq": docstore.external_edit_seq}
 
 
 @app.get("/api/browse")
