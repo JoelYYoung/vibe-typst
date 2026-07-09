@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REAL_CODEX="/usr/local/bin/codex-real"
+REAL_CODEX="${CODEX_REAL:-/usr/local/bin/codex-real}"
 BEGIN="# TYPST-COMMENT-BRIDGE:BEGIN (auto-managed - edits here will be overwritten)"
 END="# TYPST-COMMENT-BRIDGE:END"
 

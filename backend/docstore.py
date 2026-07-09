@@ -152,6 +152,7 @@ async def ensure_room(file: str | Path | None = None, key: str | None = None) ->
         "key": key, "base": _base_key(file), "room": room, "doc": doc, "text": text,
         "path": path, "timer": None, "writeback": False, "poisoned": False,
         "last_mtime": path.stat().st_mtime if path.exists() else 0,
+        "external_guard_old": None, "external_guard_new": None, "external_guard_until": 0,
     }
 
     def on_change(_event, st=st):
@@ -170,9 +171,16 @@ async def ensure_room(file: str | Path | None = None, key: str | None = None) ->
 
 def _sync(st: dict) -> None:
     try:
-        _latest[st["key"]] = str(st["text"])
+        current = str(st["text"])
     except Exception:
         return
+    if _loop is not None and _loop.time() < st.get("external_guard_until", 0):
+        if current == st.get("external_guard_old") and st.get("external_guard_new") is not None:
+            _replace_text(st, st["external_guard_new"])
+            _latest[st["key"]] = st["external_guard_new"]
+            _schedule(st)
+            return
+    _latest[st["key"]] = current
     if not st["writeback"]:
         _schedule(st)
 
@@ -197,6 +205,25 @@ def _refresh(st: dict) -> None:
     on the loop, with the transaction already closed)."""
     _latest[st["key"]] = str(st["text"])
     _commit(st)
+
+
+def _replace_text(st: dict, new_text: str) -> None:
+    text = st["text"]
+    with st["doc"].transaction():
+        n = len(text)
+        if n:
+            del text[0:n]
+        if new_text:
+            text.insert(0, new_text)
+
+
+def _guard_external_edit(st: dict, old_text: str) -> None:
+    """Briefly reject an exact stale-client replay of the pre-edit document."""
+    if _loop is None:
+        return
+    st["external_guard_old"] = old_text
+    st["external_guard_new"] = str(st["text"])
+    st["external_guard_until"] = _loop.time() + 5.0
 
 
 def _persist(st: dict) -> None:
@@ -336,6 +363,7 @@ async def replace_anchor(anchor: str, new_text: str, file=None, occurrence: int 
     with st["doc"].transaction():
         del text[idx:idx + blen]
         text.insert(idx, new_text)
+    _guard_external_edit(st, s)
     _refresh(st)
     return {"ok": True, "at": idx_cp, "removed": len(anchor), "inserted": len(new_text),
             "external_edit_seq": _mark_external_edit(), "room": st["key"]}
@@ -355,6 +383,7 @@ async def insert_relative(anchor: str, payload: str, where: str = "after", file=
     at = _cp_to_byte(s, at_cp)              # codepoint -> UTF-8 byte offset
     with st["doc"].transaction():
         text.insert(at, payload)
+    _guard_external_edit(st, s)
     _refresh(st)
     return {"ok": True, "at": at_cp, "inserted": len(payload),
             "external_edit_seq": _mark_external_edit(), "room": st["key"]}
@@ -374,6 +403,7 @@ async def replace_range(frm: int, to: int, new_text: str, file=None) -> dict:
             del text[frm_b:to_b]
         if new_text:
             text.insert(frm_b, new_text)
+    _guard_external_edit(st, s)
     _refresh(st)
     return {"ok": True, "at": frm, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
@@ -394,11 +424,13 @@ async def reset_from_disk(file=None) -> dict:
         await ensure_room(path)
         return {"ok": True}
     with st["doc"].transaction():
-        n = len(str(st["text"]))
+        old = str(st["text"])
+        n = len(st["text"])
         if n:
             del st["text"][0:n]
         if disk:
             st["text"].insert(0, disk)
+    _guard_external_edit(st, old)
     _refresh(st)
     return {"ok": True, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
@@ -413,5 +445,6 @@ async def insert_text(at: int, payload: str, file=None) -> dict:
     at_b = _cp_to_byte(s, at)               # codepoint -> UTF-8 byte offset for pycrdt
     with st["doc"].transaction():
         text.insert(at_b, payload)
+    _guard_external_edit(st, s)
     _refresh(st)
     return {"ok": True, "at": at, "external_edit_seq": _mark_external_edit(), "room": st["key"]}

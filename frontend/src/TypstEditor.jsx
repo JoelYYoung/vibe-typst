@@ -131,14 +131,6 @@ const TypstEditor = forwardRef(function TypstEditor({ room, onSelect, onReady, o
     getText() {
       return viewRef.current ? viewRef.current.state.doc.toString() : ''
     },
-    replaceAll(text) {
-      const view = viewRef.current
-      if (!view || typeof text !== 'string') return false
-      const current = view.state.doc.toString()
-      if (current === text) return true
-      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } })
-      return true
-    },
     // Find `text` in the live document and select+scroll to it. Returns false if it no longer
     // exists (so the caller can do nothing rather than jump to a stale spot).
     jumpToText(text) {
