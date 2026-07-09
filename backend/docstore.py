@@ -66,6 +66,7 @@ _latest: dict[str, str] = {}   # room_key -> last text snapshot (sync-readable)
 # Set to a loop timestamp whenever the active file is written, so the app can
 # auto-recompile the slides after edits settle (live preview sync).
 dirty_since: float | None = None
+external_edit_seq: int = 0
 
 
 def _resolve(file: str | Path | None) -> Path:
@@ -281,6 +282,19 @@ def get_text(file: str | Path | None = None) -> str | None:
     return path.read_text(encoding="utf-8") if path.exists() else None
 
 
+def _mark_external_edit() -> int:
+    """Monotonic counter for edits initiated outside the browser editor.
+
+    Browser edits normally arrive over the websocket and already update CodeMirror. MCP/API
+    edits also broadcast through Yjs, but exposing this counter gives the frontend a cheap
+    polling fallback: if a websocket update is missed, remounting the editor resyncs it from
+    the authoritative backend room.
+    """
+    global external_edit_seq
+    external_edit_seq += 1
+    return external_edit_seq
+
+
 # --------------------------------------------------------------- edits (async, on loop)
 # CRITICAL: pycrdt's Text is indexed by UTF-8 BYTE offsets (len(text) == UTF-8 byte length),
 # while Python str.find()/len() work in Unicode CODE POINTS. Any multibyte char before an
@@ -323,7 +337,8 @@ async def replace_anchor(anchor: str, new_text: str, file=None, occurrence: int 
         del text[idx:idx + blen]
         text.insert(idx, new_text)
     _refresh(st)
-    return {"ok": True, "at": idx_cp, "removed": len(anchor), "inserted": len(new_text)}
+    return {"ok": True, "at": idx_cp, "removed": len(anchor), "inserted": len(new_text),
+            "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
 
 async def insert_relative(anchor: str, payload: str, where: str = "after", file=None,
@@ -341,7 +356,8 @@ async def insert_relative(anchor: str, payload: str, where: str = "after", file=
     with st["doc"].transaction():
         text.insert(at, payload)
     _refresh(st)
-    return {"ok": True, "at": at_cp, "inserted": len(payload)}
+    return {"ok": True, "at": at_cp, "inserted": len(payload),
+            "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
 
 async def replace_range(frm: int, to: int, new_text: str, file=None) -> dict:
@@ -359,7 +375,7 @@ async def replace_range(frm: int, to: int, new_text: str, file=None) -> dict:
         if new_text:
             text.insert(frm_b, new_text)
     _refresh(st)
-    return {"ok": True, "at": frm}
+    return {"ok": True, "at": frm, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
 
 async def reset_from_disk(file=None) -> dict:
@@ -384,7 +400,7 @@ async def reset_from_disk(file=None) -> dict:
         if disk:
             st["text"].insert(0, disk)
     _refresh(st)
-    return {"ok": True}
+    return {"ok": True, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
 
 async def insert_text(at: int, payload: str, file=None) -> dict:
@@ -398,4 +414,4 @@ async def insert_text(at: int, payload: str, file=None) -> dict:
     with st["doc"].transaction():
         text.insert(at_b, payload)
     _refresh(st)
-    return {"ok": True, "at": at}
+    return {"ok": True, "at": at, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
