@@ -650,8 +650,10 @@ def get_source():
 
 @app.get("/api/document")
 def get_document(file: Optional[str] = None):
-    """Live document text for a file (defaults to the active file). For the MCP edit tools."""
-    return {"file": file or runtime.current_main(), "source": docstore.get_text(file)}
+    """Live document text for a file (defaults to the active file). For the MCP edit tools.
+    `rev` is the room's monotonic revision — pass it back as apply_edits(base_rev=...)."""
+    return {"file": file or runtime.current_main(), "source": docstore.get_text(file),
+            "rev": docstore.get_rev(file)}
 
 
 @app.post("/api/edit")
@@ -670,6 +672,12 @@ async def edit(request: Request):
         r = await docstore.replace_range(op["from"], op["to"], op["new_text"], rel)
     elif kind == "insert_text":
         r = await docstore.insert_text(op["at"], op["text"], rel)
+    elif kind == "replace_lines":
+        r = await docstore.replace_lines(op["start"], op["end"], op["new_text"], rel)
+    elif kind == "insert_at_line":
+        r = await docstore.insert_at_line(op["line"], op["text"], rel)
+    elif kind == "apply_edits":
+        r = await docstore.apply_edits(op["edits"], rel, op.get("base_rev"))
     else:
         raise HTTPException(400, f"unknown op {kind!r}")
     return r
@@ -1192,8 +1200,36 @@ async def add(request: Request):
                     pass
         if not p.get("raw_context"):
             p["raw_context"] = context.build_raw_context(p, src)
+        # Drift-proof anchor: bind each element selection's code-point span to a pycrdt
+        # StickyIndex (Yjs RelativePosition) so the comment follows the text across later
+        # edits by either the human or the agent. Best-effort — never block comment create.
+        if not p.get("rel_anchors"):
+            spans = [[s["from"], s["to"]] for s in (p.get("selections") or p.get("selection") or [])
+                     if isinstance(s, dict) and s.get("from") is not None and s.get("to") is not None]
+            if spans:
+                try:
+                    p["rel_anchors"] = await docstore.make_rel_anchors(spans, p.get("file"))
+                except BaseException:            # pycrdt can raise a BaseException-only panic
+                    pass
         created.append(store.add_comment(p))
     return created
+
+
+@app.get("/api/comments/{cid}/anchor")
+async def comment_anchor(cid: str):
+    """Resolve a comment's drift-proof StickyIndex anchors to CURRENT code-point spans and
+    the live text they now cover (so the UI/agent jumps to the right place after edits)."""
+    c = store.get_comment(cid)
+    if not c:
+        raise HTTPException(404)
+    rel = c.get("rel_anchors")
+    if not rel:
+        return {"id": cid, "spans": [], "texts": [], "lines": [], "rev": docstore.get_rev(c.get("file"))}
+    spans = await docstore.resolve_rel_anchors(rel, c.get("file"))
+    src = docstore.get_text(c.get("file")) or ""
+    return {"id": cid, "spans": spans, "texts": [src[a:b] for a, b in spans],
+            "lines": [src.count("\n", 0, a) + 1 for a, b in spans],   # 1-based line of each span start
+            "rev": docstore.get_rev(c.get("file"))}
 
 
 @app.patch("/api/comments/{cid}")
