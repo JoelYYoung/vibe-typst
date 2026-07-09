@@ -87,7 +87,11 @@ RUN tar xzf /tmp/node-claude.tar.gz -C /usr/local/bin --strip-components=1 --no-
 # documented npm install path for reproducible container builds.
 RUN npm install -g @openai/codex && \
     codex --version && \
+    real="$(readlink -f /usr/local/bin/codex)" && ln -sf "$real" /usr/local/bin/codex-real && \
+    rm -f /usr/local/bin/codex && \
     rm -rf /root/.codex
+COPY codex-project-wrapper.sh /usr/local/bin/codex
+RUN chmod +x /usr/local/bin/codex
 
 COPY docker-entrypoint.sh /usr/local/bin/entrypoint
 RUN chmod +x /usr/local/bin/entrypoint

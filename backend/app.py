@@ -113,6 +113,7 @@ def state():
         "ppi": PPI,
         "source": current_source(),
         "pages": typst_service.list_pages(),
+        "tokens": typst_service.page_tokens(),
         "preview": resolver.status(),
         "workdir_ready": workdir.is_ready(),
         "external_edit_seq": docstore.external_edit_seq,
@@ -123,6 +124,7 @@ def state():
 def render_version():
     st = resolver.status()
     return {"version": st["version"], "pages": typst_service.list_pages(),
+            "tokens": typst_service.page_tokens(),
             "room": docstore.room_name(), "error": st.get("error"),
             "external_edit_seq": docstore.external_edit_seq}
 
@@ -179,6 +181,7 @@ async def _activate_current() -> dict:
         "store": str(runtime.store_path()),
         "source": current_source(),
         "pages": typst_service.list_pages(),
+        "tokens": typst_service.page_tokens(),
         "preview": resolver.status(),
         "workdir_ready": workdir.is_ready(),
         "external_edit_seq": docstore.external_edit_seq,
@@ -698,8 +701,10 @@ async def compile_():
     st = resolver.status()
     if st.get("error"):
         return {"ok": False, "errors": st["error"],
-                "pages": typst_service.list_pages(), "version": st["version"]}
-    return {"ok": True, "pages": typst_service.list_pages(), "version": st["version"]}
+                "pages": typst_service.list_pages(), "tokens": typst_service.page_tokens(),
+                "version": st["version"]}
+    return {"ok": True, "pages": typst_service.list_pages(),
+            "tokens": typst_service.page_tokens(), "version": st["version"]}
 
 
 @app.get("/api/render/{name}")
