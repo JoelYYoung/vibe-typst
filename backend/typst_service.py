@@ -3,6 +3,7 @@
 The working file is whatever `runtime.current_main()` points at; each file renders
 into its own subdir so switching files never mixes pages.
 """
+import hashlib
 import subprocess
 
 import runtime
@@ -28,6 +29,19 @@ def list_pages() -> list[str]:
     pages = list(d.glob("page-*.svg"))
     pages.sort(key=lambda x: int(x.stem.split("-")[1]))
     return [p.name for p in pages]
+
+
+def page_tokens() -> dict[str, str]:
+    """Content hashes for rendered pages, used as frontend SVG cache-busters."""
+    d = runtime.render_dir()
+    out = {}
+    for name in list_pages():
+        p = d / name
+        try:
+            out[name] = hashlib.sha1(p.read_bytes()).hexdigest()[:12]
+        except OSError:
+            pass
+    return out
 
 
 def render_path(name: str):
