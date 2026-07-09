@@ -55,7 +55,7 @@ export default function App({ onBackToProjects }) {
   const [tokens, setTokens] = useState({}) // per-page content token {name: hash} → SVG URL cache-buster
   const [ppi, setPpi] = useState(120)
   const [rv, setRv] = useState(nextRv) // monotonic "deck changed" tick (drives non-image refreshes)
-  const [editorSyncSeq, setEditorSyncSeq] = useState(0) // remount editor after MCP/API edits
+  const [editorSyncSeq, setEditorSyncSeq] = useState(0) // remount editor on room rotation (fresh Yjs doc)
   const [compileError, setCompileError] = useState(null) // array of compile-error strings, or null
   const [locateMark, setLocateMark] = useState(null) // {page,x,y,key} reverse-locate marker
   const [pdfBusy, setPdfBusy] = useState(false)
@@ -222,7 +222,6 @@ export default function App({ onBackToProjects }) {
         const last = lastRenderRef.current
         const roomChanged = !!r.room && r.room !== last.room
         const externalEditSeq = Number.isFinite(r.external_edit_seq) ? r.external_edit_seq : 0
-        const externalEditChanged = last.externalEditSeq != null && externalEditSeq !== last.externalEditSeq
         if (roomChanged || r.version !== last.version) {
           lastRenderRef.current = { room: r.room || last.room, version: r.version, externalEditSeq }
           setPages(r.pages || [])
@@ -232,7 +231,12 @@ export default function App({ onBackToProjects }) {
         } else if (externalEditSeq !== last.externalEditSeq) {
           lastRenderRef.current = { ...last, externalEditSeq }
         }
-        if (externalEditChanged || roomChanged) setEditorSyncSeq((n) => n + 1)
+        // Remount the editor ONLY on room rotation (corruption self-heal / project switch),
+        // which needs a fresh Yjs doc. We DON'T remount on external (MCP) edits any more:
+        // now that MCP edits go through the SAME shared room as the browser, they already
+        // broadcast into the live editor over the websocket. Remounting on every MCP edit
+        // was the leftover from the split-brain-room era and caused the visible flash/flicker.
+        if (roomChanged) setEditorSyncSeq((n) => n + 1)
         if (r.room) setMeta((m) => (r.room !== m.room ? { ...m, room: r.room } : m))
         setCompileError((cur) => {
           const next = r.error && r.error.length ? r.error : null

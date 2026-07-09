@@ -40,10 +40,21 @@ _GUARD = (
     "IMPORTANT: this .typ is a LIVE SHARED document (the human is editing it in a browser "
     "at the same time). NEVER use the native Read/Edit/Write/MultiEdit tools on the file "
     "directly — that writes disk behind the shared doc's back and gets clobbered. Read it "
-    "ONLY via get_document / find_in_document, and edit it ONLY via replace_anchor / "
-    "insert_before_anchor / insert_after_anchor / replace_range. Those route through the "
-    "shared doc so the human sees your change live."
+    "ONLY via get_document / find_in_document, and edit it ONLY via apply_edits (preferred, "
+    "atomic batch) or the single-edit shims replace_anchor / insert_before_anchor / "
+    "insert_after_anchor / replace_lines / insert_at_line / replace_range. Those route through "
+    "the shared doc so the human sees your change live."
 )
+
+
+def _live_location(cid: str) -> dict | None:
+    """The comment's CURRENT anchor position, resolved from its drift-proof StickyIndex — the
+    frozen line numbers inside raw_context go stale, this does not. None if the comment has no
+    resolvable anchor (e.g. a page comment)."""
+    r = _backend("GET", f"/api/comments/{cid}/anchor")
+    if not r.get("spans"):
+        return None
+    return {"lines": r.get("lines"), "current_text": r.get("texts"), "rev": r.get("rev")}
 
 _LOCATE_HINT = (
     "To locate the target: run find_in_document(anchor_text) to get its line number, then "
@@ -93,16 +104,30 @@ def _backend(method: str, path: str, payload: dict | None = None) -> dict:
 @mcp.tool()
 def get_pending_comments() -> list:
     """List all pending slide-edit comments, oldest first. Each has `anchor_text`, `page`,
-    a `raw_context` blob, and a `comment` describing the change.
+    a `raw_context` blob, and a `comment` describing the change. Each also carries `location`
+    = {lines, current_text, rev}: the anchor's CURRENT position resolved live from the shared
+    doc. TRUST `location` over the line numbers inside `raw_context` (those are frozen at
+    create time and drift as the file changes). Use `location.lines` to jump straight to the
+    target and `location.rev` as apply_edits(base_rev=...).
     """ + " " + _LOCATE_HINT
-    return [_public(c) for c in store.list_comments("pending")]
+    out = []
+    for c in store.list_comments("pending"):
+        pub = _public(c)
+        pub["location"] = _live_location(c["id"])
+        out.append(pub)
+    return out
 
 
 @mcp.tool()
 def get_comment(id: str) -> dict:
-    """Full detail for one comment, by its `id` (hex) or `seq` (number)."""
+    """Full detail for one comment, by its `id` (hex) or `seq` (number). Includes `location`
+    (live-resolved anchor position); trust it over raw_context's frozen line numbers."""
     c = store.get_comment(id)
-    return _public(c) if c else {"error": f"no comment {id!r}"}
+    if not c:
+        return {"error": f"no comment {id!r}"}
+    pub = _public(c)
+    pub["location"] = _live_location(c["id"])
+    return pub
 
 
 @mcp.tool()
@@ -150,12 +175,12 @@ def get_transcripts() -> dict:
 
 # ----------------------------------------------------------------- document edits
 def _fetch_source(file: str):
-    """Return (source_text, file_label) from the live backend, or (None, error_dict)."""
+    """Return (source_text, file_label, rev) from the live backend, or (None, error_dict, 0)."""
     r = _backend("GET", "/api/document" + (f"?file={file}" if file else ""))
     src = r.get("source")
     if not isinstance(src, str):
-        return None, r
-    return src, r.get("file")
+        return None, r, 0
+    return src, r.get("file"), r.get("rev", 0)
 
 
 @mcp.tool()
@@ -177,7 +202,7 @@ def get_document(file: str = "", offset: int = 1, limit: int = 0) -> dict:
     know whether more remains. Line numbers are for LOCATING and reading only — never edit
     by line number (lines shift after every edit); edit with the anchor tools using exact
     text snippets. """ + _GUARD
-    src, label = _fetch_source(file)
+    src, label, rev = _fetch_source(file)
     if src is None:
         return label  # error dict from the backend
     lines = src.split("\n")
@@ -185,7 +210,7 @@ def get_document(file: str = "", offset: int = 1, limit: int = 0) -> dict:
     start = max(1, offset)
     if start > total:
         return {"file": label, "total_lines": total, "shown": None,
-                "text": "", "truncated": False,
+                "text": "", "truncated": False, "rev": rev,
                 "note": f"offset {start} is past end of file ({total} lines)."}
     win = HEAD_LINES if limit <= 0 else min(limit, MAX_LINES)
     end = min(total, start + win - 1)
@@ -194,6 +219,7 @@ def get_document(file: str = "", offset: int = 1, limit: int = 0) -> dict:
     return {
         "file": label,
         "total_lines": total,
+        "rev": rev,
         "chars": len(src),
         "shown": f"{start}-{end}",
         "truncated": more,
@@ -214,7 +240,7 @@ def find_in_document(query: str, file: str = "", max_hits: int = 40) -> dict:
     get_document(offset=<line>) to read its window, then edit with the anchor tools. The
     match is a plain case-sensitive substring (not a regex). Returns up to `max_hits`
     matches (default 40); if `matches` exceeds that, narrow the query. """ + _GUARD
-    src, label = _fetch_source(file)
+    src, label, _rev = _fetch_source(file)
     if src is None:
         return label  # error dict from the backend
     lines = src.split("\n")
@@ -238,9 +264,37 @@ def find_in_document(query: str, file: str = "", max_hits: int = 40) -> dict:
 
 
 @mcp.tool()
+def apply_edits(edits: list, base_rev: int = 0, file: str = "") -> dict:
+    """Apply a BATCH of edits to the live shared document ATOMICALLY — all succeed or none do.
+    This is the most robust way to make several changes at once (e.g. "split this slide into
+    two", "rename a term everywhere"): every edit is located against the SAME snapshot and they
+    apply together, so no edit invalidates another's anchor and you never see a half-applied
+    state. Prefer this over a sequence of single edits.
+
+    `edits` is a list; each item is `{"selector": <Selector>, "text": <str>, "expect"?: <str>}`
+    where `text` is the replacement ("" to delete) and a Selector is ONE of:
+      - {"by": "anchor", "text": "<exact unique snippet>", "occurrence"?: 1,
+         "side"?: "in"|"before"|"after"}   // "in" replaces the snippet; before/after insert
+      - {"by": "lines", "start": <1-based>, "end"?: <1-based inclusive>}  // end omitted = insert at that line
+      - {"by": "range", "from": <cp>, "to": <cp>}                          // code-point offsets (escape hatch)
+    Optional `expect` is a compare-and-swap: the edit applies only if the selected span still
+    equals `expect`, else the whole batch is refused as a conflict — use it to guard against the
+    human editing concurrently. Pass `base_rev` = the `rev` you got from get_document.
+
+    On success: {ok:true, rev, applied}. On conflict: {ok:false, conflict:true, index, error,
+    and the live `context` around the miss} — re-read with get_document (note the new `rev`) and
+    retry. Selectors are resolved against the CURRENT document, so a prior edit that removed your
+    target makes the next selector fail cleanly rather than hitting the wrong place.""" + " " + _GUARD
+    return _backend("POST", "/api/edit", {
+        "op": "apply_edits", "edits": edits, "base_rev": base_rev or None, "file": file or None,
+    })
+
+
+@mcp.tool()
 def replace_anchor(anchor: str, new_text: str, occurrence: int = 1, file: str = "") -> dict:
-    """Replace `anchor` with `new_text` in the live shared document. This is the primary
-    edit primitive — the equivalent of a find-and-replace anchored on exact text.
+    """Replace `anchor` with `new_text` in the live shared document — single-edit shorthand for
+    apply_edits with one anchor selector. For SEVERAL related changes use apply_edits instead
+    (atomic, and immune to one edit invalidating the next one's anchor).
 
     `anchor` must be an EXACT substring copied verbatim from the document (match whitespace,
     punctuation, and the typst markup, e.g. `= My Title` or `#slide[`). It must identify a
@@ -297,6 +351,36 @@ def replace_range(from_offset: int, to_offset: int, new_text: str, file: str = "
     return _backend("POST", "/api/edit", {
         "op": "replace_range", "from": from_offset, "to": to_offset,
         "new_text": new_text, "file": file or None,
+    })
+
+
+@mcp.tool()
+def replace_lines(start: int, end: int, new_text: str, file: str = "") -> dict:
+    """Replace the whole lines `start`..`end` (1-based, INCLUSIVE) with `new_text` — the same
+    line numbers get_document prints. This is the PREFERRED tool for a multi-line rewrite
+    (e.g. "split this slide into two", "rewrite this block"): it needs no exact anchor and no
+    escaping, so it never fails with "anchor not found" over a stray whitespace or `\\\\`.
+
+    Read the target first with get_document to get the line numbers. `new_text` may contain
+    any number of lines; a trailing newline is added for you if missing. After this edit the
+    line numbers shift, so re-read (get_document) before the next line-addressed edit rather
+    than reusing stale numbers. Returns the backend ok/error result."""
+    return _backend("POST", "/api/edit", {
+        "op": "replace_lines", "start": start, "end": end,
+        "new_text": new_text, "file": file or None,
+    })
+
+
+@mcp.tool()
+def insert_at_line(line: int, text: str, file: str = "") -> dict:
+    """Insert `text` so it BECOMES line `line` (1-based), pushing the current line `line` and
+    everything after it down. A `line` past the end of the file appends at the end. Line
+    numbers match get_document. `text` may be multiple lines; a trailing newline is added for
+    you if missing. Prefer this over insert_before/after_anchor when you already know the line
+    number, since it needs no exact anchor. Re-read with get_document before the next
+    line-addressed edit (numbers shift). Returns the backend ok/error result."""
+    return _backend("POST", "/api/edit", {
+        "op": "insert_at_line", "line": line, "text": text, "file": file or None,
     })
 
 

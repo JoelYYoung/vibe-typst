@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from anyio import Lock
-from pycrdt import Channel, Text
+from pycrdt import Assoc, Channel, StickyIndex, Text
 from pycrdt.websocket import WebsocketServer, exception_logger
 
 import runtime
@@ -40,7 +40,13 @@ _gen: dict[str, int] = {}
 
 
 def _base_key(file=None) -> str:
-    return runtime.file_key(file or runtime.current_file())
+    # Derive the room identity from the SAME absolute path `_resolve` writes to on disk.
+    # `runtime.file_key` resolves a *relative* path (e.g. MCP's "main.typ") against the
+    # process CWD, while `_resolve` resolves it against the project dir — so passing the
+    # raw arg here made a relative-path MCP edit land in a DIFFERENT room than the
+    # browser's absolute-path room, yet both flushed to the same file (the "split-brain
+    # room" revert bug). Resolving first collapses them to one room.
+    return runtime.file_key(_resolve(file))
 
 
 def room_name(file=None) -> str:
@@ -150,7 +156,7 @@ async def ensure_room(file: str | Path | None = None, key: str | None = None) ->
     _latest[key] = str(text)
     st = {
         "key": key, "base": _base_key(file), "room": room, "doc": doc, "text": text,
-        "path": path, "timer": None, "writeback": False, "poisoned": False,
+        "path": path, "timer": None, "writeback": False, "poisoned": False, "rev": 0,
         "last_mtime": path.stat().st_mtime if path.exists() else 0,
         "external_guard_old": None, "external_guard_new": None, "external_guard_until": 0,
     }
@@ -332,8 +338,24 @@ def _cp_to_byte(s: str, cp: int) -> int:
     return len(s[:cp].encode("utf-8"))
 
 
+def _byte_to_cp(s: str, b: int) -> int:
+    """Inverse of _cp_to_byte: a pycrdt UTF-8 byte index -> a Unicode code-point offset."""
+    return len(s.encode("utf-8")[:b].decode("utf-8", "ignore"))
+
+
 def _bytelen(s: str) -> int:
     return len(s.encode("utf-8"))
+
+
+def _line_starts(s: str) -> list[int]:
+    """Code-point offset of the start of each 1-based line. len() == number of lines the
+    way get_document counts them (a trailing newline yields a final empty line N+1), so
+    these indices line up with what the agent sees in get_document output."""
+    offs = [0]
+    for i, ch in enumerate(s):
+        if ch == "\n":
+            offs.append(i + 1)
+    return offs
 
 
 def _find(s: str, needle: str, occurrence: int) -> int:
@@ -346,66 +368,163 @@ def _find(s: str, needle: str, occurrence: int) -> int:
     return idx
 
 
-async def replace_anchor(anchor: str, new_text: str, file=None, occurrence: int = 1) -> dict:
+# ============================================================= unified edit primitive
+# Every mutation is `del[span] + insert(text)`; only HOW the span is named varies. So there
+# is ONE operation — apply_edits — over a tagged-union Selector, applied as an atomic,
+# all-or-nothing BATCH with an optional per-edit compare-and-swap (`expect`). This is what
+# makes consecutive AND within-batch edits safe: every selector in a batch resolves against
+# the SAME snapshot and they apply together, so no edit invalidates another's anchor, and a
+# stale `expect` yields a clean conflict instead of a wrong-place edit. Selectors:
+#   {"by":"anchor","text":..,"occurrence":1,"side":"in"|"before"|"after"}
+#   {"by":"lines","start":i,"end":j?}   # end omitted => insertion point at the start of line i
+#   {"by":"range","from":a,"to":b}      # code-point offsets (escape hatch)
+# The legacy single-edit tools below are thin sugar over this one primitive.
+def _resolve_selector(sel: dict, s: str):
+    """Resolve a selector against snapshot `s` -> (from_cp, to_cp, kind, err). Insertion
+    points return from_cp == to_cp."""
+    kind = (sel or {}).get("by")
+    if kind == "anchor":
+        anchor = sel.get("text") or sel.get("anchor") or ""
+        occ = int(sel.get("occurrence", 1) or 1)
+        if not anchor:
+            return None, None, kind, "empty anchor"
+        n = s.count(anchor)
+        if n == 0:
+            return None, None, kind, "anchor not found"
+        if occ == 1 and n > 1:
+            return None, None, kind, (f"anchor is ambiguous ({n} matches); pass a longer "
+                                      "anchor or `occurrence`")
+        idx = _find(s, anchor, occ)
+        side = sel.get("side", "in")
+        if side == "before":
+            return idx, idx, kind, None
+        if side == "after":
+            return idx + len(anchor), idx + len(anchor), kind, None
+        return idx, idx + len(anchor), kind, None            # "in" = replace the anchor span
+    if kind == "lines":
+        offs = _line_starts(s)
+        total = len(offs)
+        start = sel.get("start")
+        end = sel.get("end")
+        if start is None or start < 1:
+            return None, None, kind, "line must be >= 1"
+        if end is None:                                      # insertion point
+            at = offs[start - 1] if start <= total else len(s)   # a line past EOF appends
+            return at, at, kind, None
+        if not (start <= end <= total):
+            return None, None, kind, f"line range out of bounds (doc has {total} lines)"
+        frm = offs[start - 1]
+        to = offs[end] if end < total else len(s)
+        return frm, to, kind, None
+    if kind == "range":
+        frm = sel.get("from")
+        to = sel.get("to")
+        n = len(s)
+        if frm is None or to is None or not (0 <= frm <= to <= n):
+            return None, None, kind, f"range out of bounds (doc len {n})"
+        return frm, to, kind, None
+    return None, None, kind, f"unknown selector {kind!r}"
+
+
+def _neighborhood(s: str, frm: int, to: int, pad: int = 80) -> str:
+    """A slice of the live text around [frm,to) so a conflicting caller can re-aim in one round."""
+    return s[max(0, frm - pad):min(len(s), to + pad)]
+
+
+def _line_newline_fixup(kind: str, s: str, frm: int, to: int, txt: str) -> str:
+    """Keep whole-line structure for `lines` edits: a line replacement/insertion ends on its
+    own line (and an append past EOF starts on one)."""
+    if kind != "lines" or not txt:
+        return txt
+    if to > frm:                                             # replacing whole lines
+        if s[frm:to].endswith("\n") and not txt.endswith("\n"):
+            txt += "\n"
+    else:                                                    # insertion point
+        if frm >= len(s) and s and not s.endswith("\n"):
+            txt = "\n" + txt
+        if not txt.endswith("\n"):
+            txt += "\n"
+    return txt
+
+
+def _selector_of(e: dict) -> dict:
+    return e.get("selector") or {k: e[k] for k in
+                                 ("by", "text", "anchor", "occurrence", "side",
+                                  "start", "end", "from", "to") if k in e}
+
+
+async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> dict:
+    """Apply a BATCH of edits atomically (all-or-nothing) against the current room text. Each
+    edit = {"selector": <Selector>, "text": str, "expect"?: str}. On any unresolved selector,
+    `expect` mismatch, or intra-batch overlap, NOTHING is applied and a conflict (with the live
+    neighborhood + current `rev`) is returned so the caller can re-read and retry. `base_rev`
+    is advisory (reported back as `rebased`); real safety comes from per-edit `expect`."""
     st = await ensure_room(file)
     text = st["text"]
     s = str(text)
-    if not anchor:
-        return {"ok": False, "error": "empty anchor"}
-    if s.count(anchor) == 0:
-        return {"ok": False, "error": "anchor not found"}
-    if occurrence == 1 and s.count(anchor) > 1:
-        return {"ok": False, "error": f"anchor is ambiguous ({s.count(anchor)} matches); "
-                                      "pass a longer anchor or `occurrence`"}
-    idx_cp = _find(s, anchor, occurrence)
-    idx = _cp_to_byte(s, idx_cp)            # codepoint -> UTF-8 byte offset for pycrdt
-    blen = _bytelen(anchor)
-    with st["doc"].transaction():
-        del text[idx:idx + blen]
-        text.insert(idx, new_text)
-    _guard_external_edit(st, s)
-    _refresh(st)
-    return {"ok": True, "at": idx_cp, "removed": len(anchor), "inserted": len(new_text),
+    cur_rev = st.get("rev", 0)
+    resolved = []                                            # (from_cp, to_cp, txt, idx)
+    for i, e in enumerate(edits or []):
+        frm, to, kind, err = _resolve_selector(_selector_of(e), s)
+        if err:
+            return {"ok": False, "conflict": True, "index": i, "error": err,
+                    "rev": cur_rev, "room": st["key"]}
+        expect = e.get("expect")
+        if expect is not None and s[frm:to] != expect:
+            return {"ok": False, "conflict": True, "index": i, "error": "expect mismatch",
+                    "found": s[frm:to], "context": _neighborhood(s, frm, to),
+                    "rev": cur_rev, "room": st["key"]}
+        txt = _line_newline_fixup(kind, s, frm, to, e.get("text", "") or "")
+        # Deleting the last line of a file with NO trailing newline: also consume the
+        # preceding newline, else a phantom empty line is left behind (e.g. "a\nb\nc" -> "a\nb").
+        if kind == "lines" and not txt and to >= len(s) and frm > 0 and s[frm - 1] == "\n":
+            frm -= 1
+        resolved.append((frm, to, txt, i))
+    ordered = sorted(resolved, key=lambda r: (r[0], r[1]))
+    for (a1, b1, *_), (a2, b2, *_) in zip(ordered, ordered[1:]):
+        if a2 < b1:
+            return {"ok": False, "conflict": True, "error": "overlapping edits in batch",
+                    "rev": cur_rev, "room": st["key"]}
+    if resolved:
+        # Apply highest-offset-first so the earlier (lower-offset) byte positions stay valid.
+        # For edits at the SAME offset, apply LAST input first so their text ends up in input
+        # order (each insert pushes prior ones right) — else two inserts at one point swap.
+        with st["doc"].transaction():
+            for frm, to, txt, _idx in sorted(resolved, key=lambda r: (r[0], r[3]), reverse=True):
+                fb = _cp_to_byte(s, frm)
+                tb = _cp_to_byte(s, to)
+                if tb > fb:
+                    del text[fb:tb]
+                if txt:
+                    text.insert(fb, txt)
+        st["rev"] = cur_rev + 1
+        _guard_external_edit(st, s)
+        _refresh(st)
+    return {"ok": True, "rev": st["rev"], "applied": len(resolved),
+            "rebased": base_rev is not None and base_rev != cur_rev,
             "external_edit_seq": _mark_external_edit(), "room": st["key"]}
+
+
+def get_rev(file=None) -> int:
+    st = _rooms.get(room_name(file))
+    return st.get("rev", 0) if st else 0
+
+
+# --------------------------------------------------------------- single-edit sugar
+async def replace_anchor(anchor: str, new_text: str, file=None, occurrence: int = 1) -> dict:
+    return await apply_edits([{"selector": {"by": "anchor", "text": anchor,
+                              "occurrence": occurrence, "side": "in"}, "text": new_text}], file)
 
 
 async def insert_relative(anchor: str, payload: str, where: str = "after", file=None,
                           occurrence: int = 1) -> dict:
-    st = await ensure_room(file)
-    text = st["text"]
-    s = str(text)
-    if s.count(anchor) == 0:
-        return {"ok": False, "error": "anchor not found"}
-    if occurrence == 1 and s.count(anchor) > 1:
-        return {"ok": False, "error": f"anchor ambiguous ({s.count(anchor)} matches)"}
-    idx_cp = _find(s, anchor, occurrence)
-    at_cp = idx_cp if where == "before" else idx_cp + len(anchor)
-    at = _cp_to_byte(s, at_cp)              # codepoint -> UTF-8 byte offset
-    with st["doc"].transaction():
-        text.insert(at, payload)
-    _guard_external_edit(st, s)
-    _refresh(st)
-    return {"ok": True, "at": at_cp, "inserted": len(payload),
-            "external_edit_seq": _mark_external_edit(), "room": st["key"]}
+    return await apply_edits([{"selector": {"by": "anchor", "text": anchor,
+                              "occurrence": occurrence, "side": where}, "text": payload}], file)
 
 
 async def replace_range(frm: int, to: int, new_text: str, file=None) -> dict:
-    st = await ensure_room(file)
-    text = st["text"]
-    s = str(text)
-    n = len(s)                              # validate against CODE POINTS (what Claude counts)
-    if not (0 <= frm <= to <= n):
-        return {"ok": False, "error": f"range out of bounds (doc len {n})"}
-    frm_b = _cp_to_byte(s, frm)             # codepoint -> UTF-8 byte offset
-    to_b = _cp_to_byte(s, to)
-    with st["doc"].transaction():
-        if to_b > frm_b:
-            del text[frm_b:to_b]
-        if new_text:
-            text.insert(frm_b, new_text)
-    _guard_external_edit(st, s)
-    _refresh(st)
-    return {"ok": True, "at": frm, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
+    return await apply_edits([{"selector": {"by": "range", "from": frm, "to": to},
+                               "text": new_text}], file)
 
 
 async def reset_from_disk(file=None) -> dict:
@@ -436,15 +555,83 @@ async def reset_from_disk(file=None) -> dict:
 
 
 async def insert_text(at: int, payload: str, file=None) -> dict:
+    return await apply_edits([{"selector": {"by": "range", "from": at, "to": at},
+                               "text": payload}], file)
+
+
+# ------------------------------------------------------------- line-addressed edits
+# Content anchors are fragile once the agent has made a prior edit (the copied snippet goes
+# stale — see notes/workbook-bugfix-0709.md). Line-addressed edits sidestep quoting and
+# escaping entirely: the agent edits by the same 1-based line numbers get_document prints,
+# and each call is applied atomically to the CURRENT room text (no offset drift between
+# calls). Lines are 1-based and inclusive, matching get_document.
+async def replace_lines(start: int, end: int, new_text: str, file=None) -> dict:
+    return await apply_edits([{"selector": {"by": "lines", "start": start, "end": end},
+                               "text": new_text}], file)
+
+
+async def insert_at_line(line: int, payload: str, file=None) -> dict:
+    """Insert `payload` so it BECOMES line `line` (pushing the old line `line` down). A
+    `line` past the end appends at EOF."""
+    return await apply_edits([{"selector": {"by": "lines", "start": line}, "text": payload}], file)
+
+
+# ------------------------------------------------------------- drift-proof anchors
+# A comment's anchor stored as a code-point span goes stale the moment ANYONE (human or
+# agent) edits above it. A pycrdt StickyIndex (the Yjs RelativePosition) is bound to the
+# CHARACTER's CRDT identity, not its offset, so it follows the text across inserts/deletes
+# by either party and converges on every replica. We store its JSON at comment-create time
+# and resolve it back to a live span on read.
+def _safe_sticky_index(text, s: str, byte_off: int, prefer):
+    """Create a StickyIndex without tripping pycrdt's Rust panic. `Assoc.AFTER` has no
+    successor at end-of-document (or on an empty doc) and panics there — and that panic is a
+    BaseException that slips past `except Exception`, so it would 500 comment creation. Bind
+    with `Assoc.BEFORE` at/after EOF, and belt-and-suspenders catch BaseException."""
+    blen = _bytelen(s)
+    off = max(0, min(byte_off, blen))
+    assoc = Assoc.BEFORE if off >= blen else prefer
+    try:
+        return text.sticky_index(off, assoc)
+    except BaseException:
+        return None
+
+
+async def make_rel_anchors(spans, file=None) -> list:
+    """spans: [[from_cp, to_cp], ...] -> [{from, to}, ...] StickyIndex JSON, drift-proof."""
     st = await ensure_room(file)
     text = st["text"]
     s = str(text)
-    n = len(s)                              # validate against CODE POINTS (what callers count)
-    if not (0 <= at <= n):
-        return {"ok": False, "error": f"position out of bounds (doc len {n})"}
-    at_b = _cp_to_byte(s, at)               # codepoint -> UTF-8 byte offset for pycrdt
+    out = []
     with st["doc"].transaction():
-        text.insert(at_b, payload)
-    _guard_external_edit(st, s)
-    _refresh(st)
-    return {"ok": True, "at": at, "external_edit_seq": _mark_external_edit(), "room": st["key"]}
+        for span in spans or []:
+            frm = max(0, min(int(span[0]), len(s)))
+            to = max(0, min(int(span[1]), len(s)))
+            si_from = _safe_sticky_index(text, s, _cp_to_byte(s, frm), Assoc.AFTER)
+            si_to = _safe_sticky_index(text, s, _cp_to_byte(s, to), Assoc.BEFORE)
+            if si_from is None or si_to is None:
+                continue
+            out.append({"from": si_from.to_json(), "to": si_to.to_json()})
+    return out
+
+
+async def resolve_rel_anchors(rel, file=None) -> list:
+    """Inverse of make_rel_anchors: [{from, to}, ...] -> current [[from_cp, to_cp], ...]."""
+    st = await ensure_room(file)
+    text = st["text"]
+    s = str(text)
+    spans = []
+    with st["doc"].transaction() as txn:
+        for a in rel or []:
+            try:
+                si_from = StickyIndex.from_json(a["from"], text)
+                si_to = StickyIndex.from_json(a["to"], text)
+                fb = si_from.get_index(txn)
+                tb = si_to.get_index(txn)
+            except BaseException:
+                continue
+            if fb is None or tb is None:
+                continue
+            if fb > tb:                      # a caret/zero-width anchor can cross after edits
+                fb, tb = tb, fb
+            spans.append([_byte_to_cp(s, fb), _byte_to_cp(s, tb)])
+    return spans
