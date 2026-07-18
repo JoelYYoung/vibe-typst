@@ -7,6 +7,7 @@ import Presenter from './Presenter.jsx'
 import FileManager from './FileManager.jsx'
 import FilePicker from './FilePicker.jsx'
 import TermPanel from './TermPanel.jsx'
+import { filterAndSortComments } from './commentOrdering.js'
 
 const FILTERS = ['pending', 'done', 'all']
 const selKey = (s) => (s.kind === 'page' ? `p${s.page_no}` : `${s.page}:${s.text}`)
@@ -470,7 +471,7 @@ export default function App({ onBackToProjects }) {
   }
 
   const pendingCount = comments.filter((c) => c.status === 'pending').length
-  const shown = comments.filter((c) => filter === 'all' || c.status === filter)
+  const shown = filterAndSortComments(comments, filter)
   const editingComment = editingCardId ? comments.find((c) => c.id === editingCardId) : null
   const presentationActive = presenting || presentationLive
   const livePage = Math.min(Math.max(presentPage || 1, 1), pages.length || 1)

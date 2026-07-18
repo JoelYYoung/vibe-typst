@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
+import { canSaveVersion } from './versioning.js'
 
 const VIEWABLE_EXTS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -428,6 +429,8 @@ function GitPanel({ onRoomChange, setConfirm }) {
     } finally { setBusy(false) }
   }
 
+  const canSave = canSaveVersion(status, versions.length)
+
   return (
     <div className="git-panel">
       <div className="git-header" onClick={() => setExpanded(x => !x)}>
@@ -438,8 +441,8 @@ function GitPanel({ onRoomChange, setConfirm }) {
         <button
           className="mini git-commit-btn"
           onClick={e => { e.stopPropagation(); setCommitting(c => !c); setTimeout(() => msgRef.current?.focus(), 50) }}
-          title={status?.dirty ? 'Save current state as a version' : 'Already at the latest version — no changes to save'}
-          disabled={busy || !status?.dirty}
+          title={canSave ? 'Save current state as a version' : 'Already at the latest version — no changes to save'}
+          disabled={busy || !canSave}
         >+ Save version</button>
       </div>
 
@@ -457,10 +460,10 @@ function GitPanel({ onRoomChange, setConfirm }) {
                 disabled={busy}
               />
               <div className="git-commit-actions">
-                {/* Nothing to save when the deck matches the latest version — don't let a click
-                    create a redundant version (the backend also no-ops, but disable for clarity). */}
-                <button type="submit" className="mini primary" disabled={busy || !status?.dirty}
-                        title={status?.dirty ? '' : 'No changes since the last saved version'}>{busy ? '…' : 'Save'}</button>
+                {/* A version-less project must always be saveable, even when Git is not initialized
+                    or HEAD is clean. Once a version exists, disable only truly redundant saves. */}
+                <button type="submit" className="mini primary" disabled={busy || !canSave}
+                        title={canSave ? '' : 'No changes since the last saved version'}>{busy ? '…' : 'Save'}</button>
                 <button type="button" className="mini" onClick={() => setCommitting(false)}>Cancel</button>
               </div>
             </form>

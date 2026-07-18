@@ -203,7 +203,12 @@ def list_comments(status: str | None = None, file: str | None = None) -> list:
             args.append(file)
         if clauses:
             q += " WHERE " + " AND ".join(clauses)
-        q += " ORDER BY seq"
+        if status == "done":
+            # Completion order is independent of creation order: an old request resolved now
+            # belongs above a newer request resolved yesterday. Legacy rows may lack done_at.
+            q += " ORDER BY COALESCE(done_at, updated_at, created_at) DESC, seq DESC"
+        else:
+            q += " ORDER BY seq"
         return [_row_to_dict(r) for r in conn.execute(q, args).fetchall()]
 
 
