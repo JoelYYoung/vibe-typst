@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test": "node --test test/*.test.js",
+    "test:filemanager-e2e": "node test/fileManager.e2e.js",
+    "test:pointer-e2e": "node test/presentationPointer.e2e.js",
     "preview": "vite preview"
   },
   "dependencies": {

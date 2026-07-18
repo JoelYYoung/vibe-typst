@@ -378,9 +378,91 @@ redundant and is exactly what produced the visible flash/flicker. `App.jsx` now 
 editor ONLY on room rotation (corruption self-heal / project switch), which genuinely needs a
 fresh Yjs doc. Missed-update safety is still covered by Yjs's own resync on reconnect.
 
+## Follow-up 6: terminal lifecycle fixes
+
+### Terminal must not refresh on left-pane collapse/expand
+
+`App.jsx` unmounted the entire left `<section>` (editor + terminal) when `leftCollapsed`
+toggled, so expanding the pane remounted `TermPanel` and reconnected its shell WebSocket —
+refreshing the terminal just from a collapse/expand. Fixed by keeping the section MOUNTED and
+hiding it with CSS (`display:none`) when collapsed (the `.grid`/`.pane` are flexbox, so a hidden
+child collapses cleanly). The existing `refit()` path now also fires on expand (xterm was 0×0
+while hidden). The terminal (and its shell) survives collapse/expand untouched.
+
+### Relaunch a fresh shell when the shell exits
+
+When the shell exited (`exit` / Ctrl-D / process death) the backend `sender()` stopped but the
+`/pty` receive loop kept the WebSocket OPEN, so the browser never learned the shell was dead and
+the terminal hung. Two changes:
+- **Backend** (`app.py`): `sender()` now `await websocket.close()` on PTY EOF, so the socket
+  closes when the shell exits.
+- **Frontend** (`TermPanel.jsx`): refactored the socket into a `connect()` that relaunches on
+  `onclose` (unless the panel is unmounting) — clears the pane and opens a new `/pty` socket,
+  which forks a FRESH shell. (Ctrl-C interrupts the foreground command; it does not exit the
+  shell, so it correctly does not relaunch.)
+
+Verified live in the container: `GET /` serves the new bundle, and a scripted `/pty` client that
+sends `exit` observes the server close the socket (which is what drives the frontend relaunch).
+
+### Terminal corrupted (text out of margin) after hiding/collapsing while a TUI runs
+
+Symptom: running `codex` (or `claude`) in the terminal, then collapsing the left column or
+toggling the terminal off and back, left the TUI drawing past the right/bottom edges. Read the
+FitAddon 0.11 source to rule out fit over-computing (it doesn't — it even reserves 14px for the
+scrollbar). Real cause: the `ResizeObserver` fires `resize()` on EVERY host size change,
+including when the terminal is hidden (`display:none` → host 0×0). `fit()` then returns the 2×1
+floor and `resize()` SIGWINCH'd the PTY to **2×1**, so the TUI redrew into a 2×1 grid and stayed
+corrupted when shown again. The Follow-up-5 collapse fix (hide instead of unmount) exposed this,
+since the hidden terminal now stays mounted and keeps observing. Fix: `resize()` no-ops when
+`hostRef.current.offsetWidth/Height === 0`, so a hidden terminal never shrinks the PTY. (Also
+kept: scroll-position preservation across re-fit, and a settle re-fit after the socket opens.)
+
+## Follow-up 7: presenter-to-projection indicator pointer
+
+The presenter current-slide surface now acts as a press-and-hold indicator. A left press inside
+the painted slide broadcasts normalized slide coordinates to the projection window; moving the
+mouse moves the red indicator, and release, pointer cancellation, leaving presenter mode, or
+slide navigation clears it. Coordinates are mapped through the actual contained slide rectangle,
+so clicks in black letterbox space are ignored and the point remains aligned when presenter and
+projection windows have different aspect ratios.
+
+The transport is a presentation-scoped `BroadcastChannel`, independent from document editing and
+the backend. Unit tests cover coordinate containment, normalization, cross-aspect projection, and
+input validation. The Puppeteer regression covers press, drag, release, letterbox rejection, and
+navigation cleanup against the live service.
+
+## Follow-up 8: upload directly into a folder and preserve move collisions
+
+External operating-system drops were handled only by the File Manager's root drop zone. Folder
+rows understood the internal move MIME type but did not consume `Files`, so an uploaded file had
+to land at the root before it could be moved. Folder rows now recognize external files, stop the
+drop from bubbling to the root, upload with a destination-folder query, and expand to show the
+result.
+
+The reported `409` moving
+`First-Class_Verification_Dialects_for_MLIR.md` into `papers` was a genuine collision: files with
+that exact name already existed at both the project root and `papers/`, and their byte lengths and
+SHA-256 hashes were identical. The old backend deliberately refused to overwrite the destination,
+while the frontend discarded the response detail and displayed only `409 Conflict`.
+
+Both uploads and internal moves now use the same non-destructive collision policy: keep the
+existing destination and choose the first available numbered name (`paper_1.md`, `paper_2.md`,
+and so on) for the incoming item. The API reports `collision_renamed`, and the frontend shows the
+chosen name. API failures now surface the backend's `detail` message instead of only the HTTP
+status. Project path validation also uses `Path.relative_to` containment, avoiding sibling-prefix
+and macOS `/var` versus `/private/var` path errors.
+
+Regression coverage includes direct destination-folder upload, upload collision preservation,
+the exact First-Class-style move collision, and traversal through a sibling with a matching path
+prefix. A live Puppeteer test dispatches the real external and internal drag events, verifies no
+root upload is produced, checks both colliding file contents, asserts that no 409 occurs, and
+removes only its uniquely named test artifacts.
+
 ## Operational Notes
 
 - Existing workspace data was not intentionally removed or regenerated during the container hot updates.
-- The `joelyang` container was already stopped when the bubblewrap rollout ran, so it was recreated and left stopped to preserve its prior state.
+- During the bubblewrap rollout, the `joelyang` container was recreated and initially left
+  stopped to preserve its prior state. It is now running after the later hot updates, with
+  restart policy `unless-stopped` so Docker relaunches it after a host/runtime restart.
 - `kangaroo` was running and was restarted on the new image.
 - Future changes to MCP edit behavior should run the regression suite before image rebuilds or container rollout.

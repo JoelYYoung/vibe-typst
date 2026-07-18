@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REAL_CODEX="${CODEX_REAL:-/usr/local/bin/codex-real}"
+# Prefer a codex the user has updated into the PERSISTED npm prefix (survives container
+# recreation) over the image's baked-in binary; fall back to the image default. An explicit
+# CODEX_REAL (e.g. in tests) always wins.
+REAL_CODEX="${CODEX_REAL:-}"
+if [ -z "$REAL_CODEX" ]; then
+  _persisted="${NPM_CONFIG_PREFIX:-${TCB_BROWSE_ROOT:-/workspace}/.agent-home/codex-npm}/bin/codex"
+  if [ -x "$_persisted" ]; then REAL_CODEX="$_persisted"; else REAL_CODEX="/usr/local/bin/codex-real"; fi
+fi
 BEGIN="# TYPST-COMMENT-BRIDGE:BEGIN (auto-managed - edits here will be overwritten)"
 END="# TYPST-COMMENT-BRIDGE:END"
 

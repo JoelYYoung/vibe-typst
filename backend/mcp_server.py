@@ -161,16 +161,50 @@ def get_transcripts() -> dict:
     `if self.subslide == n { speaker-note("...") }`. They are the SAME source the human edits
     in the presenter/preview and are versioned with the deck.
 
-    Returns {pages:[{page, section, note}], total}. To CHANGE a transcript, edit the .typ
-    directly with the anchor tools (find the `speaker-note("...")` and replace_anchor on its
-    text, or insert_after_anchor a new `#speaker-note("...")` as the first line of a slide
-    body). IMPORTANT: when you ADD a slide, add its `#speaker-note(...)`; when you DELETE or
-    REORDER slides, move/remove the matching `#speaker-note(...)` so transcripts stay aligned
-    with their slides.""" + " " + _GUARD
+    Each page carries: `page`, `slide_no` (logical slide; subslides share it), `slide_line`
+    (source line of the slide opener), `sub_index`/`sub_total` (which build of the slide),
+    `section`, `note` (DISPLAY text — pdfpc-rendered, unescaped), `note_raw` (the EXACT source
+    literal inside `#speaker-note("...")`, escaping intact), and `note_line` (its source line).
+    Also returns `orphans`: source notes that render on no page (e.g. a `self.subslide == k`
+    gate past the slide's real subslide count) — clean these up on delete/reorder.
+
+    To EDIT a note, anchor on `note_raw` (verbatim source), NOT `note`, which is display-only —
+    they differ on quotes/newlines/markup so searching `note` will miss. If `note_raw` is null
+    or a note text repeats, address it by `note_line` with apply_edits `{"by":"lines"}`. Use
+    `slide_line`/`slide_no` to keep a note with its slide when you split/insert/reorder slides
+    (ADD a slide → add its `#speaker-note`; DELETE/REORDER → move/remove the matching one).
+    """ + " " + _GUARD
     r = _backend("GET", "/api/slide-map")
-    pages = [{"page": p.get("page"), "section": p.get("section"), "note": p.get("note") or ""}
+    pages = [{"page": p.get("page"), "slide_no": p.get("slide_no"), "slide_line": p.get("slide_line"),
+              "sub_index": p.get("sub_index"), "sub_total": p.get("sub_total"),
+              "section": p.get("section"), "note": p.get("note") or "",
+              "note_raw": p.get("note_raw"), "note_line": p.get("note_line")}
              for p in (r.get("pages") or [])]
-    return {"pages": pages, "total": r.get("total", len(pages))}
+    return {"pages": pages, "total": r.get("total", len(pages)), "orphans": r.get("orphans") or []}
+
+
+# ----------------------------------------------------------------- locate
+@mcp.tool()
+def locate(page: int = 0, slide: int = 0) -> dict:
+    """Resolve a PAGE or a SLIDE number to SOURCE LINES — the way to turn a human "fix slide 5"
+    or "page 12" into an exact line range for get_document / apply_edits. Pass EXACTLY ONE of
+    `page` or `slide` (1-based).
+
+    SLIDE vs PAGE are different and must not be confused: a SLIDE is one `#slide[...]` call; it
+    can render as SEVERAL PAGES (subslides via `#pause` / `self.subslide == k`). A PAGE is one
+    rendered step.
+    - locate(slide=N) → {slide_no, pages:[...], slide_line (opener), slide_end (closing `]`),
+      section, sub_total, note_lines}.
+    - locate(page=N) → {page, slide_no, slide_line, slide_end, section, sub_index, sub_total,
+      sub_lines (the source lines that drive THIS page), note_line, note_raw}.
+
+    Then edit the reported range with apply_edits `{"by":"lines", start, end}` (or read it with
+    get_document(offset=slide_line)). Requires the deck to be compiling; on a compile error the
+    map may be stale.""" + " " + _GUARD
+    if bool(page) == bool(slide):
+        return {"ok": False, "error": "pass EXACTLY ONE of page or slide (1-based)"}
+    q = f"page={page}" if page else f"slide={slide}"
+    return _backend("GET", f"/api/locate?{q}")
 
 
 # ----------------------------------------------------------------- document edits

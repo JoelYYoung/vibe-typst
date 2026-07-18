@@ -72,7 +72,8 @@ export default function App({ onBackToProjects }) {
   const [editBody, setEditBody] = useState('')
   const [editSels, setEditSels] = useState([])
   const presentChRef = useRef(null)
-  const presentStateRef = useRef({ page: 1, pages: [], tokens: {} })
+  const presentStateRef = useRef({ page: 1, pages: [], tokens: {}, pointer: null })
+  const presentPointerRef = useRef(null)
   const lastPongRef = useRef(0)
   const [comments, setComments] = useState([])
   const [filter, setFilter] = useState('pending')
@@ -133,15 +134,17 @@ export default function App({ onBackToProjects }) {
 
   // poll the live terminal state (cwd + whether an agent is running) while it's open
   useEffect(() => {
-    if (!termOpen) return
-    // panel was just un-hidden: xterm was 0x0 while display:none, so re-measure it
+    if (!termOpen || leftCollapsed) return
+    // panel was just un-hidden (terminal opened, OR the left pane expanded): xterm was 0x0
+    // while display:none, so re-measure it. The terminal stays MOUNTED across collapse, so
+    // this only re-fits — it never reconnects the shell.
     const r = requestAnimationFrame(() => termRef.current && termRef.current.refit && termRef.current.refit())
     let on = true
     const tick = async () => { try { const i = await api.terminalInfo(); if (on) setTermInfo(i) } catch {} }
     tick()
     const t = setInterval(tick, 1500)
     return () => { on = false; clearInterval(t); cancelAnimationFrame(r) }
-  }, [termOpen])
+  }, [termOpen, leftCollapsed])
 
   function startTermDrag(e) {
     e.preventDefault()
@@ -283,7 +286,9 @@ export default function App({ onBackToProjects }) {
   // page is remembered across exiting/re-entering Present. The App is always mounted.
   // The latest state lives in a ref so the channel handler (bound once) can always reply to a
   // new projection's "hello" with current data without re-binding on every state change.
-  useEffect(() => { presentStateRef.current = { page: presentPage, pages, tokens } }, [presentPage, pages, tokens])
+  useEffect(() => {
+    presentStateRef.current = { page: presentPage, pages, tokens, pointer: presentPointerRef.current }
+  }, [presentPage, pages, tokens])
   useEffect(() => {
     const ch = new BroadcastChannel('tcb-present')
     presentChRef.current = ch
@@ -304,6 +309,16 @@ export default function App({ onBackToProjects }) {
     const ch = presentChRef.current
     if (ch) ch.postMessage(presentStateRef.current)
   }, [presentPage, pages, tokens])
+
+  // Pointer updates are transient presentation state, not React application state. Keeping
+  // them in refs avoids re-rendering the editor for every mouse movement while still letting
+  // a newly-opened projection receive the current pointer in its hello response.
+  const sendPresentationPointer = useCallback((pointer) => {
+    presentPointerRef.current = pointer || null
+    presentStateRef.current = { ...presentStateRef.current, pointer: presentPointerRef.current }
+    const ch = presentChRef.current
+    if (ch) ch.postMessage({ pointer: presentPointerRef.current })
+  }, [])
 
   async function exportPdf() {
     setPdfBusy(true); setMsg('compiling PDF…')
@@ -380,7 +395,10 @@ export default function App({ onBackToProjects }) {
     const hit = editorRef.current && editorRef.current.highlight({ startLine: sl, startCol: sc, endLine: el, endCol: ec })
     if (!hit) return
     const text = (hit.lineText && hit.lineText.trim()) || hit.text
-    if (text) addSelection({ kind: 'element', text, line: hit.line, page: page_no })
+    // Carry the code-point span (from/to) so the backend can bind a drift-proof StickyIndex
+    // anchor (→ the comment's live `location`). Without these the anchor is never built and
+    // `location` is always null — the whole live-anchoring layer silently no-ops.
+    if (text) addSelection({ kind: 'element', text, from: hit.from, to: hit.to, line: hit.line, page: page_no })
   }
 
   // click a page's number badge -> jump editor to that page's start
@@ -431,7 +449,7 @@ export default function App({ onBackToProjects }) {
 
   function addEditorSelection() {
     if (editorSel && editorSel.text) {
-      addSelection({ kind: 'element', text: editorSel.text, line: editorSel.line, page: null })
+      addSelection({ kind: 'element', text: editorSel.text, from: editorSel.from, to: editorSel.to, line: editorSel.line, page: null })
       setEditorSel(null)
     }
   }
@@ -483,11 +501,13 @@ export default function App({ onBackToProjects }) {
       </header>
 
       <main className="grid">
-        {leftCollapsed ? (
+        {leftCollapsed && (
           <button className="expand-tab" title="show source" onClick={() => setLeftCollapsed(false)}><Chevron dir="right" /></button>
-        ) : (
-          <>
-            <section className="pane source" style={{ width: leftW }}>
+        )}
+        {/* Kept MOUNTED and hidden with CSS when collapsed (not unmounted): remounting this
+            section would tear down and reconnect the terminal's WebSocket, refreshing the shell
+            just from a collapse/expand toggle. */}
+        <section className="pane source" style={{ width: leftW, ...(leftCollapsed ? { display: 'none' } : null) }}>
               <div className="pane-head">
                 <FilePicker activeMain={meta.main} activeFile={meta.file} onOpen={onOpened} />
                 <span className="grow" />
@@ -520,9 +540,7 @@ export default function App({ onBackToProjects }) {
                 </>
               )}
             </section>
-            <div className="divider" onMouseDown={startDrag} title="drag to resize" />
-          </>
-        )}
+            <div className="divider" onMouseDown={startDrag} title="drag to resize" style={leftCollapsed ? { display: 'none' } : undefined} />
 
         <PreviewPane
           pages={pages}
@@ -616,7 +634,7 @@ export default function App({ onBackToProjects }) {
       </main>
 
       {fileMgrOpen && <FileManager activeFile={meta.file} mainFile={meta.main} onOpenFile={onOpened} onClose={() => setFileMgrOpen(false)} onRoomChange={room => setMeta(m => ({ ...m, room }))} />}
-      {presenting && <Presenter onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap} page={presentPage} setPage={setPresentPage} pages={pages} tokens={tokens} />}
+      {presenting && <Presenter onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap} onPointer={sendPresentationPointer} page={presentPage} setPage={setPresentPage} pages={pages} tokens={tokens} />}
     </div>
   )
 }

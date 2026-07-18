@@ -1,5 +1,9 @@
-const J = (r) => {
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
+const J = async (r) => {
+  if (!r.ok) {
+    let msg = `${r.status} ${r.statusText}`
+    try { const j = await r.json(); if (j && j.detail) msg = j.detail } catch {}
+    throw new Error(msg)
+  }
   return r.json()
 }
 const POST = (url, body) =>
@@ -26,14 +30,7 @@ export const logout = () => {
   document.body.appendChild(f); f.submit()
 }
 // detail-aware JSON (surfaces the control plane's HTTPException message)
-const JD = async (r) => {
-  if (!r.ok) {
-    let msg = `${r.status} ${r.statusText}`
-    try { const j = await r.json(); if (j && j.detail) msg = j.detail } catch {}
-    throw new Error(msg)
-  }
-  return r.json()
-}
+const JD = J
 const JSONHDR = { 'Content-Type': 'application/json' }
 export const changePassword = (current, neu) =>
   fetch('/account/password', { method: 'POST', headers: JSONHDR, body: JSON.stringify({ current, new: neu }) }).then(JD)
@@ -142,10 +139,9 @@ export const gitRestore = (tag) => POST('/api/git/restore', { tag })
 export const gitDeleteVersion = (tag) => POST('/api/git/delete', { tag })
 export const viewFileUrl = (path) =>
   `/api/project/files/view?path=${encodeURIComponent(path)}`
-export const uploadFile = async (file) => {
+export const uploadFile = async (file, dest = '') => {
   const fd = new FormData()
   fd.append('file', file)
-  const r = await fetch('/api/project/files/upload', { method: 'POST', body: fd })
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
-  return r.json()
+  const query = dest ? `?dest=${encodeURIComponent(dest)}` : ''
+  return fetch('/api/project/files/upload' + query, { method: 'POST', body: fd }).then(J)
 }
