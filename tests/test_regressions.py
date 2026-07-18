@@ -860,6 +860,29 @@ class VcsVersioningTest(unittest.TestCase):
     def _git(self, *args):
         return subprocess.run(["git", *args], cwd=str(self.d), capture_output=True, text=True)
 
+    def test_fresh_project_reports_unsaved_and_first_save_creates_v1(self):
+        st = self.vcs.status(self.d)
+        self.assertFalse(st["initialized"])
+        self.assertTrue(st["dirty"])                         # keeps the first-save UI enabled
+        self.assertEqual(st["current"], None)
+
+        result = self.vcs.save_version(self.d, "first")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["tag"], "v1")
+        self.assertEqual([v["tag"] for v in self.vcs.list_versions(self.d)], ["v1"])
+        self.assertEqual(self.vcs.status(self.d)["current"], "v1")
+
+    def test_clean_untagged_repository_can_create_v1(self):
+        self.vcs.save_version(self.d, "first")
+        self._git("tag", "-d", "v1")
+        self.assertEqual(self.vcs.list_versions(self.d), [])
+        self.assertFalse(self.vcs.status(self.d)["dirty"])
+
+        result = self.vcs.save_version(self.d, "replacement first")
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["tag"], "v1")
+        self.assertFalse(result.get("skipped", False))
+
     def test_version_captures_deck_only_not_tooling_or_crash_dumps(self):
         self._tooling()
         (self.d / "core").write_bytes(b"x" * 4096)          # a crash dump
@@ -934,6 +957,36 @@ class VcsVersioningTest(unittest.TestCase):
         self.vcs.migrate(self.d)
         self.assertNotIn("AGENTS.md", self._git("ls-files").stdout)   # tooling untracked
         self.assertTrue(self.vcs.status(self.d)["dirty"])             # real deck edit still pending
+
+
+class DoneCommentOrderingRegressionTest(unittest.TestCase):
+    def setUp(self):
+        import store
+
+        self.store = store
+        self._old_override = store._override
+        self._tmp = tempfile.TemporaryDirectory()
+        store.close()
+        store.set_path(str(Path(self._tmp.name) / "comments.db"))
+
+    def tearDown(self):
+        self.store.close()
+        self.store._override = self._old_override
+        self._tmp.cleanup()
+
+    def test_latest_completion_is_first_instead_of_creation_sequence(self):
+        with patch.object(self.store, "_now", return_value="2026-07-18T09:00:00"):
+            older = self.store.add_comment({"body": "created first"})
+        with patch.object(self.store, "_now", return_value="2026-07-18T10:00:00"):
+            newer = self.store.add_comment({"body": "created second"})
+        with patch.object(self.store, "_now", return_value="2026-07-18T11:00:00"):
+            self.store.set_status(older["id"], "done")
+        with patch.object(self.store, "_now", return_value="2026-07-18T12:00:00"):
+            self.store.set_status(newer["id"], "done")
+
+        done = self.store.list_comments("done")
+        self.assertEqual([c["id"] for c in done], [newer["id"], older["id"]])
+        self.assertEqual([c["seq"] for c in self.store.list_comments()], [1, 2])
 
 
 class ProjectFileOperationsRegressionTest(unittest.TestCase):

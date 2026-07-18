@@ -139,7 +139,10 @@ def _head_commit(project_dir: Path) -> str | None:
 
 def status(project_dir: Path) -> dict:
     if not is_repo(project_dir):
-        return {"initialized": False, "dirty": False, "current": None}
+        # A real project with no repository has never been snapshotted. Treat that state as
+        # unsaved so clients keep the first-version action available; save_version() will
+        # initialize Git and create v1 atomically when the user invokes it.
+        return {"initialized": False, "dirty": True, "current": None}
     dirty = _is_dirty(project_dir)
     head = _head_commit(project_dir)
     current = None

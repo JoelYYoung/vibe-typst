@@ -458,6 +458,32 @@ prefix. A live Puppeteer test dispatches the real external and internal drag eve
 root upload is produced, checks both colliding file contents, asserts that no 409 occurs, and
 removes only its uniquely named test artifacts.
 
+## Follow-up 9: first version must be creatable from a fresh project
+
+The redundant-save guard disabled both Save buttons whenever `status.dirty` was false. A project
+with no Git repository returned `{initialized:false, dirty:false}` and an empty version list, so
+the guard made the only action capable of initializing Git unreachable. This was reproduced on
+joelyang's `paper-reading-group-20260716` project.
+
+Fresh projects now report their state as unsaved, and the frontend independently permits Save
+whenever there are zero versions. The second condition also handles a clean existing repository
+whose tags were deleted: saving creates a new `v1` on its current HEAD without a redundant
+commit. Backend tests create `v1` from both states; unit and intercepted-browser regressions
+verify that a clean repository with an existing version still disables redundant saves while
+both first-version controls remain enabled for the zero-version state.
+
+## Follow-up 10: newest completed comments first
+
+Comments were always returned and rendered in ascending creation sequence, although the store
+already records `done_at`. The Done view now orders by completion time descending, with
+`updated_at`, `created_at`, and descending sequence as deterministic fallbacks for legacy/tied
+rows. Pending and All retain their existing sequence order.
+
+The backend regression deliberately completes comment 2 after comment 1 and requires `[2, 1]`,
+so the former `ORDER BY seq` implementation fails the test. Frontend unit and Puppeteer tests
+likewise feed creation order `[1, 2]` with comment 2 completed later and assert that the rendered
+cards are `#2`, then `#1`.
+
 ## Operational Notes
 
 - Existing workspace data was not intentionally removed or regenerated during the container hot updates.
