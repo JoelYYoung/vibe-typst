@@ -86,6 +86,57 @@ resolve(RelPos, E) = | { e ∈ E : d(e) = 0,  e < target } |
 immutable, a `RelPos` never drifts. **This is pycrdt's `StickyIndex`** — what our comment
 anchors use (`make_rel_anchors` / `resolve_rel_anchors` in `docstore.py`).
 
+### 1.4 Replica topology — who actually holds a replica (CORE DESIGN)
+
+This is the single most important structural fact about the system, so state it exactly:
+**there are TWO CRDT replicas — the browser and the backend "room" — and only they sync.
+The MCP server is NOT a replica; it is a remote procedure call into the backend's replica.**
+
+| Party | Holds a `Y.Doc` replica? | How it edits |
+|---|---|---|
+| **Browser** (CodeMirror) | **Yes** — `new Y.Doc()` in `TypstEditor.jsx`, bound to CM via `y-codemirror.next`, connected by `WebsocketProvider` | applies to its OWN replica first, then syncs |
+| **Backend room** (`docstore.py`) | **Yes** — the authoritative pycrdt `Y.Doc`, one per file; also the persistence authority (flushes to `.typ`) | edited in-process |
+| **MCP server** (`mcp_server.py`) | **No** | `POST /api/edit` (HTTP RPC); the backend mutates the room replica |
+
+CRDT sync — state vectors + updates, YATA merge — happens on exactly **one axis:
+browser ↔ backend room**. The MCP/agent reaches *into* the backend replica over RPC.
+
+**Human keystroke — replica-first, then sync (classic op-based CRDT):**
+```
+CM change → apply to BROWSER Y.Doc (local, optimistic)
+          → Yjs update → y-websocket → merge into BACKEND room replica
+          → rebroadcast → other browser replicas merge
+```
+
+**MCP / agent edit — no MCP replica; direct mutation of the server replica:**
+```
+apply_edits(...) → HTTP → backend
+                 → resolve selector → del/insert on the BACKEND room replica (one txn)
+                 → the txn's Yjs update is broadcast → BROWSER replica merges
+                 → debounced flush of str(text) → .typ
+```
+There is **no "MCP replica" that is edited then reconciled.** The agent's edit is transformed
+into `del`/`insert` exactly once, at the backend replica, and only then flows to the browser
+as an ordinary Yjs update.
+
+**Why it's built this way.** A separate OS process (the MCP server driving Codex/Claude over
+stdio) cannot touch the in-memory room, and giving it its own `Y.Doc` would add a THIRD
+replica to keep synced and persist. So it deliberately stays a thin RPC client into the one
+process that owns the room.
+
+**Consequences (they explain the whole bug history):**
+- Consecutive MCP edits need no cross-call CRDT reconciliation — they are just serialized
+  transactions on the single server replica (so `apply_edits` resolving against current text
+  is sufficient).
+- The only genuine concurrent-merge case (human typing while the agent edits) is resolved by
+  YATA on the browser↔server axis.
+- The "split-brain room" bug was NOT two replicas of one document diverging — it was two
+  DISTINCT rooms (different keys) backing one file, with the browser synced to one and the MCP
+  writing the other. An identity/routing bug, not a CRDT-merge failure. Unifying the room key
+  makes MCP edits land in the very replica the browser syncs with, so the agent's change
+  reaches the editor as an ordinary Yjs update — which is also why the per-edit editor remount
+  became unnecessary (see workbook Follow-up 5).
+
 ---
 
 ## 2. The room's actual instruction set

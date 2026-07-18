@@ -336,8 +336,22 @@ class McpFullCoverageTest(unittest.TestCase):
     def _backend_shim(self, method, path, payload=None):
         if path.startswith("/api/slide-map"):
             # The resolver/typst subprocess isn't run in tests; feed get_transcripts a
-            # realistic slide-map so its reshaping logic is still exercised end-to-end.
-            return {"pages": [{"page": 1, "section": "Intro", "note": "Intro note."}], "total": 1}
+            # realistic slide-map (with the locating fields it must pass through) so its
+            # reshaping logic is exercised end-to-end.
+            return {"pages": [{"page": 1, "slide_no": 1, "slide_line": 4, "sub_index": 1,
+                               "sub_total": 1, "section": "Intro", "note": "Intro note.",
+                               "note_raw": "Intro note.", "note_line": 5}],
+                    "total": 1, "orphans": [{"text": "stale", "slide_line": 9}]}
+        if path.startswith("/api/locate"):     # /api/locate calls the resolver; stub it here
+            if "slide=1" in path:
+                return {"ok": True, "kind": "slide", "slide_no": 1, "pages": [1],
+                        "slide_line": 4, "slide_end": 8, "section": "Intro", "sub_total": 1,
+                        "note_lines": [5]}
+            if "page=1" in path:
+                return {"ok": True, "kind": "page", "page": 1, "slide_no": 1, "slide_line": 4,
+                        "slide_end": 8, "section": "Intro", "sub_index": 1, "sub_total": 1,
+                        "sub_lines": [], "note_line": 5, "note_raw": "Intro note."}
+            return {"ok": False, "error": "not found"}
         return self.loop.run_until_complete(self._route(method, path, payload))
 
     async def _route(self, method, path, payload):
@@ -447,10 +461,15 @@ class McpFullCoverageTest(unittest.TestCase):
         self.assertEqual(r["room"], self.key)                    # relative file -> same room
         self.assertIn("= CONTENTS", self._doc())
 
-        # ---- transcripts (reshaping over a stubbed slide-map) ----
+        # ---- transcripts: get_transcripts must pass through the LOCATING fields, not just note ----
         tr = m.get_transcripts()
         self.assertEqual(tr["total"], 1)
-        self.assertEqual(tr["pages"][0]["note"], "Intro note.")
+        p0 = tr["pages"][0]
+        self.assertEqual(p0["note"], "Intro note.")            # display text
+        self.assertEqual(p0["note_raw"], "Intro note.")        # exact source literal (edit anchor)
+        self.assertEqual(p0["note_line"], 5)                   # source line of the #speaker-note
+        self.assertEqual(p0["slide_line"], 4)                  # opener line (for slide↔note mapping)
+        self.assertEqual(tr["orphans"], [{"text": "stale", "slide_line": 9}])
 
         # ---- comment status tools ----
         done = m.mark_comment_done(c1["id"], "made it bold")
@@ -534,6 +553,81 @@ class McpFullCoverageTest(unittest.TestCase):
         anchor = self.loop.run_until_complete(
             self._route("GET", f"/api/comments/{c['id']}/anchor", None))
         self.assertEqual(anchor["texts"], ["Beta"])
+
+    def test_locate_distinguishes_slide_from_page(self):
+        m = self.mcp
+        self.assertFalse(m.locate()["ok"])                       # must pass exactly one
+        self.assertFalse(m.locate(page=1, slide=1)["ok"])        # not both
+        r = m.locate(slide=1)
+        self.assertEqual(r["kind"], "slide")
+        self.assertEqual((r["slide_line"], r["slide_end"], r["pages"]), (4, 8, [1]))
+        p = m.locate(page=1)
+        self.assertEqual(p["kind"], "page")
+        self.assertEqual((p["slide_line"], p["sub_index"], p["note_line"]), (4, 1, 5))
+
+    def test_page_comment_gets_live_location_from_slide_opener(self):
+        # A page comment carries no from/to; the backend anchors the slide OPENER line so it
+        # still gets a live `location` (DECK line 4 is "#slide[").
+        payload = {"kind": "page",
+                   "selections": [{"kind": "page", "page_no": 1,
+                                   "slide": {"slide_line": 4, "slide_end": 8, "sub_total": 1}}],
+                   "body": "split this slide"}
+        created = self.loop.run_until_complete(self._route("POST", "/api/comments", [payload]))
+        cid = created[0]["id"]
+        anchor = self.loop.run_until_complete(self._route("GET", f"/api/comments/{cid}/anchor", None))
+        self.assertEqual(anchor["lines"], [4])
+        self.assertEqual(anchor["texts"], ["#slide["])
+        # ...and it drifts correctly: insert a line above, the opener anchor follows to line 5
+        m = self.mcp
+        m.apply_edits([{"selector": {"by": "lines", "start": 1}, "text": "// header"}])
+        anchor2 = self.loop.run_until_complete(self._route("GET", f"/api/comments/{cid}/anchor", None))
+        self.assertEqual(anchor2["texts"], ["#slide["])
+        self.assertEqual(anchor2["lines"], [5])
+
+
+class SlideEndBracketTest(unittest.TestCase):
+    """Bracket-aware `slide_end` — exact where the old 'next column-0 #slide opener' heuristic
+    was wrong (nested brackets, `]` in strings/comments, and the last slide over-including
+    trailing top-level content)."""
+
+    def _end(self, text, sl):
+        import slidemap
+        return slidemap._slide_end_line(text.split("\n"), sl)
+
+    def test_simple_two_slides(self):
+        s = "#slide[\n  body\n]\n#slide[\n x\n]\n"
+        self.assertEqual(self._end(s, 1), 3)
+        self.assertEqual(self._end(s, 4), 6)
+
+    def test_nested_brackets(self):
+        self.assertEqual(self._end("#slide[\n  #grid[a][b]\n  = T\n]\nafter\n", 1), 4)
+
+    def test_bracket_in_string_is_ignored(self):
+        self.assertEqual(self._end('#slide[\n  = "a ] b"\n  x\n]\n', 1), 4)
+
+    def test_bracket_in_comment_is_ignored(self):
+        self.assertEqual(self._end('#slide[\n  // a ] comment\n  x\n]\n', 1), 4)
+
+    def test_last_slide_stops_at_closing_bracket_not_eof(self):
+        # old heuristic (no following opener) returned EOF and ate the appendix; bracket match = line 3
+        self.assertEqual(self._end("#slide[\n  x\n]\n\n#pagebreak()\n= Appendix\n", 1), 3)
+
+    def test_unbalanced_returns_none_for_fallback(self):
+        self.assertIsNone(self._end("#slide[\n  x\n", 1))
+
+
+class RawContextWindowTest(unittest.TestCase):
+    def test_multiline_element_window_spans_to_end_and_has_caveat(self):
+        import context
+        source = "\n".join(f"line{i}" for i in range(1, 11))       # 10 lines
+        to_off = len("\n".join(source.split("\n")[:8]))            # end of line 8
+        payload = {"file": "main.typ", "body": "fix",
+                   "selections": [{"kind": "element", "text": "blah", "line": 3,
+                                   "from": 0, "to": to_off}]}
+        rc = context.build_raw_context(payload, source)
+        self.assertIn("SNAPSHOT at", rc)                           # freshness/escaping caveat present
+        self.assertIn("line8", rc)                                 # window reached the selection END line
+        self.assertIn("line10", rc)                                # end line + pad, not just start+pad
 
 
 class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
@@ -739,6 +833,157 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(spans), 1)
         a, b = spans[0]
         self.assertTrue(0 <= a <= b <= len(self._doc()))     # deterministic, never out of range
+
+
+class VcsVersioningTest(unittest.TestCase):
+    """The version system must version the DECK only — not the app-managed tooling
+    (AGENTS.md / CLAUDE.md / .codex) that `workdir.setup()` regenerates on every open, nor
+    crash dumps. Otherwise the repo is falsely 'dirty' (yellow dots), saves fire when the deck
+    is unchanged, and re-opening a project stops pointing at the latest saved version."""
+
+    def setUp(self):
+        import vcs
+        self.vcs = vcs
+        self._tmp = tempfile.TemporaryDirectory()
+        self.d = Path(self._tmp.name)
+        (self.d / "main.typ").write_text("#slide[hello]\n", encoding="utf-8")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _tooling(self):
+        (self.d / "AGENTS.md").write_text("agent instructions\n", encoding="utf-8")
+        (self.d / "CLAUDE.md").write_text("agent instructions\n", encoding="utf-8")
+        (self.d / ".codex").mkdir(exist_ok=True)
+        (self.d / ".codex" / "config.toml").write_text("cfg\n", encoding="utf-8")
+
+    def _git(self, *args):
+        return subprocess.run(["git", *args], cwd=str(self.d), capture_output=True, text=True)
+
+    def test_version_captures_deck_only_not_tooling_or_crash_dumps(self):
+        self._tooling()
+        (self.d / "core").write_bytes(b"x" * 4096)          # a crash dump
+        r = self.vcs.save_version(self.d, "first")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["tag"], "v1")
+        tracked = set(self._git("ls-files").stdout.split())
+        self.assertIn("main.typ", tracked)
+        for junk in ("AGENTS.md", "CLAUDE.md", ".codex/config.toml", "core"):
+            self.assertNotIn(junk, tracked)
+        st = self.vcs.status(self.d)
+        self.assertFalse(st["dirty"])
+        self.assertEqual(st["current"], "v1")
+
+    def test_regenerated_tooling_does_not_make_repo_dirty(self):
+        self._tooling()
+        self.vcs.save_version(self.d, "first")
+        # simulate re-open: setup() rewrites the tooling with DIFFERENT content
+        (self.d / "AGENTS.md").write_text("NEW v2 instructions\n", encoding="utf-8")
+        (self.d / ".codex" / "config.toml").write_text("new cfg\n", encoding="utf-8")
+        st = self.vcs.status(self.d)
+        self.assertFalse(st["dirty"])                       # invisible to version control
+        self.assertEqual(st["current"], "v1")               # still points at the latest version
+
+    def test_save_is_noop_when_only_tooling_changed(self):
+        self._tooling()
+        self.vcs.save_version(self.d, "first")
+        (self.d / "AGENTS.md").write_text("regenerated\n", encoding="utf-8")
+        r = self.vcs.save_version(self.d, "again")
+        self.assertTrue(r.get("skipped"))                   # no duplicate version
+        self.assertEqual(r["tag"], "v1")
+        self.assertEqual([v["tag"] for v in self.vcs.list_versions(self.d)], ["v1"])
+
+    def test_real_deck_change_creates_new_version(self):
+        self.vcs.save_version(self.d, "first")
+        (self.d / "main.typ").write_text("#slide[hello world]\n", encoding="utf-8")
+        self.assertTrue(self.vcs.status(self.d)["dirty"])
+        self.assertEqual(self.vcs.save_version(self.d, "second")["tag"], "v2")
+
+    def test_migrate_untracks_legacy_tooling_and_keeps_current_version(self):
+        # An OLD repo that committed the tooling before it was ignored (the real-world case).
+        self._tooling()
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", "AGENTS.md", "CLAUDE.md", ".codex/config.toml")
+        self._git("commit", "-m", "old")
+        self._git("tag", "-a", "v1", "-m", "My named version")   # a real, user-chosen name
+        self.assertIn("AGENTS.md", self._git("ls-files").stdout)
+        self.assertEqual(self.vcs.status(self.d)["current"], "v1")
+        # migrate (as a project-open would): untrack tooling, keep the deck + the version tag
+        self.vcs.migrate(self.d)
+        tracked = self._git("ls-files").stdout
+        self.assertIn("main.typ", tracked)
+        self.assertNotIn("AGENTS.md", tracked)
+        self.assertNotIn(".codex/config.toml", tracked)
+        st = self.vcs.status(self.d)
+        self.assertFalse(st["dirty"])                       # cleanup committed, deck unchanged
+        self.assertEqual(st["current"], "v1")               # tag carried onto the cleanup commit
+        # the tag's NAME/message must survive the move (not be clobbered to a bare "v1")
+        subj = self._git("for-each-ref", "refs/tags/v1", "--format=%(contents:subject)").stdout.strip()
+        self.assertEqual(subj, "My named version")
+        # exactly one tag exists — the move must not spawn a duplicate
+        self.assertEqual([v["tag"] for v in self.vcs.list_versions(self.d)], ["v1"])
+
+    def test_migrate_preserves_uncommitted_deck_edits_as_dirty(self):
+        self._tooling()
+        self.vcs.save_version(self.d, "first")
+        # legacy: pretend AGENTS.md got tracked, and the deck has a real pending edit
+        self._git("add", "-f", "AGENTS.md")
+        self._git("commit", "-m", "track agents")
+        (self.d / "main.typ").write_text("#slide[edited]\n", encoding="utf-8")
+        self.vcs.migrate(self.d)
+        self.assertNotIn("AGENTS.md", self._git("ls-files").stdout)   # tooling untracked
+        self.assertTrue(self.vcs.status(self.d)["dirty"])             # real deck edit still pending
+
+
+class ProjectFileOperationsRegressionTest(unittest.TestCase):
+    def setUp(self):
+        import projects
+
+        self.projects = projects
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "project"
+        self.root.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_upload_goes_directly_into_requested_folder(self):
+        (self.root / "papers").mkdir()
+        result = self.projects.store_upload(self.root, "paper.pdf", b"pdf", "papers")
+        self.assertEqual(result["path"], "papers/paper.pdf")
+        self.assertEqual((self.root / "papers" / "paper.pdf").read_bytes(), b"pdf")
+        self.assertFalse((self.root / "paper.pdf").exists())
+
+    def test_upload_collision_keeps_both_files(self):
+        papers = self.root / "papers"
+        papers.mkdir()
+        (papers / "paper.md").write_bytes(b"old")
+        result = self.projects.store_upload(self.root, "paper.md", b"new", "papers")
+        self.assertTrue(result["collision_renamed"])
+        self.assertEqual(result["path"], "papers/paper_1.md")
+        self.assertEqual((papers / "paper.md").read_bytes(), b"old")
+        self.assertEqual((papers / "paper_1.md").read_bytes(), b"new")
+
+    def test_move_collision_keeps_both_files_instead_of_409(self):
+        papers = self.root / "papers"
+        papers.mkdir()
+        (self.root / "First-Class_Verification_Dialects_for_MLIR.md").write_bytes(b"incoming")
+        (papers / "First-Class_Verification_Dialects_for_MLIR.md").write_bytes(b"existing")
+        result = self.projects.move_item(
+            self.root, "First-Class_Verification_Dialects_for_MLIR.md", "papers"
+        )
+        self.assertTrue(result["collision_renamed"])
+        self.assertEqual(result["path"], "papers/First-Class_Verification_Dialects_for_MLIR_1.md")
+        self.assertFalse((self.root / "First-Class_Verification_Dialects_for_MLIR.md").exists())
+        self.assertEqual((papers / "First-Class_Verification_Dialects_for_MLIR.md").read_bytes(), b"existing")
+        self.assertEqual((papers / "First-Class_Verification_Dialects_for_MLIR_1.md").read_bytes(), b"incoming")
+
+    def test_sibling_prefix_does_not_bypass_project_path_guard(self):
+        sibling = self.root.parent / f"{self.root.name}-outside"
+        sibling.mkdir()
+        with self.assertRaises(PermissionError):
+            self.projects._resolve_project_path(self.root, f"../{sibling.name}/escaped.txt")
 
 
 class RenderTokenRegressionTest(unittest.TestCase):

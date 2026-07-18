@@ -207,8 +207,11 @@ def copy_project(project_id: str, new_name: str) -> dict:
 
 def _resolve_project_path(project_dir: Path, rel_path: str) -> Path:
     """Resolve a relative path inside project_dir, rejecting traversal."""
-    target = (project_dir / rel_path).resolve()
-    if not str(target).startswith(str(project_dir.resolve())):
+    root = project_dir.resolve()
+    target = (root / rel_path).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
         raise PermissionError("Path escapes project directory")
     return target
 
@@ -278,6 +281,37 @@ def rmdir(project_dir: Path, rel_path: str) -> None:
     shutil.rmtree(target)
 
 
+def _available_target(target: Path, is_dir: bool = False) -> tuple[Path, bool]:
+    """Return a non-existing sibling path, preserving every collision as `name_1.ext`."""
+    if not target.exists():
+        return target, False
+    stem = target.name if is_dir else target.stem
+    suffix = "" if is_dir else target.suffix
+    i = 1
+    candidate = target.with_name(f"{stem}_{i}{suffix}")
+    while candidate.exists():
+        i += 1
+        candidate = target.with_name(f"{stem}_{i}{suffix}")
+    return candidate, True
+
+
+def store_upload(project_dir: Path, filename: str, content: bytes,
+                 dest_dir_rel: str = "") -> dict:
+    """Store an uploaded file in `dest_dir_rel`, keeping both files on name collisions."""
+    dest_dir_rel = (dest_dir_rel or "").strip().strip("/")
+    dest_dir = project_dir.resolve() if not dest_dir_rel else _resolve_project_path(project_dir, dest_dir_rel)
+    if not dest_dir.is_dir():
+        raise ValueError("upload destination is not a folder")
+    name = re.sub(r'[\\/:*?"<>|]', "_", (filename or "upload").strip())
+    if name in {"", ".", ".."}:
+        name = "upload"
+    target, collision_renamed = _available_target(dest_dir / name)
+    target.write_bytes(content)
+    rel = str(target.relative_to(project_dir.resolve()))
+    return {"ok": True, "path": rel, "name": target.name, "size": len(content),
+            "collision_renamed": collision_renamed}
+
+
 def move_item(project_dir: Path, old_rel: str, dest_dir_rel: str) -> dict:
     """Move a file or directory into another directory within the project (drag-to-move).
     `dest_dir_rel` is the target directory relative to the project root ("" = root)."""
@@ -292,12 +326,12 @@ def move_item(project_dir: Path, old_rel: str, dest_dir_rel: str) -> dict:
     new_target = dest_dir / old_target.name
     if new_target == old_target:
         return {"path": old_rel, "name": old_target.name}  # no-op (already there)
-    if new_target.exists():
-        raise FileExistsError(f"{old_target.name!r} already exists in the destination")
+    new_target, collision_renamed = _available_target(new_target, is_dir=old_target.is_dir())
     old_target.rename(new_target)
-    rel = str(new_target.relative_to(project_dir))
+    rel = str(new_target.relative_to(project_dir.resolve()))
     return {"path": rel, "name": new_target.name,
-            "type": "dir" if new_target.is_dir() else "file"}
+            "type": "dir" if new_target.is_dir() else "file",
+            "collision_renamed": collision_renamed}
 
 
 def rename_item(project_dir: Path, old_rel: str, new_name: str) -> dict:

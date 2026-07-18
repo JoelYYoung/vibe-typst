@@ -1,18 +1,22 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
+import { clientToSlidePoint } from './presentationPointer.js'
 
 // PowerPoint-style presenter view: big current slide, next-slide preview, the speaker note
 // ("script") for the current slide, a timer, and navigation. A second "projection" window
 // (opened here) shows the audience just the current slide and follows via BroadcastChannel.
 // `page`/`setPage`/`pages`/`rv` are owned by the App (so the page survives exiting + re-entering
 // presenter mode, and the App keeps the projection live even when this view is closed).
-export default function Presenter({ onClose, onSaved, page, setPage, pages, tokens }) {
+export default function Presenter({ onClose, onSaved, onPointer, page, setPage, pages, tokens }) {
   const [map, setMap] = useState([])
   const [elapsed, setElapsed] = useState(0)
   const [showThumbs, setShowThumbs] = useState(true)
   const thumbRef = useRef(null)
   const noteRef = useRef(null)
+  const currentSlideRef = useRef(null)
+  const activePointerRef = useRef(null)
+  const [localPointer, setLocalPointer] = useState(null)
 
   useEffect(() => {
     api.getSlideMap().then((r) => setMap(r.pages || [])).catch(() => {})
@@ -22,6 +26,67 @@ export default function Presenter({ onClose, onSaved, page, setPage, pages, toke
 
   const total = pages.length
   const go = (d) => setPage((p) => Math.min(Math.max(total, 1), Math.max(1, p + d)))
+
+  const clearPointer = useCallback(() => {
+    activePointerRef.current = null
+    setLocalPointer(null)
+    onPointer && onPointer(null)
+  }, [onPointer])
+
+  function pointFromEvent(e) {
+    const img = currentSlideRef.current
+    if (!img || !img.naturalWidth || !img.naturalHeight) return null
+    const rect = e.currentTarget.getBoundingClientRect()
+    const point = clientToSlidePoint(
+      e.clientX,
+      e.clientY,
+      rect,
+      img.naturalWidth,
+      img.naturalHeight,
+    )
+    return point ? { ...point, left: e.clientX - rect.left, top: e.clientY - rect.top } : null
+  }
+
+  function startPointer(e) {
+    if (!e.isPrimary || e.button !== 0) return
+    const point = pointFromEvent(e)
+    if (!point) return
+    e.preventDefault()
+    activePointerRef.current = e.pointerId
+    e.currentTarget.setPointerCapture && e.currentTarget.setPointerCapture(e.pointerId)
+    setLocalPointer(point)
+    onPointer && onPointer({ page, x: point.x, y: point.y })
+  }
+
+  function movePointer(e) {
+    if (activePointerRef.current !== e.pointerId) return
+    const point = pointFromEvent(e)
+    if (!point) return
+    setLocalPointer(point)
+    onPointer && onPointer({ page, x: point.x, y: point.y })
+  }
+
+  function stopPointer(e) {
+    if (activePointerRef.current !== e.pointerId) return
+    if (e.currentTarget.hasPointerCapture && e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    clearPointer()
+  }
+
+  // A laser dot must never get stranded on the audience screen after navigation, focus loss,
+  // or closing the presenter while the primary button is still held.
+  useEffect(() => {
+    clearPointer()
+  }, [page, clearPointer])
+  useEffect(() => {
+    window.addEventListener('blur', clearPointer)
+    return () => {
+      window.removeEventListener('blur', clearPointer)
+      activePointerRef.current = null
+      onPointer && onPointer(null)
+    }
+  }, [clearPointer, onPointer])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -102,9 +167,15 @@ export default function Presenter({ onClose, onSaved, page, setPage, pages, toke
           })}
         </div>
       <div className="pr-body">
-        <div className="pr-current">
+        <div className="pr-current pr-pointer-surface"
+          onPointerDown={startPointer}
+          onPointerMove={movePointer}
+          onPointerUp={stopPointer}
+          onPointerCancel={stopPointer}>
           <div className="pr-label">PAGE {page}/{total}{info.slide_no ? ` · SLIDE ${info.slide_no}/${info.slide_total}` : ''}{info.sub_total > 1 ? ` · SUBSLIDE ${info.sub_index}/${info.sub_total}` : ''}</div>
-          {cur ? <img className="pr-slide" src={api.renderUrl(cur, tokens[cur])} alt="" /> : <div className="proj-empty">…</div>}
+          {cur ? <img ref={currentSlideRef} className="pr-slide" src={api.renderUrl(cur, tokens[cur])} alt="" draggable="false" /> : <div className="proj-empty">…</div>}
+          {localPointer && <span className="presentation-pointer pr-pointer" aria-hidden="true"
+            style={{ left: `${localPointer.left}px`, top: `${localPointer.top}px` }} />}
         </div>
         <div className="pr-side">
           <div className="pr-next">

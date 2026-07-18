@@ -34,19 +34,33 @@ each other's work:
 
 - **Do NOT** use `Read` / `Edit` / `Write` / `MultiEdit` on this `.typ`. Writing the file
   directly bypasses the shared document and gets overwritten.
-- **Read** it only with the MCP tools, and read WINDOWS, not the whole file:
-  - `find_in_document("text")` → line numbers of matches (use this to locate an anchor).
-  - `get_document(offset, limit)` → a line-numbered slice starting at `offset` (default a
-    120-line head, capped at 400). Do not try to dump the whole deck at once.
-- **Edit** it only with `replace_anchor`, `insert_before_anchor`, `insert_after_anchor`,
-  `replace_range`. These are content-anchored (exact text snippets, never line numbers) and
-  apply to the shared doc, so the human sees your change live. After editing, the preview
-  shows a compile error if the source no longer parses — fix it before moving on.
-- **Comments** (the human's edit requests): `get_pending_comments` → for each, read its
-  `anchor_text` + `comment`, locate it via `find_in_document(anchor_text)`, apply the change
-  with the edit tools above, recompile-check, then `mark_comment_done` (or
-  `mark_comment_dismissed` if unclear/obsolete). Comments live in a separate store (the
-  `vibe-typst` MCP), NOT in the `.typ`; you never edit them by hand.
+- **Locate** what to change — never dump the whole deck. Four ways, pick what fits:
+  - `find_in_document("text")` → line numbers of matches, when you know some source text.
+  - `locate(slide=N)` / `locate(page=N)` → source lines for a slide or page. SLIDE and PAGE
+    are DIFFERENT and must not be confused: a SLIDE is one `#slide[...]` call and may render as
+    several PAGES (subslides via `#pause` / `self.subslide == k`). `locate(slide=N)` returns the
+    opener line, the closing `]` line (`slide_end`), and its pages; `locate(page=N)` returns the
+    enclosing slide plus `sub_lines` (the source lines that drive that one page).
+  - `get_document(offset, limit)` → a line-numbered window (default 120 lines, cap 400); it
+    also returns `rev`, the document revision (pass it back as `apply_edits(base_rev=…)`).
+  - For a comment, use its `location` field (see Comments) — the live, drift-proof position.
+- **Edit** it only with the MCP edit tools (they apply to the shared doc, so the human sees
+  your change live):
+  - `apply_edits(edits, base_rev)` is the PREFERRED tool — an ATOMIC BATCH; each edit is a
+    selector `{{"by":"anchor"|"lines"|"range", …}}` + `text` (+ optional `expect`, a
+    compare-and-swap that refuses if the target changed). Use it for anything multi-part
+    (split a slide, rename a term, restructure) so nothing half-applies.
+  - Single-edit shortcuts: `replace_anchor`, `insert_before_anchor`, `insert_after_anchor`
+    (by exact unique text); `replace_lines`, `insert_at_line` (by the line numbers
+    get_document / locate print); `replace_range` (by offset — last resort). Re-read before the
+    next line-addressed edit; line numbers shift after every edit.
+  After editing, the preview shows a compile error if the source no longer parses — fix it.
+- **Comments** (the human's edit requests): `get_pending_comments` → for each, read `comment`
+  (the instruction) and `location` = {{lines, current_text, rev}} — the CURRENT position of the
+  comment's target. TRUST `location` over any line numbers inside `raw_context` (those are a
+  snapshot from when the comment was made and drift). Apply the change with the edit tools,
+  recompile-check, then `mark_comment_done` (or `mark_comment_dismissed` if unclear/obsolete).
+  Comments live in the `vibe-typst` MCP, NOT the `.typ`; you never edit them by hand.
 
 ### This is a TOUYING deck — always write touying
 This `.typ` is a **touying** presentation (`#import "@preview/touying:0.6.1": *` + a theme via
@@ -73,8 +87,12 @@ same anchor tools). They export to a `.pdfpc` file the human downloads for the p
   `  if sub == 1 {{ speaker-note("script for page 1") }}`
   `  if sub == 2 {{ speaker-note("script for page 2") }}`
   `  ... }})`
-- To CHANGE a note, `find_in_document` its current text and `replace_anchor` it. To ADD one,
-  `insert_after_anchor` on the slide's opening line. Keep notes plain spoken prose (they feed
+- To CHANGE a note, get its exact source with `get_transcripts` — use `note_raw` (the verbatim
+  source literal) as the `replace_anchor` target, NOT the display `note` (which is unescaped and
+  won't substring-match), or edit by `note_line`. To ADD one, `insert_after_anchor` on the
+  slide's opening line. When you split / add / reorder slides, add or move the matching
+  `#speaker-note` too (use `slide_line` / `note_line` from `get_transcripts` / `locate`), and
+  fix `orphans` that `get_transcripts` reports. Keep notes plain spoken prose (they feed
   text-to-speech and the pdfpc presenter).
 
 ### How the tools load

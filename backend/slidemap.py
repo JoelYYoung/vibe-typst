@@ -81,6 +81,43 @@ def _build():
     return m, lines
 
 
+def _slide_end_line(lines: list[str], sl: int) -> int | None:
+    """1-based line of the `]` that closes the `#slide[ ... ]` opening at 1-based line `sl`,
+    by matching bracket depth (ignoring `"..."` strings and `//` comments). None if unbalanced.
+    This is exact where the "next column-0 #slide opener" heuristic is not — nested/`#let`
+    bodies, a stray column-0 `#slide` in a string, and the last slide (which over-includes any
+    trailing top-level content)."""
+    depth = 0
+    started = False
+    in_str = False
+    escaped = False
+    for li in range(sl - 1, len(lines)):
+        line = lines[li]
+        j = 0
+        while j < len(line):
+            ch = line[j]
+            if in_str:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == "/" and j + 1 < len(line) and line[j + 1] == "/":
+                break                      # rest of the line is a comment
+            elif ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+                started = True
+            elif ch == "]":
+                depth -= 1
+                if started and depth == 0:
+                    return li + 1
+            j += 1
+    return None
+
+
 def slide_info(page_no) -> dict | None:
     """For a 1-based page number, return slide-open line, section label, subslide index/total,
     the slide's source line span, and the source lines that drive THIS subslide."""
@@ -103,12 +140,15 @@ def slide_info(page_no) -> dict | None:
     while m.get(last + 1, {}).get("slide_line") == sl:
         last += 1
     sub_index, sub_total = page_no - first + 1, last - first + 1
-    # slide source span: from the opener to the next column-0 opener (or EOF)
-    end = len(lines)
-    for i in range(sl, len(lines)):
-        if _OPENER.match(lines[i]):
-            end = i
-            break
+    # slide source span: prefer bracket-matching the `#slide[...]` body; fall back to the
+    # "next column-0 opener (or EOF)" heuristic only if the brackets don't balance.
+    end = _slide_end_line(lines, sl)
+    if end is None:
+        end = len(lines)
+        for i in range(sl, len(lines)):
+            if _OPENER.match(lines[i]):
+                end = i
+                break
     # lines that drive THIS subslide (sub == k / #only(k) / #uncover(k))
     k = sub_index
     sub_re = re.compile(rf"(sub\s*==\s*{k}\b|only\(\s*{k}\b|uncover\(\s*{k}\b)")

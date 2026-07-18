@@ -24,6 +24,21 @@ _IGNORE_PATTERNS = [
     ".slide-comments.db-wal",
     ".DS_Store",
     "Thumbs.db",
+    # App-managed agent tooling — regenerated on EVERY project open (workdir.setup), so
+    # versioning it makes the repo perpetually "dirty" and saves fire when the DECK itself is
+    # unchanged. A version should capture the user's deck (.typ + assets), not this scaffolding.
+    "AGENTS.md",
+    "CLAUDE.md",
+    "AGENTS.md.backup-*",
+    "CLAUDE.md.backup-*",
+    ".codex/",
+    ".agent-home/",           # agent runtime state (auth/config/cache), if it lands in-project
+    # Process crash dumps — a crashed codex/node (`--yolo`) can drop a multi-hundred-MB `core`.
+    "core",
+    "core.*",
+    "*.core",
+    "vgcore.*",
+    "*.heapsnapshot",
 ]
 
 _GIT_CONFIG = [("user.email", "vibe@local"), ("user.name", "Vibe Typst")]
@@ -58,20 +73,56 @@ def _ensure_gitignore(project_dir: Path) -> None:
 
 
 def _untrack_ignored(project_dir: Path) -> None:
-    """Stop tracking any file that now matches .gitignore (e.g. a comment DB that
-    an earlier version committed). Without this, those volatile files keep the repo
-    permanently 'dirty' and trigger false discard prompts."""
+    """Stop tracking any file that now matches .gitignore (app-managed configs a prior version
+    committed, crash dumps, a comment DB). Without this those volatile files keep the repo
+    permanently 'dirty' and trigger false discard prompts / spurious saves.
+
+    The removal is COMMITTED (so it doesn't linger as a staged 'dirty' deletion), and any
+    version tag pointing at the old HEAD is carried onto the housekeeping commit — the deck
+    content is byte-identical, so the user's 'current version' stays valid across the cleanup.
+    """
     out, _, _ = _run(["ls-files", "-i", "-c", "--exclude-standard"], project_dir)
-    for f in out.splitlines():
-        if f.strip():
-            _run(["rm", "--cached", "--", f.strip()], project_dir)
+    for f in [x.strip() for x in out.splitlines() if x.strip()]:
+        _run(["rm", "--cached", "--", f], project_dir)
+    _run(["add", "--", ".gitignore"], project_dir)   # keep the ignore rules themselves versioned
+    if _head_commit(project_dir) is None:
+        return  # no history yet — save_version() will make the first commit
+    if _run(["diff", "--cached", "--quiet"], project_dir)[2] == 0:
+        return  # nothing staged → nothing to clean up
+    pto, _, _ = _run(["tag", "--points-at", "HEAD"], project_dir)
+    tags_here = [t for t in pto.splitlines() if t.strip()]
+    # Capture each tag's ORIGINAL message BEFORE moving it — else re-annotating with `-m t`
+    # clobbers the user's version name to a bare "vNN", which then looks like a spurious extra
+    # version next to their newly-named one.
+    orig_msg = {}
+    for t in tags_here:
+        m, _, _ = _run(["for-each-ref", f"refs/tags/{t}", "--format=%(contents:subject)"], project_dir)
+        orig_msg[t] = m.strip()
+    # Commit ONLY the staged removals/.gitignore (no -a), so real uncommitted deck edits stay
+    # uncommitted (the deck must still read as 'dirty' if the user changed it).
+    if _run(["commit", "-m", "chore: stop tracking app-managed files"], project_dir)[2] != 0:
+        return
+    new_head = _head_commit(project_dir)
+    for t in tags_here:                          # carry each version tag (name + message) forward
+        _run(["tag", "-f", "-a", t, "-m", orig_msg.get(t) or t, new_head], project_dir)
+
+
+def migrate(project_dir: Path) -> None:
+    """Idempotent housekeeping for an EXISTING repo: refresh .gitignore and stop tracking any
+    now-ignored app-managed/junk files. Safe to call on every project open; a no-op once clean."""
+    if not is_repo(project_dir):
+        return
+    for k, v in _GIT_CONFIG:                     # ensure identity exists before any commit
+        _run(["config", k, v], project_dir)
+    _ensure_gitignore(project_dir)
+    _untrack_ignored(project_dir)
 
 
 def _ensure_init(project_dir: Path) -> None:
     if not is_repo(project_dir):
         _run(["init"], project_dir)
-        for k, v in _GIT_CONFIG:
-            _run(["config", k, v], project_dir)
+    for k, v in _GIT_CONFIG:                     # always ensure identity (needed before commit)
+        _run(["config", k, v], project_dir)
     _ensure_gitignore(project_dir)
     _untrack_ignored(project_dir)
 

@@ -171,6 +171,13 @@ async def _activate_current() -> dict:
     # dir — never auto-create files in a fresh dir (that stays opt-in via /api/setup-workdir).
     if workdir.is_ready():
         workdir.setup()
+        # setup() just (re)wrote the app-managed tooling files; make sure version control
+        # isn't tracking them (or crash dumps), so 'dirty'/'current version' reflect the DECK
+        # only — not scaffolding that changes on every open. Idempotent, no-op once clean.
+        try:
+            vcs.migrate(runtime.project_dir())
+        except Exception:
+            pass
     return {
         "file": str(runtime.current_file()),
         "project": str(runtime.project_dir()),
@@ -282,6 +289,14 @@ async def pty_ws(websocket: WebSocket):
             os.environ.pop(k, None)  # keep ANTHROPIC_* (auth) and CLAUDE_CONFIG_DIR untouched
         path = os.environ.get("PATH", "")
         cleaned = ":".join(p for p in path.split(":") if "cmux" not in p.lower() and p)
+        # Persist agent self-updates. Codex updates via npm -> point the global prefix at a
+        # PERSISTED dir (the wrapper prefers it; kept OFF the front of PATH so the MCP wrapper at
+        # /usr/local/bin/codex still wins). Claude's native updater already targets ~/.local/bin,
+        # which the entrypoint now persists — make sure it's on PATH so the updated build is used.
+        home = os.path.expanduser("~")
+        ws = os.environ.get("TCB_BROWSE_ROOT", "/workspace")
+        os.environ["NPM_CONFIG_PREFIX"] = f"{ws}/.agent-home/codex-npm"
+        cleaned = f"{home}/.local/bin:{cleaned}:{ws}/.agent-home/codex-npm/bin"
         if cleaned:
             os.environ["PATH"] = cleaned
         os.execvp(shell, [shell, "-l"])
@@ -315,6 +330,13 @@ async def pty_ws(websocket: WebSocket):
                 await websocket.send_bytes(data)
             except Exception:
                 break
+        # The PTY hit EOF — the shell exited (`exit`, Ctrl-D, or the process died). Close the
+        # socket so the browser's onclose fires and it can relaunch a FRESH shell. Without this
+        # the receive loop below would block forever on a dead shell and the terminal would hang.
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
     send_task = asyncio.create_task(sender())
     try:
@@ -531,6 +553,7 @@ async def slide_map():
     # match a page's note text to a source #speaker-note so it stays editable
     raw_by_text = {n["text"].strip(): n["raw"] for n in src_notes}
     sl_by_text = {n["text"].strip(): n["slide_line"] for n in src_notes}
+    nl_by_text = {n["text"].strip(): n["note_line"] for n in src_notes}   # source line of the #speaker-note
     openers = notes_mod.slide_open_lines()   # slide opener lines, in document order
     by_page = {p["page"]: p for p in pdfpc}
     total = len(typst_service.list_pages())
@@ -570,6 +593,7 @@ async def slide_map():
             "sub_total": (si.get("sub_total") if si else None),
             "note": note,
             "note_raw": raw_by_text.get(note.strip()),
+            "note_line": nl_by_text.get(note.strip()),
         })
     slide_total = max((r["slide_no"] for r in out), default=0)
     for r in out:
@@ -586,6 +610,38 @@ async def slide_map():
             if t and t not in rendered:
                 orphans.append({"text": t[:80], "slide_line": n.get("slide_line")})
     return {"pages": out, "total": total, "orphans": orphans}
+
+
+@app.get("/api/locate")
+async def api_locate(page: Optional[int] = None, slide: Optional[int] = None):
+    """Resolve a 1-based PAGE (a rendered subslide, as counted in the preview) or SLIDE (a
+    `#slide[...]` call; one slide can render as several pages) to SOURCE LINES. These are
+    DIFFERENT: a page maps to its enclosing slide's opener + a subslide index; a slide spans
+    opener..close and may cover several pages."""
+    smap = await slide_map()
+    pages = smap.get("pages", [])
+    if page is not None:
+        row = next((r for r in pages if r.get("page") == page), None)
+        if not row:
+            return {"ok": False, "error": f"no page {page} (deck has {smap.get('total', 0)} pages)"}
+        si = slidemap.slide_info(page) or {}
+        return {"ok": True, "kind": "page", "page": page, "slide_no": row.get("slide_no"),
+                "slide_line": row.get("slide_line"), "slide_end": si.get("slide_end"),
+                "section": row.get("section"), "sub_index": row.get("sub_index"),
+                "sub_total": row.get("sub_total"), "sub_lines": si.get("sub_lines"),
+                "note_line": row.get("note_line"), "note_raw": row.get("note_raw")}
+    if slide is not None:
+        rows = [r for r in pages if r.get("slide_no") == slide]
+        if not rows:
+            return {"ok": False, "error": f"no slide {slide}"}
+        first = rows[0]
+        si = slidemap.slide_info(first.get("page")) or {}
+        return {"ok": True, "kind": "slide", "slide_no": slide,
+                "pages": [r.get("page") for r in rows],
+                "slide_line": first.get("slide_line"), "slide_end": si.get("slide_end"),
+                "section": first.get("section"), "sub_total": len(rows),
+                "note_lines": [r.get("note_line") for r in rows if r.get("note_line")]}
+    return {"ok": False, "error": "pass page= or slide= (1-based)"}
 
 
 @app.get("/api/notes/export")
@@ -1007,24 +1063,17 @@ async def write_project_file(request: Request):
 
 
 @app.post("/api/project/files/upload")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload a file into the active project directory."""
+async def upload_file(file: UploadFile = File(...), dest: str = ""):
+    """Upload a file into the project root or a selected project folder."""
     if not _has_valid_file():
         raise HTTPException(400, "no active project")
-    project_dir = runtime.project_dir()
-    name = file.filename or "upload"
-    import re as _re
-    name = _re.sub(r'[\\/:*?"<>|]', "_", name)
-    target = project_dir / name
-    if target.exists():
-        stem, suffix = target.stem, target.suffix
-        i = 1
-        while target.exists():
-            target = project_dir / f"{stem}_{i}{suffix}"
-            i += 1
     content = await file.read()
-    target.write_bytes(content)
-    return {"ok": True, "path": target.name, "size": len(content)}
+    try:
+        return projects_mod.store_upload(runtime.project_dir(), file.filename or "upload", content, dest)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/project/files/download")
@@ -1177,6 +1226,17 @@ def comments(status: Optional[str] = None, file: Optional[str] = None):
     return store.list_comments(status, file)
 
 
+def _line_span(src: str, line1) -> list | None:
+    """Code-point [from, to) of a 1-based line's content (excluding its trailing newline)."""
+    if not line1:
+        return None
+    lines = src.split("\n")
+    if not (1 <= line1 <= len(lines)):
+        return None
+    start = sum(len(l) + 1 for l in lines[:line1 - 1])
+    return [start, start + len(lines[line1 - 1])]
+
+
 @app.post("/api/comments")
 async def add(request: Request):
     items = await request.json()
@@ -1204,8 +1264,17 @@ async def add(request: Request):
         # StickyIndex (Yjs RelativePosition) so the comment follows the text across later
         # edits by either the human or the agent. Best-effort — never block comment create.
         if not p.get("rel_anchors"):
-            spans = [[s["from"], s["to"]] for s in (p.get("selections") or p.get("selection") or [])
+            sels = p.get("selections") or p.get("selection") or []
+            spans = [[s["from"], s["to"]] for s in sels
                      if isinstance(s, dict) and s.get("from") is not None and s.get("to") is not None]
+            # Page selections carry no from/to, so anchor the slide OPENER line (from the
+            # enriched slide_info) — this gives page comments a live `location` too, instead
+            # of relying on frozen line numbers baked into raw_context.
+            for s in sels:
+                if isinstance(s, dict) and s.get("kind") == "page":
+                    span = _line_span(src, (s.get("slide") or {}).get("slide_line"))
+                    if span:
+                        spans.append(span)
             if spans:
                 try:
                     p["rel_anchors"] = await docstore.make_rel_anchors(spans, p.get("file"))

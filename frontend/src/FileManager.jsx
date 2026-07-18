@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
+import { toast } from './Toaster.jsx'
 
 const VIEWABLE_EXTS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -201,15 +202,25 @@ function TreeRow({ item, depth, activeFile, mainFile, onOpenFile, onViewFile, on
   const isDropTarget = item.type === 'dir'
   function onDragOver(e) {
     if (!isDropTarget) return
-    if (![...e.dataTransfer.types].includes('application/x-fm-move')) return  // file uploads handled at panel
-    e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = 'move'
+    const types = [...e.dataTransfer.types]
+    const isUpload = types.includes('Files')
+    const isMove = types.includes('application/x-fm-move')
+    if (!isUpload && !isMove) return
+    e.preventDefault(); e.stopPropagation()
+    e.dataTransfer.dropEffect = isUpload ? 'copy' : 'move'
+    if (isUpload) dnd.clearRootUploadHover()
     if (!dropHover) setDropHover(true)
   }
   function onDrop(e) {
     if (!isDropTarget) return
+    if (e.dataTransfer.files && e.dataTransfer.files.length) {
+      e.preventDefault(); e.stopPropagation(); setDropHover(false); setExpanded(true)
+      dnd.uploadInto(e.dataTransfer.files, item.path)
+      return
+    }
     const raw = e.dataTransfer.getData('application/x-fm-move')
     if (!raw) return
-    e.preventDefault(); e.stopPropagation(); setDropHover(false)
+    e.preventDefault(); e.stopPropagation(); setDropHover(false); setExpanded(true)
     try { dnd.moveInto(JSON.parse(raw), item.path) } catch {}
   }
 
@@ -221,7 +232,7 @@ function TreeRow({ item, depth, activeFile, mainFile, onOpenFile, onViewFile, on
         draggable={!renaming && !isMain}
         onDragStart={onDragStart}
         onDragOver={onDragOver}
-        onDragLeave={() => dropHover && setDropHover(false)}
+        onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setDropHover(false) }}
         onDrop={onDrop}
       >
         {dnd.selMode && !isMain && (
@@ -427,8 +438,8 @@ function GitPanel({ onRoomChange, setConfirm }) {
         <button
           className="mini git-commit-btn"
           onClick={e => { e.stopPropagation(); setCommitting(c => !c); setTimeout(() => msgRef.current?.focus(), 50) }}
-          title="Save current state as a version"
-          disabled={busy}
+          title={status?.dirty ? 'Save current state as a version' : 'Already at the latest version — no changes to save'}
+          disabled={busy || !status?.dirty}
         >+ Save version</button>
       </div>
 
@@ -446,7 +457,10 @@ function GitPanel({ onRoomChange, setConfirm }) {
                 disabled={busy}
               />
               <div className="git-commit-actions">
-                <button type="submit" className="mini primary" disabled={busy}>{busy ? '…' : 'Save'}</button>
+                {/* Nothing to save when the deck matches the latest version — don't let a click
+                    create a redundant version (the backend also no-ops, but disable for clarity). */}
+                <button type="submit" className="mini primary" disabled={busy || !status?.dirty}
+                        title={status?.dirty ? '' : 'No changes since the last saved version'}>{busy ? '…' : 'Save'}</button>
                 <button type="button" className="mini" onClick={() => setCommitting(false)}>Cancel</button>
               </div>
             </form>
@@ -528,25 +542,32 @@ export default function FileManager({ activeFile, mainFile, onOpenFile, onClose,
     try {
       for (const p of paths) {
         if (p === destDir) continue
-        await api.moveItem(p, destDir)
+        const result = await api.moveItem(p, destDir)
+        if (result.collision_renamed) toast.info(`A same-named item already existed; moved as ${result.name}`)
       }
       setSelected(new Set())
       await load()
     } catch (err) { setError(err.message || 'Move failed') }
   }
   function exitSelMode() { setSelMode(false); setSelected(new Set()); setAnchor(null) }
-  const dnd = { selected, toggleSelect, selectRange, moveInto, selMode }
-
-  async function uploadFiles(fileList) {
+  async function uploadFiles(fileList, destDir = '') {
     const files = [...(fileList || [])]
     if (!files.length) return
     setBusy(true); setError('')
     try {
-      for (const f of files) await api.uploadFile(f)
+      for (const f of files) {
+        const result = await api.uploadFile(f, destDir)
+        if (result.collision_renamed) toast.info(`A same-named file already existed; uploaded as ${result.name}`)
+      }
       await load()
     } catch (err) {
       setError(err.message || 'Upload failed')
     } finally { setBusy(false) }
+  }
+  const dnd = {
+    selected, toggleSelect, selectRange, moveInto, selMode,
+    uploadInto: uploadFiles,
+    clearRootUploadHover: () => setUploadHover(false),
   }
 
   function bulkDelete() {
@@ -725,7 +746,7 @@ export default function FileManager({ activeFile, mainFile, onOpenFile, onClose,
                 if (t.includes('Files')) { e.preventDefault(); if (!uploadHover) setUploadHover(true) }       // external upload
                 else if (t.includes('application/x-fm-move')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move' }  // move to root
               }}
-              onDragLeave={(e) => { if (e.currentTarget === e.target) setUploadHover(false) }}
+              onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget)) setUploadHover(false) }}
               onDrop={(e) => {
                 setUploadHover(false)
                 if (e.dataTransfer.files && e.dataTransfer.files.length) { e.preventDefault(); uploadFiles(e.dataTransfer.files); return }

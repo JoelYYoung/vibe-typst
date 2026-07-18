@@ -99,6 +99,10 @@ a:hover { text-decoration: underline; }
 .term-head code { color: #cdd5df; background: #1d242d; padding: 0 4px; border-radius: 3px; }
 .term-host { flex: 1; min-height: 0; padding: 4px 14px 4px 8px; overflow: hidden; }
 .term-host .xterm { height: 100%; }
+/* Clip the render layer so a wide CJK glyph whose advance exceeds its 2-cell box can't spill
+   past the terminal's right edge (xterm's DOM renderer — the only one compatible with the
+   pinned xterm 6 — doesn't clip glyphs per-cell). Mitigation, not a full metrics fix. */
+.term-host .xterm-screen { overflow: hidden; }
 /* keep xterm's own scrollbar slim so it never sits over the last column */
 .term-host .xterm-viewport::-webkit-scrollbar { width: 8px; }
 .term-host .xterm-viewport::-webkit-scrollbar-thumb { background: #2a3340; border-radius: 4px; }
@@ -135,6 +139,8 @@ a:hover { text-decoration: underline; }
    preserving aspect ratio (letterbox only if the window isn't 16:9). */
 .proj-slide { width: 100vw; height: 100vh; object-fit: contain; display: block; }
 .proj-empty { color: #888; font-size: 18px; }
+.presentation-pointer { position: absolute; width: 18px; height: 18px; box-sizing: border-box; border-radius: 50%; transform: translate(-50%, -50%); background: #e32636; border: 3px solid rgba(255,255,255,.96); box-shadow: 0 0 0 5px rgba(227,38,54,.28), 0 2px 9px rgba(0,0,0,.72); pointer-events: none; z-index: 5; }
+.proj-pointer { width: 22px; height: 22px; box-shadow: 0 0 0 6px rgba(227,38,54,.3), 0 2px 12px rgba(0,0,0,.8); }
 
 /* ---- presenter view (speaker screen) ---- */
 .presenter { position: fixed; inset: 0; z-index: 50; background: #0e1116; color: #e7ecf2; display: flex; flex-direction: column; font-family: -apple-system, sans-serif; }
@@ -159,6 +165,9 @@ a:hover { text-decoration: underline; }
 .pr-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.7fr 1fr; gap: 16px; padding: 16px; }
 .pr-current, .pr-next { background: #000; border-radius: 10px; overflow: hidden; display: flex; align-items: center; justify-content: center; position: relative; }
 .pr-current { min-height: 0; }
+.pr-pointer-surface { touch-action: none; }
+.pr-pointer-surface > .pr-slide { cursor: crosshair; }
+.pr-pointer { z-index: 3; }
 .pr-side { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
 .pr-next { flex: 0 0 38%; }
 .pr-slide { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; }

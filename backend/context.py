@@ -46,7 +46,7 @@ def build_raw_context(payload: dict, source: str) -> str:
                                      f"{info['slide_line']}: {info.get('slide_text')!r}")
                     if info.get("section"):
                         parts.append(f"        section: {info['section']}")
-                    parts.append(f"        slide source spans lines {info['slide_line']}-{info['slide_end']}")
+                    parts.append(f"        slide source spans lines {info['slide_line']}-{info.get('slide_end', '?')}")
                     if info.get("sub_lines"):
                         parts.append(f"        lines that drive subslide {info['sub_index']}:")
                         for ln, txt in info["sub_lines"]:
@@ -67,13 +67,20 @@ def build_raw_context(payload: dict, source: str) -> str:
                 where = f" ({loc})" if loc else ""
                 parts.append(f"  [{i}] element{where}: {text!r}")
                 if isinstance(ln, int) and lines:
+                    # Span the WHOLE selection (start line .. end line), not just ±_PAD around the
+                    # start — a multi-line element would otherwise be truncated after 2 lines.
+                    to_off = s.get("to")
+                    end_ln = (source.count("\n", 0, to_off) + 1) if isinstance(to_off, int) else ln
                     lo = max(1, ln - _PAD)
-                    hi = min(len(lines), ln + _PAD)
+                    hi = min(len(lines), max(ln, end_ln) + _PAD)
                     elem_ranges.setdefault(pg, []).append((lo, hi))
 
         if elem_ranges:
             parts.append("")
-            parts.append("relevant source (deduplicated, merged):")
+            parts.append("relevant source (deduplicated, merged; line numbers are a SNAPSHOT at "
+                         "capture time — for the CURRENT position use the comment's live `location`, "
+                         "and copy exact edit anchors from `location.current_text` / get_document, not "
+                         "from the display-escaped quotes above):")
             for pg in sorted(elem_ranges, key=lambda x: (x is None, x)):
                 for lo, hi in _merge(elem_ranges[pg]):
                     where = f"page {pg}, " if pg is not None else ""
