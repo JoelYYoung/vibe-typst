@@ -545,20 +545,13 @@ class ReplacementTransaction:
                 dir_fd=parent_fd,
             )
             now = os.fstat(candidate_fd)
-            digest = hashlib.sha256()
-            while True:
-                chunk = os.read(candidate_fd, 1024 * 1024)
-                if not chunk:
-                    break
-                digest.update(chunk)
             path_now = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
             if (self.candidate_stat is None
                     or (now.st_dev, now.st_ino)
                     != (self.candidate_stat.st_dev, self.candidate_stat.st_ino)
                     or (path_now.st_dev, path_now.st_ino)
                     != (now.st_dev, now.st_ino)
-                    or self.candidate_digest is None
-                    or digest.hexdigest() != self.candidate_digest):
+                    or self.candidate_digest is None):
                 raise ValueError("candidate changed during replacement")
             os.replace(name, self.parked_candidate.name, src_dir_fd=parent_fd, dst_dir_fd=root_fd)
             _fsync_fd(parent_fd)
@@ -566,6 +559,21 @@ class ReplacementTransaction:
             self._fault("candidate_parked")
             self._write_journal("primary_publish_intent")
             self._fault("primary_publish_intent")
+            parked_now = os.stat(
+                self.parked_candidate.name,
+                dir_fd=root_fd,
+                follow_symlinks=False,
+            )
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(candidate_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            if ((parked_now.st_dev, parked_now.st_ino)
+                    != (now.st_dev, now.st_ino)
+                    or digest.hexdigest() != self.candidate_digest):
+                raise ValueError("candidate changed during replacement")
             _require_regular(self.stable, "stable candidate")
             os.replace(self.stable, self.primary)
             _fsync_dir(self.root)

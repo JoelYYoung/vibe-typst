@@ -566,6 +566,21 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
                 moved_source.rename(move_source)
             self.assertEqual(response.status_code, 400, response.text)
             self.assertTrue(source_unchanged)
+
+            ordinary_dir = project / "ordinary"
+            ordinary_dir.mkdir()
+            ordinary_source = ordinary_dir / "ordinary.txt"
+            ordinary_source.write_text("ordinary", encoding="utf-8")
+            response = await self.client.post(
+                "/api/project/files/move",
+                json={"from": "ordinary/ordinary.txt", "dest": ""},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertFalse(ordinary_source.exists())
+            self.assertEqual(
+                (project / "ordinary.txt").read_text(encoding="utf-8"),
+                "ordinary",
+            )
         finally:
             for relative in synthetic:
                 path = project / relative
@@ -758,6 +773,55 @@ class PdfReplacementTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "candidate changed during replacement"):
             transaction.publish()
 
+        self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+        self.assertEqual(self.candidate.read_bytes(), rewritten_pdf)
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in self.render_dir.iterdir()},
+            render_before,
+        )
+        self.assertFalse((self.root / ".pdf-replacement-journal.json").exists())
+
+    def test_same_inode_rewrite_at_candidate_park_is_rejected_and_preserved(self):
+        self.candidate.write_bytes(self.new_pdf)
+        transaction = self.pdf_service.prepare_replacement(
+            self.root, self.candidate, self.primary, self.render_dir
+        )
+        rewritten_pdf = _pdf_bytes("hot")
+        self.assertEqual(len(rewritten_pdf), len(self.new_pdf))
+        original_stat = self.candidate.stat()
+        real_replace = self.pdf_service.os.replace
+        rewrite_fired = False
+
+        def rewrite_immediately_before_park(source, destination, *args, **kwargs):
+            nonlocal rewrite_fired
+            if (
+                not rewrite_fired
+                and destination == transaction.parked_candidate.name
+                and kwargs.get("dst_dir_fd") is not None
+            ):
+                rewrite_fired = True
+                self.candidate.write_bytes(rewritten_pdf)
+                rewritten_stat = self.candidate.stat()
+                self.assertEqual(
+                    (rewritten_stat.st_dev, rewritten_stat.st_ino),
+                    (original_stat.st_dev, original_stat.st_ino),
+                )
+            return real_replace(source, destination, *args, **kwargs)
+
+        render_before = {
+            path.name: path.read_bytes() for path in self.render_dir.iterdir()
+        }
+        with patch.object(
+            self.pdf_service.os,
+            "replace",
+            side_effect=rewrite_immediately_before_park,
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "candidate changed during replacement"
+            ):
+                transaction.publish()
+
+        self.assertTrue(rewrite_fired)
         self.assertEqual(self.primary.read_bytes(), self.old_pdf)
         self.assertEqual(self.candidate.read_bytes(), rewritten_pdf)
         self.assertEqual(
