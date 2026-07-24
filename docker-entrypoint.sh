@@ -22,6 +22,12 @@ for pair in "$HOME/.claude:claude" "$HOME/.codex:codex" "$HOME/.tcb:tcb" "$HOME/
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then
     continue
   fi
+  # Only migrate real directories. A regular file (or an unexpected symlink) at an agent-home
+  # path may be user data or a misconfiguration; replacing it would be destructive.
+  if [ -L "$link" ] || { [ -e "$link" ] && [ ! -d "$link" ]; }; then
+    echo "[entrypoint] refusing to replace non-directory agent home path: $link" >&2
+    exit 1
+  fi
   if [ -d "$link" ] && [ -n "$(ls -A "$link" 2>/dev/null)" ]; then
     if ! cp -a "$link/." "$target/"; then
       echo "[entrypoint] failed to preserve $link; original left untouched" >&2

@@ -36355,7 +36355,7 @@ WARNING: This link could potentially be dangerous`)) {
       }
       function I$(t, e) {
         const i = t.filter((s) => e === "all" || s.status === e);
-        return e !== "done" ? i : i.sort((s, r) => nb(r).localeCompare(nb(s)) || Number(r.seq || 0) - Number(s.seq || 0));
+        return e !== "done" ? i : i.sort((s, r) => Number(r.done_seq || 0) - Number(s.done_seq || 0) || nb(r).localeCompare(nb(s)) || Number(r.seq || 0) - Number(s.seq || 0));
       }
       const j$ = [
         "pending",

@@ -1,9 +1,11 @@
 import asyncio
 import hashlib
+import importlib.util
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -796,6 +798,48 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(r["rebased"], r)
         self.assertEqual(r["rev"], 2)
 
+    async def test_stale_line_selector_without_expect_refuses_instead_of_editing_wrong_line(self):
+        self._seed("A\nB\nC\n")
+        st = self.docstore._rooms[self.key]
+        with st["doc"].transaction():
+            st["text"].insert(0, "X\n")
+        self.docstore._sync(st)
+        before = self._doc()
+
+        r = await self._edits([
+            {"selector": {"by": "lines", "start": 2, "end": 2}, "text": "agent"}
+        ], base_rev=0)
+
+        self.assertFalse(r["ok"], r)
+        self.assertTrue(r["conflict"], r)
+        self.assertIn("stale", r["error"])
+        self.assertEqual(self._doc(), before)
+        self.assertEqual(st["rev"], 1)
+
+    async def test_invalid_replacement_payload_never_partially_applies_batch(self):
+        cases = [
+            [
+                {"selector": {"by": "anchor", "text": "B"}, "text": 123},
+            ],
+            [
+                {"selector": {"by": "anchor", "text": "A"}, "text": "changed"},
+                {"selector": {"by": "anchor", "text": "B"}, "text": 123},
+            ],
+            [
+                {"selector": {"by": "anchor", "text": "A"}, "text": "changed"},
+                {"selector": {"by": "anchor", "text": "B"}, "text": "ok", "expect": 123},
+            ],
+        ]
+        for edits in cases:
+            with self.subTest(edits=edits):
+                self._seed("A B C\n")
+                before = self._doc()
+                r = await self._edits(edits)
+                self.assertFalse(r["ok"], r)
+                self.assertTrue(r["conflict"], r)
+                self.assertEqual(self._doc(), before)
+                self.assertEqual(self.docstore._rooms[self.key]["rev"], 0)
+
     async def test_stale_base_rev_applies_when_region_unchanged(self):
         self._seed("a\nb\nc\n")
         r1 = await self._edits([{"selector": {"by": "anchor", "text": "a"}, "text": "A"}])
@@ -886,6 +930,7 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
         for c in cases:
             r = await self._edits([c])
             self.assertFalse(r["ok"], c)
+            self.assertIn("context", r)
             self.assertEqual(self._doc(), before)        # nothing applied on any refusal
 
     async def test_invalid_anchor_occurrence_and_side_refuse_without_mutating(self):
@@ -1033,6 +1078,69 @@ class VcsVersioningTest(unittest.TestCase):
         self.assertFalse(result["ok"], result)
         self.assertIn("simulated tag failure", result["error"])
 
+    def test_save_version_reports_add_failure_without_tagging(self):
+        original_run = self.vcs._run
+
+        def fail_add(args, cwd, input=None, env=None):
+            if args[:2] == ["add", "-A"]:
+                return "", "simulated add failure", 1
+            return original_run(args, cwd, input=input, env=env)
+
+        with patch.object(self.vcs, "_run", side_effect=fail_add):
+            result = self.vcs.save_version(self.d, "first")
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("simulated add failure", result["error"])
+        self.assertEqual(self._git("tag", "-l").stdout.strip(), "")
+
+    def test_migrate_preserves_user_gitignore_changes_outside_housekeeping_commit(self):
+        self._tooling()
+        (self.d / ".gitignore").write_text("base-rule\n", encoding="utf-8")
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", "AGENTS.md", ".gitignore")
+        self._git("commit", "-m", "old")
+        (self.d / ".gitignore").write_text("base-rule\nuser-work-in-progress\n", encoding="utf-8")
+
+        self.vcs.migrate(self.d)
+
+        self.assertEqual(self._git("show", "HEAD:.gitignore").stdout, "base-rule\n")
+        self.assertEqual(
+            (self.d / ".gitignore").read_text(encoding="utf-8"),
+            "base-rule\nuser-work-in-progress\n",
+        )
+        self.assertTrue(self.vcs.status(self.d)["dirty"])
+
+    def test_restore_legacy_tag_preserves_live_ignored_database_and_agent_config(self):
+        self._tooling()
+        db = self.d / ".slide-comments.db"
+        db.write_text("old comments\n", encoding="utf-8")
+        (self.d / "AGENTS.md").write_text("old agent config\n", encoding="utf-8")
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", "AGENTS.md", ".slide-comments.db")
+        self._git("commit", "-m", "legacy version")
+        self._git("tag", "-a", "v1", "-m", "Legacy version")
+        self.vcs.migrate(self.d)
+
+        db.write_text("current comments\n", encoding="utf-8")
+        (self.d / "AGENTS.md").write_text("current agent config\n", encoding="utf-8")
+        (self.d / "main.typ").write_text("#slide[current]\n", encoding="utf-8")
+        self.assertEqual(self.vcs.save_version(self.d, "current")["tag"], "v2")
+
+        result = self.vcs.restore_version(self.d, "v1")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((self.d / "main.typ").read_text(encoding="utf-8"), "#slide[hello]\n")
+        self.assertEqual(db.read_text(encoding="utf-8"), "current comments\n")
+        self.assertEqual(
+            (self.d / "AGENTS.md").read_text(encoding="utf-8"),
+            "current agent config\n",
+        )
+        tracked = set(self._git("ls-files").stdout.splitlines())
+        self.assertNotIn(".slide-comments.db", tracked)
+        self.assertNotIn("AGENTS.md", tracked)
+
     def test_migrate_untracks_legacy_tooling_and_keeps_current_version(self):
         # An OLD repo that committed the tooling before it was ignored (the real-world case).
         self._tooling()
@@ -1131,6 +1239,62 @@ class DoneCommentOrderingRegressionTest(unittest.TestCase):
 
         done = self.store.list_comments("done")
         self.assertEqual([c["id"] for c in done], [older["id"], newer["id"]])
+
+    def test_completion_sequence_allocation_waits_for_other_database_writer(self):
+        first = self.store.add_comment({"body": "first"})
+        second = self.store.add_comment({"body": "second"})
+        db_path = str(Path(self._tmp.name) / "comments.db")
+
+        # Load a second copy of the module so it has its own process-local lock and connection,
+        # matching two backend/MCP processes sharing the same SQLite database.
+        spec = importlib.util.spec_from_file_location(
+            "store_second_process_test", ROOT / "backend" / "store.py"
+        )
+        other_store = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(other_store)
+        other_store.set_path(db_path)
+
+        conn = self.store._connect()
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE comments SET status='done', done_seq=1 WHERE id=?",
+            (first["id"],),
+        )
+
+        allocated = threading.Event()
+        original_next = other_store._next_done_seq
+
+        def observed_next(other_conn):
+            value = original_next(other_conn)
+            allocated.set()
+            return value
+
+        errors = []
+
+        def finish_second():
+            try:
+                other_store.set_status(second["id"], "done")
+            except Exception as exc:
+                errors.append(exc)
+
+        try:
+            with patch.object(other_store, "_next_done_seq", side_effect=observed_next):
+                worker = threading.Thread(target=finish_second)
+                worker.start()
+                allocated_while_first_writer_active = allocated.wait(0.2)
+                conn.commit()
+                worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+            self.assertFalse(allocated_while_first_writer_active)
+            self.assertEqual(errors, [])
+            self.assertEqual(
+                [c["done_seq"] for c in self.store.list_comments("done")],
+                [2, 1],
+            )
+        finally:
+            if conn.in_transaction:
+                conn.rollback()
+            other_store.close()
 
 
 class ProjectOpenMigrationRegressionTest(unittest.IsolatedAsyncioTestCase):
@@ -1245,6 +1409,34 @@ class DockerEntrypointMigrationRegressionTest(unittest.TestCase):
                 (source / "credentials.json").read_text(encoding="utf-8"),
                 "keep me\n",
             )
+
+    def test_regular_file_at_agent_home_path_is_preserved_and_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            workspace = root / "workspace"
+            home.mkdir()
+            workspace.mkdir()
+            source = home / ".claude"
+            source.write_text("unexpected but important\n", encoding="utf-8")
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "TCB_BROWSE_ROOT": str(workspace),
+                "TCB_STATE_PATH": str(workspace / ".tcb" / "state.json"),
+            })
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "docker-entrypoint.sh")],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(source.is_symlink())
+            self.assertEqual(source.read_text(encoding="utf-8"), "unexpected but important\n")
 
 
 class ProjectFileOperationsRegressionTest(unittest.TestCase):

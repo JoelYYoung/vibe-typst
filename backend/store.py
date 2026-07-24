@@ -110,6 +110,26 @@ def _connect() -> sqlite3.Connection:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(comments)").fetchall()}
     if "done_seq" not in columns:
         conn.execute("ALTER TABLE comments ADD COLUMN done_seq INTEGER")
+    # Older builds allocated completion sequence numbers outside a database write lock, so two
+    # processes could produce duplicates. Repair such rows once before enforcing the invariant.
+    duplicate = conn.execute(
+        "SELECT 1 FROM comments WHERE done_seq IS NOT NULL "
+        "GROUP BY done_seq HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    if duplicate:
+        rows = conn.execute(
+            "SELECT id FROM comments WHERE done_seq IS NOT NULL "
+            "ORDER BY done_seq, COALESCE(done_at, updated_at, created_at), seq"
+        ).fetchall()
+        for done_seq, row in enumerate(rows, start=1):
+            conn.execute(
+                "UPDATE comments SET done_seq=? WHERE id=?",
+                (done_seq, row["id"]),
+            )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS comments_done_seq_unique "
+        "ON comments(done_seq) WHERE done_seq IS NOT NULL"
+    )
     conn.commit()
     _conn, _conn_path = conn, path
     _maybe_import_legacy(conn, path)
@@ -304,25 +324,36 @@ def update_comment(cid: str, **fields) -> dict | None:
 def set_status(cid: str, status: str, note: str | None = None) -> dict | None:
     with _lock:
         conn = _connect()
-        cur = get_comment(cid)
-        if not cur:
-            return None
-        real_id = cur["id"]
-        now = _now()
-        if status == "done":
-            done_seq = _next_done_seq(conn)
-            conn.execute(
-                "UPDATE comments SET status=?, updated_at=?, done_at=?, done_seq=?, done_note=? "
-                "WHERE id=?",
-                (status, now, now, done_seq, note, real_id),
-            )
-        else:
-            conn.execute(
-                "UPDATE comments SET status=?, updated_at=? WHERE id=?",
-                (status, now, real_id),
-            )
-        _event(conn, real_id, "status", f"{status}: {note or ''}".strip())
-        conn.commit()
+        try:
+            # SQLite serializes BEGIN IMMEDIATE across processes. Allocate done_seq only after
+            # obtaining that database-wide write reservation so MAX()+1 cannot race.
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "SELECT id FROM comments WHERE id = ? OR seq = ?",
+                (cid, str(cid)),
+            ).fetchone()
+            if not cur:
+                conn.rollback()
+                return None
+            real_id = cur["id"]
+            now = _now()
+            if status == "done":
+                done_seq = _next_done_seq(conn)
+                conn.execute(
+                    "UPDATE comments SET status=?, updated_at=?, done_at=?, done_seq=?, done_note=? "
+                    "WHERE id=?",
+                    (status, now, now, done_seq, note, real_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE comments SET status=?, updated_at=? WHERE id=?",
+                    (status, now, real_id),
+                )
+            _event(conn, real_id, "status", f"{status}: {note or ''}".strip())
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return get_comment(real_id)
 
 

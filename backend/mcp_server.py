@@ -300,7 +300,7 @@ def find_in_document(query: str, file: str = "", max_hits: int = 40) -> dict:
 
 
 @mcp.tool()
-def apply_edits(edits: list, base_rev: int = 0, file: str = "") -> dict:
+def apply_edits(edits: list, base_rev: int | None = None, file: str = "") -> dict:
     """Apply a BATCH of edits to the live shared document ATOMICALLY — all succeed or none do.
     This is the most robust way to make several changes at once (e.g. "split this slide into
     two", "rename a term everywhere"): every edit is located against the SAME snapshot and they
@@ -322,7 +322,7 @@ def apply_edits(edits: list, base_rev: int = 0, file: str = "") -> dict:
     retry. Selectors are resolved against the CURRENT document, so a prior edit that removed your
     target makes the next selector fail cleanly rather than hitting the wrong place.""" + " " + _GUARD
     return _backend("POST", "/api/edit", {
-        "op": "apply_edits", "edits": edits, "base_rev": base_rev or None, "file": file or None,
+        "op": "apply_edits", "edits": edits, "base_rev": base_rev, "file": file or None,
     })
 
 
