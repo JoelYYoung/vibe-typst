@@ -285,22 +285,28 @@ class PdfProjectCreationApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(oversize.status_code, 413, oversize.text)
         self.assertEqual(list(self.root.iterdir()), [])
 
-    async def test_chunked_oversize_upload_without_content_length_is_rejected(self):
+    async def test_chunked_oversize_upload_stops_before_the_sentinel_tail(self):
         boundary = "pdf-upload-boundary"
-        body = b"".join([
+        prefix = b"".join([
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nToo large\r\n".encode(),
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"too-large.pdf\"\r\n".encode(),
             b"Content-Type: application/pdf\r\n\r\n",
-            ONE_PAGE_PDF,
-            f"\r\n--{boundary}--\r\n".encode(),
         ])
+        overflow = b"x" * 32
+        sentinel = b"must-not-be-consumed" + f"\r\n--{boundary}--\r\n".encode()
+        consumed = []
 
         async def streamed_body():
-            yield body[:80]
-            yield body[80:]
+            consumed.append("prefix")
+            yield prefix
+            consumed.append("overflow")
+            yield overflow
+            consumed.append("sentinel")
+            yield sentinel
 
         transport = self.httpx.ASGITransport(app=self.app.app)
-        with patch.object(self.app, "MAX_PDF_UPLOAD_BYTES", len(ONE_PAGE_PDF) - 1):
+        with patch.object(self.app, "MAX_PDF_UPLOAD_BYTES", len(prefix) + len(overflow) - 1), \
+             patch.object(self.app, "_PDF_MULTIPART_OVERHEAD_BYTES", 0):
             async with self.httpx.AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.post(
                     "/api/projects/pdf",
@@ -308,6 +314,7 @@ class PdfProjectCreationApiTest(unittest.IsolatedAsyncioTestCase):
                     content=streamed_body(),
                 )
         self.assertEqual(response.status_code, 413, response.text)
+        self.assertEqual(consumed, ["prefix", "overflow"])
         self.assertEqual(list(self.root.iterdir()), [])
 
 class PdfRenderingTest(unittest.TestCase):

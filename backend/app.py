@@ -32,6 +32,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException
+from starlette.requests import Request as StarletteRequest
 
 import app_config
 import context
@@ -59,6 +62,39 @@ MAX_PDF_UPLOAD_BYTES = projects_mod.MAX_PDF_UPLOAD_BYTES
 _PDF_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _PDF_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _PDF_FORM_MAX_PART_BYTES = 16 * 1024
+
+
+class _PdfIngressTooLarge(MultiPartException):
+    """Abort multipart parsing after the bounded ASGI receive wrapper crosses its cap."""
+
+
+class _PdfIngressBoundRequest(StarletteRequest):
+    """Preserve the dedicated ingress-overflow exception through Request.form()."""
+
+    async def _get_form(self, **kwargs):
+        try:
+            return await super()._get_form(**kwargs)
+        except StarletteHTTPException as exc:
+            if isinstance(exc.__context__, _PdfIngressTooLarge):
+                raise exc.__context__
+            raise
+
+
+def _pdf_ingress_bound_request(request: Request) -> StarletteRequest:
+    """Return a request that refuses body chunks beyond the PDF plus multipart cap."""
+    received = 0
+    limit = MAX_PDF_UPLOAD_BYTES + _PDF_MULTIPART_OVERHEAD_BYTES
+
+    async def bounded_receive():
+        nonlocal received
+        message = await request.receive()
+        if message.get("type") == "http.request":
+            received += len(message.get("body", b""))
+            if received > limit:
+                raise _PdfIngressTooLarge("PDF upload is too large")
+        return message
+
+    return _PdfIngressBoundRequest(request.scope, receive=bounded_receive)
 
 
 @dataclass(frozen=True)
@@ -1572,8 +1608,13 @@ async def create_pdf_project(request: Request):
             raise HTTPException(400, "invalid Content-Length") from exc
         if content_length > MAX_PDF_UPLOAD_BYTES + _PDF_MULTIPART_OVERHEAD_BYTES:
             raise HTTPException(413, "PDF upload is too large")
+    bounded_request = _pdf_ingress_bound_request(request)
     try:
-        form = await request.form(max_files=1, max_fields=1, max_part_size=_PDF_FORM_MAX_PART_BYTES)
+        form = await bounded_request.form(
+            max_files=1, max_fields=1, max_part_size=_PDF_FORM_MAX_PART_BYTES,
+        )
+    except _PdfIngressTooLarge as exc:
+        raise HTTPException(413, "PDF upload is too large") from exc
     except Exception as exc:
         raise HTTPException(400, "invalid multipart form") from exc
 
