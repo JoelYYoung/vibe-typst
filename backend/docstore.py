@@ -186,6 +186,12 @@ def _sync(st: dict) -> None:
             _latest[st["key"]] = st["external_guard_new"]
             _schedule(st)
             return
+    previous = _latest.get(st["key"])
+    if previous is not None and current != previous:
+        # Browser/websocket mutations arrive here without passing through apply_edits(). Count
+        # each distinct synchronized snapshot so document revisions describe every writer.
+        # apply_edits refreshes _latest before its deferred observer runs, avoiding a double bump.
+        st["rev"] = st.get("rev", 0) + 1
     _latest[st["key"]] = current
     if not st["writeback"]:
         _schedule(st)
@@ -414,7 +420,11 @@ def _resolve_selector(sel: dict, s: str):
         total = len(offs)
         start = sel.get("start")
         end = sel.get("end")
-        if start is None or start < 1:
+        if isinstance(start, bool) or not isinstance(start, int):
+            return None, None, kind, "line must be an integer >= 1"
+        if end is not None and (isinstance(end, bool) or not isinstance(end, int)):
+            return None, None, kind, "line end must be an integer"
+        if start < 1:
             return None, None, kind, "line must be >= 1"
         if end is None:                                      # insertion point
             at = offs[start - 1] if start <= total else len(s)   # a line past EOF appends
@@ -428,7 +438,10 @@ def _resolve_selector(sel: dict, s: str):
         frm = sel.get("from")
         to = sel.get("to")
         n = len(s)
-        if frm is None or to is None or not (0 <= frm <= to <= n):
+        if (isinstance(frm, bool) or not isinstance(frm, int)
+                or isinstance(to, bool) or not isinstance(to, int)):
+            return None, None, kind, "range offsets must be integers"
+        if not (0 <= frm <= to <= n):
             return None, None, kind, f"range out of bounds (doc len {n})"
         return frm, to, kind, None
     return None, None, kind, f"unknown selector {kind!r}"
@@ -461,6 +474,23 @@ def _selector_of(e: dict) -> dict:
                                   "start", "end", "from", "to") if k in e}
 
 
+def _spans_overlap(a1: int, b1: int, a2: int, b2: int) -> bool:
+    """Whether two snapshot edit spans conflict.
+
+    Multiple insertions at one point are ordered and valid. An insertion at the start or inside
+    a replaced span is ambiguous and rejected; an insertion at its end is an adjacent edit.
+    """
+    point1 = a1 == b1
+    point2 = a2 == b2
+    if point1 and point2:
+        return False
+    if point1:
+        return a2 <= a1 < b2
+    if point2:
+        return a1 <= a2 < b1
+    return max(a1, a2) < min(b1, b2)
+
+
 async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> dict:
     """Apply a BATCH of edits atomically (all-or-nothing) against the current room text. Each
     edit = {"selector": <Selector>, "text": str, "expect"?: str}. On any unresolved selector,
@@ -485,12 +515,13 @@ async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> di
         txt = _line_newline_fixup(kind, s, frm, to, e.get("text", "") or "")
         # Deleting the last line of a file with NO trailing newline: also consume the
         # preceding newline, else a phantom empty line is left behind (e.g. "a\nb\nc" -> "a\nb").
-        if kind == "lines" and not txt and to >= len(s) and frm > 0 and s[frm - 1] == "\n":
+        if (kind == "lines" and not txt and not s.endswith("\n")
+                and to >= len(s) and frm > 0 and s[frm - 1] == "\n"):
             frm -= 1
         resolved.append((frm, to, txt, i))
     ordered = sorted(resolved, key=lambda r: (r[0], r[1]))
     for (a1, b1, *_), (a2, b2, *_) in zip(ordered, ordered[1:]):
-        if a2 < b1:
+        if _spans_overlap(a1, b1, a2, b2):
             return {"ok": False, "conflict": True, "error": "overlapping edits in batch",
                     "rev": cur_rev, "room": st["key"]}
     if resolved:

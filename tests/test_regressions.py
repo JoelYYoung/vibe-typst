@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -544,6 +544,17 @@ class McpFullCoverageTest(unittest.TestCase):
         self.assertIn("overlap", r["error"])
         self.assertEqual(self._doc(), before)
 
+    def test_invalid_anchor_occurrence_refuses_through_mcp(self):
+        before = self._doc()
+        r = self.mcp.apply_edits([
+            {
+                "selector": {"by": "anchor", "text": "Alpha", "occurrence": 2},
+                "text": "wrong place",
+            }
+        ], file="main.typ")
+        self.assertFalse(r["ok"], r)
+        self.assertEqual(self._doc(), before)
+
     def test_comment_sticky_anchor_survives_apply_edits(self):
         m = self.mcp
         c = self._make_comment("Beta", "keep me anchored")
@@ -607,6 +618,17 @@ class SlideEndBracketTest(unittest.TestCase):
 
     def test_bracket_in_comment_is_ignored(self):
         self.assertEqual(self._end('#slide[\n  // a ] comment\n  x\n]\n', 1), 4)
+
+    def test_brackets_in_block_comments_are_ignored(self):
+        source = "#slide[\n  /* outer ]\n     /* nested ] */\n  still comment ] */\n  x\n]\n"
+        self.assertEqual(self._end(source, 1), 6)
+
+    def test_brackets_in_raw_code_are_ignored(self):
+        source = "#slide[\n  ```typ\n  let xs = [1, 2]\n  ]\n  ```\n  x\n]\n"
+        self.assertEqual(self._end(source, 1), 7)
+
+    def test_escaped_markup_bracket_is_ignored(self):
+        self.assertEqual(self._end("#slide[\n  shown \\] literally\n  x\n]\n", 1), 4)
 
     def test_last_slide_stops_at_closing_bracket_not_eof(self):
         # old heuristic (no following opener) returned EOF and ate the appendix; bracket match = line 3
@@ -731,6 +753,49 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(self._doc(), "keep NEW keep2\n")
 
+    async def test_insert_at_replacement_start_conflicts_in_either_input_order(self):
+        replacement = {"selector": {"by": "range", "from": 1, "to": 3}, "text": ""}
+        insertion = {"selector": {"by": "range", "from": 1, "to": 1}, "text": "X"}
+        for edits in ([replacement, insertion], [insertion, replacement]):
+            with self.subTest(edits=edits):
+                self._seed("ABCD")
+                r = await self._edits(edits)
+                self.assertFalse(r["ok"], r)
+                self.assertEqual(r["error"], "overlapping edits in batch")
+                self.assertEqual(self._doc(), "ABCD")
+
+    async def test_delete_last_line_preserves_existing_trailing_newline(self):
+        self._seed("a\nb\n")
+        r = await self._edits([
+            {"selector": {"by": "lines", "start": 2, "end": 2}, "text": ""}
+        ])
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self._doc(), "a\n")
+
+    async def test_delete_final_empty_line_is_a_noop(self):
+        self._seed("a\nb\n")
+        r = await self._edits([
+            {"selector": {"by": "lines", "start": 3, "end": 3}, "text": ""}
+        ])
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(self._doc(), "a\nb\n")
+
+    async def test_browser_originated_change_increments_revision(self):
+        self._seed("alpha\n")
+        st = self.docstore._rooms[self.key]
+        with st["doc"].transaction():
+            st["text"].insert(len(st["text"]), "beta\n")
+
+        self.docstore._sync(st)
+
+        self.assertEqual(st["rev"], 1)
+        r = await self._edits([
+            {"selector": {"by": "anchor", "text": "beta"}, "text": "BETA"}
+        ], base_rev=0)
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["rebased"], r)
+        self.assertEqual(r["rev"], 2)
+
     async def test_stale_base_rev_applies_when_region_unchanged(self):
         self._seed("a\nb\nc\n")
         r1 = await self._edits([{"selector": {"by": "anchor", "text": "a"}, "text": "A"}])
@@ -840,6 +905,21 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(r["conflict"], r)
                 self.assertEqual(self._doc(), before)
 
+    async def test_non_numeric_line_and_range_selectors_refuse_without_mutating(self):
+        cases = [
+            {"selector": {"by": "lines", "start": "2", "end": 2}, "text": "X"},
+            {"selector": {"by": "lines", "start": 1, "end": "2"}, "text": "X"},
+            {"selector": {"by": "range", "from": "0", "to": 1}, "text": "X"},
+            {"selector": {"by": "range", "from": 0, "to": None}, "text": "X"},
+        ]
+        for edit in cases:
+            with self.subTest(selector=edit["selector"]):
+                self._seed("a\nb\n")
+                before = self._doc()
+                r = await self._edits([edit])
+                self.assertFalse(r["ok"], r)
+                self.assertEqual(self._doc(), before)
+
     async def test_comment_anchor_stays_in_bounds_after_delete_then_reinsert(self):
         self._seed("alpha beta gamma\n")
         rel = await self.docstore.make_rel_anchors([[6, 10]], "main.typ")   # "beta"
@@ -939,6 +1019,20 @@ class VcsVersioningTest(unittest.TestCase):
         self.assertTrue(self.vcs.status(self.d)["dirty"])
         self.assertEqual(self.vcs.save_version(self.d, "second")["tag"], "v2")
 
+    def test_save_version_reports_annotated_tag_failure(self):
+        original_run = self.vcs._run
+
+        def fail_tag(args, cwd, input=None, env=None):
+            if args[:2] == ["tag", "-a"]:
+                return "", "simulated tag failure", 1
+            return original_run(args, cwd, input=input, env=env)
+
+        with patch.object(self.vcs, "_run", side_effect=fail_tag):
+            result = self.vcs.save_version(self.d, "first")
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("simulated tag failure", result["error"])
+
     def test_migrate_untracks_legacy_tooling_and_keeps_current_version(self):
         # An OLD repo that committed the tooling before it was ignored (the real-world case).
         self._tooling()
@@ -1026,6 +1120,92 @@ class DoneCommentOrderingRegressionTest(unittest.TestCase):
         done = self.store.list_comments("done")
         self.assertEqual([c["id"] for c in done], [newer["id"], older["id"]])
         self.assertEqual([c["seq"] for c in self.store.list_comments()], [1, 2])
+
+    def test_completion_order_is_stable_when_timestamps_are_identical(self):
+        same_time = "2026-07-18T09:00:00"
+        with patch.object(self.store, "_now", return_value=same_time):
+            older = self.store.add_comment({"body": "created first"})
+            newer = self.store.add_comment({"body": "created second"})
+            self.store.set_status(newer["id"], "done")
+            self.store.set_status(older["id"], "done")
+
+        done = self.store.list_comments("done")
+        self.assertEqual([c["id"] for c in done], [older["id"], newer["id"]])
+
+
+class ProjectOpenMigrationRegressionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_open_project_migrates_vcs_after_workdir_setup(self):
+        import app
+
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            main = project / "main.typ"
+            main.write_text("#slide[test]\n", encoding="utf-8")
+            info = {
+                "id": "project-id",
+                "name": "Project",
+                "path": str(project),
+                "main_file": "main.typ",
+            }
+
+            def set_runtime_file(path):
+                app.runtime._state["file"] = str(Path(path).resolve())
+                return app.runtime._state["file"]
+
+            previous_file = app.runtime._state.get("file")
+            previous_project = app._active_project
+            try:
+                with (
+                    patch.object(app.projects_mod, "get_project", return_value=info),
+                    patch.object(app.runtime, "set_file", side_effect=set_runtime_file),
+                    patch.object(app.store, "set_path"),
+                    patch.object(app.runtime, "backup"),
+                    patch.object(app.docstore, "ensure_room", new=AsyncMock()),
+                    patch.object(app.resolver, "start"),
+                    patch.object(app.workdir, "setup", return_value={}),
+                    patch.object(app.vcs, "migrate") as migrate,
+                ):
+                    result = await app.open_project("project-id")
+            finally:
+                app.runtime._state["file"] = previous_file
+                app._active_project = previous_project
+
+            self.assertTrue(result["ok"])
+            migrate.assert_called_once_with(project.resolve())
+
+    async def test_setup_workdir_endpoint_also_migrates_vcs(self):
+        import app
+
+        project = Path("/tmp/vibe-typst-setup-test")
+        with (
+            patch.object(app.workdir, "setup", return_value={"agents": "ok"}),
+            patch.object(app.workdir, "is_ready", return_value=True),
+            patch.object(app.runtime, "project_dir", return_value=project),
+            patch.object(app.vcs, "migrate") as migrate,
+        ):
+            result = app.setup_workdir()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["agents"], "ok")
+        migrate.assert_called_once_with(project)
+
+
+class McpUrlEncodingRegressionTest(unittest.TestCase):
+    def test_document_file_query_is_url_encoded(self):
+        import mcp_server
+
+        with patch.object(
+            mcp_server,
+            "_backend",
+            return_value={"source": "deck", "file": "folder/a & #.typ", "rev": 4},
+        ) as backend:
+            source, label, rev = mcp_server._fetch_source("folder/a & #.typ")
+
+        self.assertEqual((source, label, rev), ("deck", "folder/a & #.typ", 4))
+        backend.assert_called_once_with(
+            "GET",
+            "/api/document?file=folder%2Fa+%26+%23.typ",
+        )
 
 
 class DockerEntrypointMigrationRegressionTest(unittest.TestCase):

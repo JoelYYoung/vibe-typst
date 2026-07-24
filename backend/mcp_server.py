@@ -25,6 +25,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -210,7 +211,8 @@ def locate(page: int = 0, slide: int = 0) -> dict:
 # ----------------------------------------------------------------- document edits
 def _fetch_source(file: str):
     """Return (source_text, file_label, rev) from the live backend, or (None, error_dict, 0)."""
-    r = _backend("GET", "/api/document" + (f"?file={file}" if file else ""))
+    query = f"?{urllib.parse.urlencode({'file': file})}" if file else ""
+    r = _backend("GET", f"/api/document{query}")
     src = r.get("source")
     if not isinstance(src, str):
         return None, r, 0
@@ -233,9 +235,9 @@ def get_document(file: str = "", offset: int = 1, limit: int = 0) -> dict:
     page forward, call get_document(offset=<previous end + 1>).
 
     The response reports `total_lines`, the `shown` range, and `truncated`/`next` so you
-    know whether more remains. Line numbers are for LOCATING and reading only — never edit
-    by line number (lines shift after every edit); edit with the anchor tools using exact
-    text snippets. """ + _GUARD
+    know whether more remains. Line numbers identify the current snapshot only; when using
+    line selectors, pass the reported `rev` as `base_rev` and re-read after any conflict.
+    Prefer exact anchors plus `expect` when the target text is distinctive. """ + _GUARD
     src, label, rev = _fetch_source(file)
     if src is None:
         return label  # error dict from the backend
@@ -259,9 +261,9 @@ def get_document(file: str = "", offset: int = 1, limit: int = 0) -> dict:
         "truncated": more,
         "next": (f"more below — read on with get_document(offset={end + 1})" if more else None),
         "text": numbered,
-        "hint": "Read windows, not the whole file. EDIT via replace_anchor / "
-                "insert_before_anchor / insert_after_anchor using exact snippets, never by "
-                "line number. " + _GUARD,
+        "hint": "Read windows, not the whole file. Prefer apply_edits with exact anchors and "
+                "`expect`; line selectors are supported for the current snapshot when paired "
+                "with its `rev`. " + _GUARD,
     }
 
 

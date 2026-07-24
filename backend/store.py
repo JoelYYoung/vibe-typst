@@ -94,6 +94,7 @@ def _connect() -> sqlite3.Connection:
             created_at    TEXT,
             updated_at    TEXT,
             done_at       TEXT,
+            done_seq      INTEGER,
             done_note     TEXT
         );
         CREATE TABLE IF NOT EXISTS comment_events (
@@ -106,6 +107,9 @@ def _connect() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
         """
     )
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(comments)").fetchall()}
+    if "done_seq" not in columns:
+        conn.execute("ALTER TABLE comments ADD COLUMN done_seq INTEGER")
     conn.commit()
     _conn, _conn_path = conn, path
     _maybe_import_legacy(conn, path)
@@ -114,6 +118,11 @@ def _connect() -> sqlite3.Connection:
 
 def _next_seq(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM comments").fetchone()
+    return int(row["n"])
+
+
+def _next_done_seq(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COALESCE(MAX(done_seq), 0) + 1 AS n FROM comments").fetchone()
     return int(row["n"])
 
 
@@ -145,6 +154,7 @@ def _maybe_import_legacy(conn: sqlite3.Connection, path: str) -> None:
                     "created_at": c.get("created_at") or _now(),
                     "updated_at": c.get("updated_at") or _now(),
                     "done_at": c.get("done_at"),
+                    "done_seq": c.get("done_seq"),
                     "done_note": c.get("done_note"),
                 })
         except Exception:
@@ -206,7 +216,10 @@ def list_comments(status: str | None = None, file: str | None = None) -> list:
         if status == "done":
             # Completion order is independent of creation order: an old request resolved now
             # belongs above a newer request resolved yesterday. Legacy rows may lack done_at.
-            q += " ORDER BY COALESCE(done_at, updated_at, created_at) DESC, seq DESC"
+            q += (
+                " ORDER BY COALESCE(done_seq, 0) DESC, "
+                "COALESCE(done_at, updated_at, created_at) DESC, seq DESC"
+            )
         else:
             q += " ORDER BY seq"
         return [_row_to_dict(r) for r in conn.execute(q, args).fetchall()]
@@ -255,6 +268,7 @@ def add_comment(payload: dict) -> dict:
             "created_at": now,
             "updated_at": now,
             "done_at": None,
+            "done_seq": None,
             "done_note": None,
         }
         _insert_row(conn, row)
@@ -296,9 +310,11 @@ def set_status(cid: str, status: str, note: str | None = None) -> dict | None:
         real_id = cur["id"]
         now = _now()
         if status == "done":
+            done_seq = _next_done_seq(conn)
             conn.execute(
-                "UPDATE comments SET status=?, updated_at=?, done_at=?, done_note=? WHERE id=?",
-                (status, now, now, note, real_id),
+                "UPDATE comments SET status=?, updated_at=?, done_at=?, done_seq=?, done_note=? "
+                "WHERE id=?",
+                (status, now, now, done_seq, note, real_id),
             )
         else:
             conn.execute(

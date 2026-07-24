@@ -245,7 +245,9 @@ def save_version(project_dir: Path, message: str = "") -> dict:
         if existing:
             return {"ok": True, "tag": existing, "skipped": True}
     tag = _next_tag(project_dir)
-    _run(["tag", "-a", tag, "-m", msg or tag], project_dir)
+    out, err, rc = _run(["tag", "-a", tag, "-m", msg or tag], project_dir)
+    if rc != 0:
+        return {"ok": False, "error": err or out or "could not create version tag"}
     return {"ok": True, "tag": tag}
 
 
