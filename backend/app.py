@@ -1040,9 +1040,17 @@ async def slide_map():
         try:
             expected = _capture_pdf_identity()
             def observe(_pdf_path, page_count):
+                transcripts = pdf_transcript.load(expected.pdf.parent, expected.pdf.name, page_count)
+                page_notes = transcripts.get("pages", {})
                 pages = [{"page": page, "slide_no": page, "slide_total": page_count,
-                          "project_type": "pdf"} for page in range(1, page_count + 1)]
-                return {"pages": pages, "total": page_count, "orphans": []}
+                          "project_type": "pdf",
+                          "note": (page_notes.get(str(page), {}) or {}).get("text", "")}
+                         for page in range(1, page_count + 1)]
+                orphans = [
+                    {"page": int(page), "text": (entry or {}).get("text", "")}
+                    for page, entry in sorted(transcripts.get("orphans", {}).items(), key=lambda item: int(item[0]))
+                ]
+                return {"pages": pages, "total": page_count, "orphans": orphans}
             return await asyncio.to_thread(_locked_pdf_observation, observe, expected)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
