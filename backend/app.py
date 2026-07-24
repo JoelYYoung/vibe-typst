@@ -9,10 +9,12 @@ Run from this directory:
 """
 import asyncio
 import fcntl
+import hashlib
 import io
 import json
 import os
 import pty
+import re
 import signal
 import struct
 import subprocess
@@ -32,6 +34,8 @@ import context
 import docstore
 import notes as notes_mod
 import projects as projects_mod
+import pdf_service
+import pdf_transcript
 import resolver
 import runtime
 import slidemap
@@ -45,6 +49,151 @@ HERE = Path(__file__).resolve().parent
 
 # ── active project (in-memory; cleared on restart unless runtime state persists the file) ──
 _active_project: dict | None = None
+_pdf_render_state = {"fingerprint": None, "version": 0}
+_PDF_PAGE_NAME = re.compile(r"page-([1-9][0-9]*)\.png$")
+
+
+def _project_document(info: dict) -> tuple[str, Path]:
+    """Validate immutable project metadata before activating its primary document."""
+    project_type = info.get("type", "typst")
+    if project_type not in {"typst", "pdf"}:
+        raise ValueError("unsupported project type")
+    project_dir = Path(info["path"]).resolve()
+    main_name = info.get("main_file")
+    if not isinstance(main_name, str) or not main_name:
+        raise ValueError("project main file is invalid")
+    main_path = (project_dir / main_name).resolve()
+    try:
+        main_path.relative_to(project_dir)
+    except ValueError as exc:
+        raise ValueError("project main file escapes its project") from exc
+    if project_type == "pdf":
+        if main_name != "document.pdf" or main_path.parent != project_dir:
+            raise ValueError("PDF project main file must be document.pdf")
+        if main_path.suffix.lower() != ".pdf":
+            raise ValueError("PDF project has an invalid document type")
+    elif main_path.suffix.lower() != ".typ":
+        raise ValueError("Typst project has an invalid main file")
+    if not main_path.is_file():
+        raise ValueError(f"main file {main_name!r} not found in project")
+    return project_type, main_path
+
+
+def _pdf_pages(path: Path | None = None) -> list[str]:
+    directory = runtime.render_dir(path)
+    if not directory.is_dir():
+        return []
+    pages = [path.name for path in directory.iterdir()
+             if path.is_file() and _PDF_PAGE_NAME.fullmatch(path.name)]
+    return sorted(pages, key=lambda name: int(_PDF_PAGE_NAME.fullmatch(name).group(1)))
+
+
+def _pdf_context() -> tuple[Path, int]:
+    """Return the active immutable PDF primary document and its actual page count."""
+    if not _active_project or _active_project.get("type") != "pdf":
+        raise ValueError("no active PDF project")
+    project_type, pdf_path = _project_document(_active_project)
+    if project_type != "pdf" or runtime.document_type() != "pdf":
+        raise ValueError("active document is not the project PDF")
+    if runtime.current_file().resolve() != pdf_path:
+        raise ValueError("active document does not match the project PDF")
+    return pdf_path, pdf_service.inspect_pdf(pdf_path)["page_count"]
+
+
+def _matching_pdf_project(pdf_path: Path) -> dict | None:
+    """Return immutable metadata only when ``pdf_path`` is a project's document.pdf."""
+    root = app_config.get_projects_root()
+    if root is None:
+        return None
+    root = Path(root).resolve()
+    pdf_path = pdf_path.resolve()
+    if pdf_path.name != "document.pdf" or pdf_path.parent.parent != root:
+        return None
+    try:
+        info = projects_mod.get_project(pdf_path.parent.name)
+        project_type, main_path = _project_document(info)
+    except (FileNotFoundError, ValueError):
+        return None
+    return info if project_type == "pdf" and main_path == pdf_path else None
+
+
+def _record_pdf_render_version(pages: list[str], path: Path | None = None) -> int:
+    digest = hashlib.sha1()
+    for name in pages:
+        page = runtime.render_dir(path) / name
+        digest.update(name.encode("utf-8"))
+        digest.update(page.read_bytes())
+    fingerprint = digest.hexdigest()
+    if _pdf_render_state["fingerprint"] != fingerprint:
+        _pdf_render_state["fingerprint"] = fingerprint
+        _pdf_render_state["version"] += 1
+    return _pdf_render_state["version"]
+
+
+def _pdf_render_version() -> int:
+    pages = _pdf_pages()
+    if not pages:
+        return _pdf_render_state["version"]
+    return _record_pdf_render_version(pages)
+
+
+def _prepare_pdf(pdf_path: Path, project_pdf: bool) -> tuple[dict, dict | None]:
+    """Render/reconcile before disrupting the active Typst runtime."""
+    rendered = pdf_service.render_pdf(pdf_path, runtime.render_dir(pdf_path))
+    transcripts = (pdf_transcript.load(pdf_path.parent, "document.pdf", rendered["page_count"])
+                   if project_pdf else None)
+    return rendered, transcripts
+
+
+def _pdf_activation_response(rendered: dict, transcripts: dict | None) -> dict:
+    version = _record_pdf_render_version(rendered["pages"], runtime.current_file())
+    return {
+        "file": str(runtime.current_file()), "project": str(runtime.project_dir()),
+        "project_name": (_active_project or {}).get("name", ""), "mode": app_config.APP_MODE,
+        "project_type": "pdf", "main": runtime.current_main(),
+        "selected_file": runtime.current_main(), "source": "", "pages": rendered["pages"],
+        "tokens": {}, "version": version, "transcripts": transcripts,
+    }
+
+
+def _activate_pdf() -> dict:
+    """Render a PDF without creating any Typst resolver, CRDT, comment, or workdir state."""
+    if _active_project is None:
+        pdf_path = runtime.current_file()
+        if runtime.document_type() != "pdf" or not pdf_path.is_file():
+            raise ValueError("no active PDF document")
+        project_pdf = False
+    else:
+        pdf_path, _ = _pdf_context()
+        project_pdf = True
+    rendered, transcripts = _prepare_pdf(pdf_path, project_pdf)
+    resolver.stop()
+    try:
+        store.close()
+    except Exception:
+        pass
+    return _pdf_activation_response(rendered, transcripts)
+
+
+def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
+    """Prepare PDF state before publishing a switch away from a Typst project."""
+    global _active_project
+    rendered, transcripts = _prepare_pdf(pdf_path, project_pdf=True)
+    previous_file = runtime._state.get("file")
+    previous_project = _active_project
+    try:
+        runtime.set_file(str(pdf_path))
+        _active_project = info
+        resolver.stop()
+        try:
+            store.close()
+        except Exception:
+            pass
+        return _pdf_activation_response(rendered, transcripts)
+    except Exception:
+        _active_project = previous_project
+        runtime.restore_file(previous_file)
+        raise
 
 
 def _has_valid_file() -> bool:
@@ -57,15 +206,27 @@ def _has_valid_file() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _active_project
     async with docstore.server:
         docstore.set_loop(asyncio.get_running_loop())
         # In local mode, there may be no configured project yet → skip resolver startup.
         # The resolver is started (or restarted) when the user opens a project.
         if _has_valid_file():
-            store.set_path(str(runtime.store_path()))
-            runtime.backup()
-            await docstore.ensure_room()
-            resolver.start()
+            if runtime.document_type() == "pdf":
+                # A persisted PDF is usable only when immutable project metadata agrees.
+                # Never reconstruct a CRDT/resolver room for a PDF restart.
+                info = _matching_pdf_project(runtime.current_file())
+                if info is not None:
+                    _active_project = info
+                    try:
+                        _activate_pdf()
+                    except Exception:
+                        _active_project = None
+            else:
+                store.set_path(str(runtime.store_path()))
+                runtime.backup()
+                await docstore.ensure_room()
+                resolver.start()
         try:
             yield
         finally:
@@ -89,6 +250,9 @@ def current_source() -> str:
 # ---------------------------------------------------------------- crdt websocket
 @app.websocket("/ws/{room}")
 async def yjs_ws(websocket: WebSocket, room: str):
+    if runtime.document_type() == "pdf":
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     await docstore.ensure_room_by_key(room)
     try:
@@ -102,9 +266,26 @@ async def yjs_ws(websocket: WebSocket, room: str):
 # ---------------------------------------------------------------- state / files
 @app.get("/api/state")
 def state():
+    if runtime.document_type() == "pdf":
+        pages = _pdf_pages()
+        return {
+            "project": str(runtime.project_dir()),
+            "project_name": (_active_project or {}).get("name", ""),
+            "project_type": "pdf",
+            "mode": app_config.APP_MODE,
+            "file": str(runtime.current_file()),
+            "main": runtime.current_main(),
+            "selected_file": runtime.current_main(),
+            "ppi": PPI,
+            "source": "",
+            "pages": pages,
+            "tokens": {},
+            "version": _pdf_render_version(),
+        }
     return {
         "project": str(runtime.project_dir()),
         "project_name": (_active_project or {}).get("name", ""),
+        "project_type": "typst",
         "mode": app_config.APP_MODE,
         "file": str(runtime.current_file()),
         "main": runtime.current_main(),
@@ -122,6 +303,9 @@ def state():
 
 @app.get("/api/render-version")
 def render_version():
+    if runtime.document_type() == "pdf":
+        return {"version": _pdf_render_version(), "pages": _pdf_pages(), "tokens": {},
+                "project_type": "pdf", "error": None}
     st = resolver.status()
     return {"version": st["version"], "pages": typst_service.list_pages(),
             "tokens": typst_service.page_tokens(),
@@ -171,6 +355,8 @@ def _setup_workdir_and_migrate() -> dict:
 
 async def _activate_current() -> dict:
     """Common work after the active file changes: backup, store, working-dir, room, render."""
+    if runtime.document_type() == "pdf":
+        return _activate_pdf()
     runtime.backup()  # snapshot the file before touching it
     store.set_path(str(runtime.store_path()))  # follow the file's directory
     await docstore.ensure_room()
@@ -200,11 +386,26 @@ async def _activate_current() -> dict:
 
 @app.post("/api/open-file")
 async def open_file(request: Request):
+    global _active_project
     body = await request.json()
+    requested = (body or {}).get("path", "")
     try:
-        runtime.set_file((body or {}).get("path", ""))
+        requested_path = Path(requested).expanduser().resolve()
+    except Exception as e:
+        raise HTTPException(400, "invalid file path") from e
+    if requested_path.suffix.lower() == ".pdf":
+        info = _matching_pdf_project(requested_path)
+        if info is None:
+            raise HTTPException(400, "open PDF files through a matching PDF project")
+        try:
+            return _activate_pdf_project(info, requested_path)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    try:
+        runtime.set_file(requested)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    _active_project = None
     return await _activate_current()
 
 
@@ -548,6 +749,14 @@ async def create_note(request: Request):
 async def slide_map():
     """Per-page presenter data: section, subslide index, and the **per-page transcript** for that
     page (authoritative, from touying's pdfpc mapping). Used by the inline notes + presenter."""
+    if runtime.document_type() == "pdf":
+        try:
+            _, page_count = _pdf_context()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        pages = [{"page": page, "slide_no": page, "slide_total": page_count,
+                  "project_type": "pdf"} for page in range(1, page_count + 1)]
+        return {"pages": pages, "total": page_count, "orphans": []}
     await docstore.flush_now()  # so the pdfpc query sees the latest content
     loop = asyncio.get_running_loop()
     # per-page notes (pdfpc) + source notes (for the editable raw anchor), in parallel-ish
@@ -613,6 +822,72 @@ async def slide_map():
             if t and t not in rendered:
                 orphans.append({"text": t[:80], "slide_line": n.get("slide_line")})
     return {"pages": out, "total": total, "orphans": orphans}
+
+
+def _pdf_http_context() -> tuple[Path, int]:
+    try:
+        return _pdf_context()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+async def _json_object(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "invalid JSON body") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(400, "JSON body must be an object")
+    return body
+
+
+@app.get("/api/pdf/transcripts")
+def get_pdf_transcripts():
+    _, page_count = _pdf_http_context()
+    try:
+        return pdf_transcript.load(runtime.project_dir(), "document.pdf", page_count)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.patch("/api/pdf/transcripts/{page}")
+async def patch_pdf_transcript(page: str, request: Request):
+    _, page_count = _pdf_http_context()
+    body = await _json_object(request)
+    if set(body) != {"text"} or not isinstance(body.get("text"), str):
+        raise HTTPException(400, "body must contain only string text")
+    try:
+        page_no = int(page)
+        if str(page_no) != page:
+            raise ValueError("page must be a positive integer")
+        return pdf_transcript.set_page(runtime.project_dir(), "document.pdf", page_count,
+                                       page_no, body["text"])
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/api/pdf/transcripts/batch")
+async def patch_pdf_transcripts(request: Request):
+    _, page_count = _pdf_http_context()
+    body = await _json_object(request)
+    if set(body) != {"updates"}:
+        raise HTTPException(400, "body must contain only updates")
+    try:
+        return pdf_transcript.set_pages(runtime.project_dir(), "document.pdf", page_count,
+                                        body["updates"])
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/api/pdf/text")
+def get_pdf_text(page: Optional[int] = None):
+    pdf_path, page_count = _pdf_http_context()
+    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= page_count:
+        raise HTTPException(400, "page must be a page within the document")
+    try:
+        return {"page": page, "text": pdf_service.extract_page_text(pdf_path, page), "ocr": False}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/locate")
@@ -778,6 +1053,11 @@ async def compile_():
 def serve_render(name: str):
     if "/" in name or ".." in name:
         raise HTTPException(400, "bad name")
+    if runtime.document_type() == "pdf":
+        _pdf_http_context()
+        if _PDF_PAGE_NAME.fullmatch(name) is None or name not in _pdf_pages():
+            raise HTTPException(404)
+        return FileResponse(runtime.render_dir() / name, headers={"Cache-Control": "no-cache"})
     p = typst_service.render_path(name)
     if not p.exists():
         raise HTTPException(404)
@@ -921,9 +1201,16 @@ async def open_project(project_id: str):
         info = projects_mod.get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
-    main_path = Path(info["path"]) / info["main_file"]
-    if not main_path.exists():
-        raise HTTPException(400, f"main file {info['main_file']!r} not found in project")
+    try:
+        project_type, main_path = _project_document(info)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if project_type == "pdf":
+        try:
+            _activate_pdf_project(info, main_path)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {"ok": True, "project": info}
     try:
         runtime.set_file(str(main_path))
     except ValueError as e:
@@ -1224,8 +1511,14 @@ async def git_delete(request: Request):
 
 
 # ---------------------------------------------------------------- comments
+def _require_typst_comments() -> None:
+    if runtime.document_type() == "pdf":
+        raise HTTPException(400, "comments are unavailable for PDF projects")
+
+
 @app.get("/api/comments")
 def comments(status: Optional[str] = None, file: Optional[str] = None):
+    _require_typst_comments()
     return store.list_comments(status, file)
 
 
@@ -1242,6 +1535,7 @@ def _line_span(src: str, line1) -> list | None:
 
 @app.post("/api/comments")
 async def add(request: Request):
+    _require_typst_comments()
     items = await request.json()
     payloads = items if isinstance(items, list) else [items]
     src = current_source()
@@ -1291,6 +1585,7 @@ async def add(request: Request):
 async def comment_anchor(cid: str):
     """Resolve a comment's drift-proof StickyIndex anchors to CURRENT code-point spans and
     the live text they now cover (so the UI/agent jumps to the right place after edits)."""
+    _require_typst_comments()
     c = store.get_comment(cid)
     if not c:
         raise HTTPException(404)
@@ -1306,6 +1601,7 @@ async def comment_anchor(cid: str):
 
 @app.patch("/api/comments/{cid}")
 async def patch(cid: str, request: Request):
+    _require_typst_comments()
     fields = await request.json() or {}
     # Editing the comment's text must also update raw_context (what Claude actually reads),
     # or Claude would act on the stale instruction. We swap only the instruction block and
@@ -1322,6 +1618,7 @@ async def patch(cid: str, request: Request):
 
 @app.get("/api/comments/{cid}/events")
 def comment_events(cid: str):
+    _require_typst_comments()
     c = store.get_comment(cid)
     if not c:
         raise HTTPException(404)
@@ -1330,6 +1627,7 @@ def comment_events(cid: str):
 
 @app.post("/api/comments/{cid}/done")
 async def mark_done(cid: str, request: Request):
+    _require_typst_comments()
     try:
         body = await request.json()
     except Exception:
@@ -1342,6 +1640,7 @@ async def mark_done(cid: str, request: Request):
 
 @app.post("/api/comments/{cid}/reopen")
 def reopen(cid: str):
+    _require_typst_comments()
     c = store.set_status(cid, "pending")
     if not c:
         raise HTTPException(404)
@@ -1350,6 +1649,7 @@ def reopen(cid: str):
 
 @app.delete("/api/comments/{cid}")
 def delete(cid: str):
+    _require_typst_comments()
     return {"deleted": store.delete_comment(cid)}
 
 

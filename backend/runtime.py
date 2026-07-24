@@ -1,4 +1,4 @@
-"""Mutable runtime state: which .typ FILE we're working on right now.
+"""Mutable runtime state: which supported document FILE we're working on right now.
 
 The current file is an absolute path. Its directory is the project (tinymist --root,
 comment store live there). The last-opened file is persisted globally so we reopen it
@@ -50,6 +50,19 @@ def current_main() -> str:
     return current_file().name
 
 
+def document_type() -> str:
+    """Return the active document kind without assuming runtime state was initialized.
+
+    ``set_file`` keeps the state constrained to these two suffixes, while the fallback
+    deliberately remains Typst for legacy/default startup state.
+    """
+    try:
+        suffix = current_file().suffix.lower()
+    except Exception:
+        suffix = ""
+    return "pdf" if suffix == ".pdf" else "typst"
+
+
 def main_path() -> Path:
     return current_file()
 
@@ -61,8 +74,8 @@ def store_path() -> Path:
 
 def set_file(path: str) -> str:
     p = Path(path).expanduser().resolve()
-    if p.suffix != ".typ" or not p.exists() or not p.is_file():
-        raise ValueError("not an existing .typ file")
+    if p.suffix.lower() not in {".typ", ".pdf"} or not p.exists() or not p.is_file():
+        raise ValueError("not an existing .typ or .pdf file")
     with _lock:
         _state["file"] = str(p)
         try:
@@ -71,6 +84,24 @@ def set_file(path: str) -> str:
         except Exception:
             pass
     return str(p)
+
+
+def restore_file(path: str | None) -> None:
+    """Restore a prior runtime selection after an activation failure.
+
+    This is intentionally narrower than ``set_file``: it restores a value previously
+    owned by runtime, including the uninitialized ``None`` state.
+    """
+    with _lock:
+        _state["file"] = path
+        try:
+            if path is None:
+                GLOBAL_STATE_PATH.unlink(missing_ok=True)
+            else:
+                GLOBAL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                GLOBAL_STATE_PATH.write_text(json.dumps({"file": path}, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
 
 def backup(path: str | Path | None = None, keep: int = 30, keep_local: int = 15) -> str | None:
@@ -98,7 +129,7 @@ _IGNORE_DIRS = {"node_modules", "__pycache__"}
 
 
 def browse(path: str | None = None) -> dict:
-    """List one directory (any directory the user can read): its subdirectories and .typ
+    """List one directory (any directory the user can read): its subdirectories and documents
     files, plus the parent. Robust: a missing dir / non-dir / permission error returns an
     `error` field instead of raising, so a typed path can never crash the server."""
     if path and path.strip():
@@ -112,7 +143,7 @@ def browse(path: str | None = None) -> dict:
             return {"error": "not a directory", "dirs": [], "files": [], "parent": None}
     else:
         base = project_dir()
-    dirs, typs = [], []
+    dirs, documents = [], []
     try:
         entries = sorted(base.iterdir(), key=lambda e: e.name.lower())
     except PermissionError:
@@ -127,9 +158,9 @@ def browse(path: str | None = None) -> dict:
                 continue
             if entry.is_dir():
                 dirs.append({"name": entry.name, "path": str(entry)})
-            elif entry.suffix == ".typ":
-                typs.append({"name": entry.name, "path": str(entry), "size": entry.stat().st_size})
+            elif entry.suffix.lower() in {".typ", ".pdf"}:
+                documents.append({"name": entry.name, "path": str(entry), "size": entry.stat().st_size})
         except (PermissionError, OSError):
             continue
     parent = str(base.parent) if base.parent != base else None
-    return {"cwd": str(base), "parent": parent, "dirs": dirs, "files": typs}
+    return {"cwd": str(base), "parent": parent, "dirs": dirs, "files": documents}
