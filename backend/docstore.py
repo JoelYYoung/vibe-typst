@@ -394,6 +394,8 @@ def _resolve_selector(sel: dict, s: str):
         occ = sel.get("occurrence", 1)
         if isinstance(occ, bool) or not isinstance(occ, int):
             return None, None, kind, "occurrence must be an integer >= 1"
+        if not isinstance(anchor, str):
+            return None, None, kind, "anchor must be a string"
         if not anchor:
             return None, None, kind, "empty anchor"
         n = s.count(anchor)
@@ -406,6 +408,8 @@ def _resolve_selector(sel: dict, s: str):
                                       "anchor or `occurrence`")
         idx = _find(s, anchor, occ)
         side = sel.get("side", "in")
+        if not isinstance(side, str):
+            return None, None, kind, "anchor side must be a string"
         if side not in {"in", "before", "after"}:
             return None, None, kind, f"unknown anchor side {side!r}"
         if idx < 0:

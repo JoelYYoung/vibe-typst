@@ -346,6 +346,13 @@ def _restore_commit_without_managed_files(
     return safe_commit, None
 
 
+def _tracked_managed_paths(project_dir: Path) -> tuple[list[str] | None, str | None]:
+    out, err, rc = _run(["ls-files"], project_dir)
+    if rc != 0:
+        return None, err or "could not verify protected app-managed files"
+    return [path for path in out.splitlines() if _is_managed_path(path)], None
+
+
 def restore_version(project_dir: Path, tag: str) -> dict:
     """Reset the working tree (and the master branch) to a tagged version.
 
@@ -358,7 +365,19 @@ def restore_version(project_dir: Path, tag: str) -> dict:
     commit, _, rc = _run(["rev-parse", "--verify", f"{tag}^{{commit}}"], project_dir)
     if rc != 0:
         return {"ok": False, "error": "unknown version"}
-    _ensure_excludes(project_dir)
+    # Protect the CURRENT working copies first. A legacy HEAD may still track the live comment
+    # database or generated agent state; checking out even a sanitized target would then delete
+    # those paths. Migration removes them from the current index while leaving their ignored
+    # working copies in place.
+    migrate(project_dir)
+    still_tracked, tracking_error = _tracked_managed_paths(project_dir)
+    if tracking_error or still_tracked is None:
+        return {"ok": False, "error": tracking_error or "could not verify protected files"}
+    if still_tracked:
+        return {
+            "ok": False,
+            "error": "could not protect live app-managed files: " + ", ".join(still_tracked),
+        }
     safe_commit, error = _restore_commit_without_managed_files(project_dir, commit.strip())
     if error or not safe_commit:
         return {"ok": False, "error": error or "could not prepare version"}
