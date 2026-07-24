@@ -2,21 +2,24 @@
 Project management: CRUD operations on the projects root directory.
 
 A project is a subdirectory of the projects root containing:
-  .vibe-typst.json  — metadata (name, created, main_file)
-  main.typ          — auto-generated starter slide deck
+  .vibe-typst.json  — metadata (name, created, type, main_file)
+  main.typ or document.pdf — its immutable primary document
 
 The directory name is a short UUID hex string, decoupled from the display name.
 Renaming a project only updates .vibe-typst.json — the directory path never changes.
 """
 import json
+import os
 import re
 import shutil
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import app_config
+from pdf_service import inspect_pdf
 
 _META_FILE = ".vibe-typst.json"
 
@@ -88,7 +91,9 @@ def _project_info(project_dir: Path) -> dict:
         "id": project_dir.name,
         "name": meta.get("name", project_dir.name),
         "created": meta.get("created"),
+        "type": meta.get("type", "typst"),
         "main_file": main_file,
+        "original_filename": meta.get("original_filename"),
         "path": str(project_dir),
     }
 
@@ -137,6 +142,56 @@ def create_project(name: str) -> dict:
     starter = _STARTER_TYPST.replace("{title}", name)
     (project_dir / "main.typ").write_text(starter, encoding="utf-8")
     return _project_info(project_dir)
+
+
+def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
+    """Create a PDF project with one validated primary document.
+
+    The uploaded data is first written beside the project directory and parsed before a
+    project becomes visible.  The validated temporary file is then atomically installed
+    under its stable internal name, ``document.pdf``.
+    """
+    name = _safe_name(name)
+    if not name:
+        raise ValueError("Project name cannot be empty")
+
+    root = _projects_root()
+    root.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    project_dir: Path | None = None
+    try:
+        fd, raw_temp_path = tempfile.mkstemp(prefix=".pdf-upload-", suffix=".pdf", dir=root)
+        temp_path = Path(raw_temp_path)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        inspect_pdf(temp_path)
+
+        dir_id = uuid.uuid4().hex[:12]
+        project_dir = root / dir_id
+        while project_dir.exists():
+            dir_id = uuid.uuid4().hex[:12]
+            project_dir = root / dir_id
+        project_dir.mkdir()
+
+        os.replace(temp_path, project_dir / "document.pdf")
+        temp_path = None
+        _write_meta(project_dir, {
+            "name": name,
+            "created": datetime.now(timezone.utc).isoformat(),
+            "type": "pdf",
+            "main_file": "document.pdf",
+            "original_filename": filename,
+        })
+        return _project_info(project_dir)
+    except Exception:
+        if project_dir is not None:
+            shutil.rmtree(project_dir, ignore_errors=True)
+        raise
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def rename_project(project_id: str, new_name: str) -> dict:
