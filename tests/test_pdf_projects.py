@@ -874,6 +874,87 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(self.app.docstore._rooms[current_key]["text"]), "hello")
         self.assertEqual(typ.read_text(encoding="utf-8"), "hello")
 
+    async def test_yjs_start_race_with_pdf_switch_cleans_the_new_crdt_lifecycle(self):
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        await self._open_pdf(typ_info)
+        key = self.app.docstore.room_name()
+
+        class RaceWebSocket:
+            accepted = False
+            closed = None
+            received = False
+
+            async def accept(self):
+                self.accepted = True
+
+            async def close(self, code):
+                self.closed = code
+
+            async def receive_bytes(self):
+                self.received = True
+                return b"stale update"
+
+        real_start = self.app.docstore.start
+
+        async def switch_to_pdf_then_start():
+            await self._open_pdf()
+            return await real_start()
+
+        socket = RaceWebSocket()
+        with patch.object(self.app.docstore, "start", new=switch_to_pdf_then_start):
+            await self.app.yjs_ws(socket, key)
+
+        self.assertEqual(self.runtime.document_type(), "pdf")
+        self.assertEqual(socket.closed, 1008)
+        self.assertFalse(socket.accepted)
+        self.assertFalse(socket.received)
+        self.assertFalse(self.app.docstore.is_running())
+        self.assertEqual(self.app.docstore._rooms, {})
+
+    async def test_yjs_ensure_race_with_pdf_switch_never_accepts_the_old_socket(self):
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        await self._open_pdf(typ_info)
+        key = self.app.docstore.room_name()
+
+        class RaceWebSocket:
+            accepted = False
+            closed = None
+            received = False
+
+            async def accept(self):
+                self.accepted = True
+
+            async def close(self, code):
+                self.closed = code
+
+            async def receive_bytes(self):
+                self.received = True
+                return b"stale update"
+
+        real_ensure = self.app.docstore.ensure_room_by_key
+
+        async def ensure_then_switch_to_pdf(room):
+            state = await real_ensure(room)
+            await self._open_pdf()
+            return state
+
+        socket = RaceWebSocket()
+        with patch.object(self.app.docstore, "ensure_room_by_key", new=ensure_then_switch_to_pdf):
+            await self.app.yjs_ws(socket, key)
+
+        self.assertEqual(self.runtime.document_type(), "pdf")
+        self.assertEqual(socket.closed, 1008)
+        self.assertFalse(socket.accepted)
+        self.assertFalse(socket.received)
+        self.assertFalse(self.app.docstore.is_running())
+        self.assertEqual(self.app.docstore._rooms, {})
+
     async def test_pdf_render_directory_symlink_is_not_listed_or_served(self):
         await self._open_pdf()
         render_dir = self.runtime.render_dir()

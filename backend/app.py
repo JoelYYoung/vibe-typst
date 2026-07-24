@@ -298,26 +298,55 @@ def _require_typst_mode() -> None:
 
 
 # ---------------------------------------------------------------- crdt websocket
+def _yjs_admission_is_current(expected_path: Path, room: str) -> bool:
+    """Whether a websocket admission still names this exact live Typst lineage."""
+    return (runtime.document_type() == "typst"
+            and runtime.current_file() == expected_path
+            and docstore.room_name() == room
+            and docstore.path_for_key(room) == expected_path)
+
+
+async def _reject_stale_yjs(websocket: WebSocket) -> None:
+    """Close a stale websocket; PDF mode must not retain a CRDT lifecycle."""
+    if runtime.document_type() == "pdf":
+        await docstore.stop()
+    await websocket.close(code=1008)
+
+
 @app.websocket("/ws/{room}")
 async def yjs_ws(websocket: WebSocket, room: str):
     if runtime.document_type() == "pdf":
         await websocket.close(code=1008)
         return
+    expected_path = runtime.current_file()
     # Reject stale or invented room generations before accepting or starting CRDT work.
-    if docstore.path_for_key(room) is None:
-        await websocket.close(code=1008)
+    if not _yjs_admission_is_current(expected_path, room):
+        await _reject_stale_yjs(websocket)
         return
     active_server = await docstore.start()
+    if not _yjs_admission_is_current(expected_path, room):
+        await _reject_stale_yjs(websocket)
+        return
     if await docstore.ensure_room_by_key(room) is None:
-        await websocket.close(code=1008)
+        await _reject_stale_yjs(websocket)
+        return
+    if not _yjs_admission_is_current(expected_path, room):
+        await _reject_stale_yjs(websocket)
         return
     await websocket.accept()
+    # `accept()` itself awaits, so close an already-accepted socket if a final switch won.
+    if not _yjs_admission_is_current(expected_path, room):
+        await _reject_stale_yjs(websocket)
+        return
     try:
         await active_server.serve(docstore.StarletteYChannel(websocket, room))
     except WebSocketDisconnect:
         pass
     except Exception:
         pass
+    finally:
+        if not _yjs_admission_is_current(expected_path, room):
+            await _reject_stale_yjs(websocket)
 
 
 # ---------------------------------------------------------------- state / files
