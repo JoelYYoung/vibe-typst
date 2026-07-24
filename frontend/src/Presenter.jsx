@@ -2,14 +2,20 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
 import { clientToSlidePoint } from './presentationPointer.js'
+import {
+  finishPresenterDraftSave,
+  presenterRenderIdentity,
+  reconcilePresenterDraft,
+} from './presenterState.js'
 
 // PowerPoint-style presenter view: big current slide, next-slide preview, the speaker note
 // ("script") for the current slide, a timer, and navigation. A second "projection" window
 // (opened here) shows the audience just the current slide and follows via BroadcastChannel.
 // `page`/`setPage`/`pages`/`rv` are owned by the App (so the page survives exiting + re-entering
 // presenter mode, and the App keeps the projection live even when this view is closed).
-export default function Presenter({ onClose, onSaved, onPointer, page, setPage, pages, tokens }) {
-  const [map, setMap] = useState([])
+export default function Presenter({ onClose, onSaved, onPointer, page, setPage, pages, tokens, slideMap, generation }) {
+  const [localMap, setLocalMap] = useState([])
+  const map = Array.isArray(slideMap) ? slideMap : localMap
   const [elapsed, setElapsed] = useState(0)
   const [showThumbs, setShowThumbs] = useState(true)
   const thumbRef = useRef(null)
@@ -19,13 +25,16 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   const [localPointer, setLocalPointer] = useState(null)
 
   useEffect(() => {
-    api.getSlideMap().then((r) => setMap(r.pages || [])).catch(() => {})
+    if (!Array.isArray(slideMap)) {
+      api.getSlideMap().then((r) => setLocalMap(r.pages || [])).catch(() => {})
+    }
     const t = setInterval(() => setElapsed((e) => e + 1), 1000)
     return () => clearInterval(t)
   }, [])
 
   const total = pages.length
   const go = (d) => setPage((p) => Math.min(Math.max(total, 1), Math.max(1, p + d)))
+  const renderIdentity = presenterRenderIdentity(page, pages, tokens, generation)
 
   const clearPointer = useCallback(() => {
     activePointerRef.current = null
@@ -78,7 +87,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   // or closing the presenter while the primary button is still held.
   useEffect(() => {
     clearPointer()
-  }, [page, clearPointer])
+  }, [renderIdentity, clearPointer])
   useEffect(() => {
     window.addEventListener('blur', clearPointer)
     return () => {
@@ -102,25 +111,31 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
     return () => window.removeEventListener('keydown', onKey)
   }, [total])
 
-  // editable script for the current slide
-  const [draft, setDraft] = useState('')
-  const [savedFor, setSavedFor] = useState(-1)
-  useEffect(() => { setDraft((map[page - 1] || {}).note || ''); setSavedFor(page) }, [page, map])
+  // Editable script for the current slide. A map refresh advances the saved baseline, but
+  // must not replace text typed after a save request captured an older draft.
+  const info = map[page - 1] || {}
+  const [script, setScript] = useState({ page: -1, draft: '', base: '' })
+  useEffect(() => {
+    setScript((previous) => reconcilePresenterDraft(previous, page, info.note, generation))
+  }, [page, map, generation])
   // On every slide change, scroll the transcript back to the top so the next page starts
   // from line 1 instead of wherever the previous slide's note was scrolled to.
   useEffect(() => { if (noteRef.current) noteRef.current.scrollTop = 0 }, [page])
   async function saveScript() {
-    const info = map[page - 1]
-    const pdfTranscript = info && info.project_type === 'pdf' && Number.isInteger(info.page)
-    if (!info || !(pdfTranscript || info.slide_line || info.note_raw)) return
-    const savedDraft = draft
+    const savedInfo = map[page - 1]
+    const pdfTranscript = savedInfo && savedInfo.project_type === 'pdf' && Number.isInteger(savedInfo.page)
+    if (!savedInfo || !(pdfTranscript || savedInfo.slide_line || savedInfo.note_raw)) return
+    const request = { page, generation, text: script.draft }
     // Typst uses an anchored source note; PDFs use their authoritative page-number sidecar.
     try {
-      const r = pdfTranscript ? await api.savePdfTranscript(info.page, savedDraft) : await api.saveNote(info, savedDraft)
+      const r = pdfTranscript ? await api.savePdfTranscript(savedInfo.page, request.text) : await api.saveNote(savedInfo, request.text)
       if ((pdfTranscript && r) || (!pdfTranscript && r && r.ok)) {
-        // Optimistic: update local map so the save button hides immediately
-        setMap(prev => { const next = [...prev]; next[page-1] = {...next[page-1], note: savedDraft}; return next })
-        api.getSlideMap().then((res) => setMap(res.pages || [])).catch(() => {})
+        setScript((previous) => finishPresenterDraftSave(previous, request))
+        // Typst owns an internal map. PDF Presenter consumes the workspace's sequenced map.
+        if (!Array.isArray(slideMap)) {
+          setLocalMap(prev => { const next = [...prev]; next[request.page-1] = {...next[request.page-1], note: request.text}; return next })
+          api.getSlideMap().then((res) => setLocalMap(res.pages || [])).catch(() => {})
+        }
         if (r.warning) toast.info(r.warning, 6000)
         onSaved && onSaved()  // tell the App to refresh the editor's inline notes too
       } else if (r && r.error) {
@@ -140,12 +155,11 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
 
   const cur = pages[page - 1]
   const nxt = pages[page]
-  const info = map[page - 1] || {}
-  // `draft` is only meaningful once the effect has synced it to THIS page. Until then
+  // `script.draft` is only meaningful once the effect has synced it to THIS page. Until then
   // (the moment right after a slide switch) the old draft vs the new note would falsely
-  // look "dirty" and flash the save/revert buttons — so gate on savedFor === page.
-  const ready = savedFor === page
-  const dirty = ready && draft !== (info.note || '')
+  // look "dirty" and flash the save/revert buttons — so gate on script.page === page.
+  const ready = script.page === page && (generation === undefined || script.generation === generation)
+  const dirty = ready && script.draft !== script.base
   const editableTranscript = info.project_type === 'pdf' || info.slide_line || info.note_raw
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
   const openProjection = () => window.open(location.pathname + '?project', 'tcb-projection', 'width=1280,height=720')
@@ -197,15 +211,18 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
                 <textarea
                   ref={noteRef}
                   className="pr-note-edit"
-                  value={draft}
+                  value={script.draft}
                   placeholder="Write a transcript for this slide… (⌘↵ to save)"
-                  onChange={(e) => setDraft(e.target.value)}
+                  onChange={(e) => setScript((previous) => ({
+                    ...reconcilePresenterDraft(previous, page, info.note, generation),
+                    draft: e.target.value,
+                  }))}
                   onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') saveScript() }}
                 />
                 {ready && (dirty || !info.note_raw) && (
                   <div className="pr-note-actions">
-                    <button className="pr-btn" disabled={draft === (info.note || '')} onClick={saveScript}>{info.note_raw || info.project_type === 'pdf' ? 'save' : 'add'} transcript</button>
-                    {dirty && <button className="pr-btn" onClick={() => setDraft(info.note || '')}>revert</button>}
+                    <button className="pr-btn" disabled={!dirty} onClick={saveScript}>{info.note_raw || info.project_type === 'pdf' ? 'save' : 'add'} transcript</button>
+                    {dirty && <button className="pr-btn" onClick={() => setScript((previous) => ({ ...previous, draft: previous.base }))}>revert</button>}
                   </div>
                 )}
               </>

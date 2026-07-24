@@ -12,7 +12,7 @@ export function pdfTranscriptDirty(draft, saved) {
   return draft !== saved
 }
 
-export function nextPdfRenderState(previous = {}, response = {}) {
+export function nextPdfRenderState(previous = {}, response = {}, mapResponse) {
   const pages = pageNames(response.pages)
   const version = response.version ?? previous.version ?? 0
   const generation = typeof response.generation === 'string' && response.generation
@@ -20,10 +20,12 @@ export function nextPdfRenderState(previous = {}, response = {}) {
     : `legacy-${version}`
   const serverTokens = response.tokens && typeof response.tokens === 'object' ? response.tokens : {}
   const tokens = Object.fromEntries(pages.map((name) => [name, serverTokens[name] ?? `pdf-${generation}-${name}`]))
+  const slideMap = Array.isArray(mapResponse?.pages) ? mapResponse.pages : (previous.slideMap || [])
+  const orphans = Array.isArray(mapResponse?.orphans) ? mapResponse.orphans : (previous.orphans || [])
   const total = pages.length
   const requested = Number.isInteger(previous.page) ? previous.page : 1
   const page = total ? Math.max(1, Math.min(requested, total)) : 1
-  return { pages, tokens, version, generation, page }
+  return { pages, tokens, version, generation, page, slideMap, orphans }
 }
 
 export function pdfTerminalCdCommand(path) {

@@ -53,10 +53,10 @@ function PdfFilesDrawer({ onClose, onRestored }) {
 }
 
 export default function PdfWorkspace({ project, onBack }) {
-  const [render, setRender] = useState({ pages: [], tokens: {}, version: 0, generation: '', page: 1 })
+  const [render, setRender] = useState({
+    pages: [], tokens: {}, version: 0, generation: '', page: 1, slideMap: [], orphans: [],
+  })
   const [projectDir, setProjectDir] = useState(project?.path || '')
-  const [slideMap, setSlideMap] = useState([])
-  const [orphans, setOrphans] = useState([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [presenting, setPresenting] = useState(false)
   const [presentationLive, setPresentationLive] = useState(false)
@@ -83,9 +83,7 @@ export default function PdfWorkspace({ project, onBack }) {
       },
       loadMap: api.getSlideMap,
       onPair: (renderResult, mapResult) => {
-        setRender((previous) => nextPdfRenderState(previous, renderResult))
-        setSlideMap(mapResult.pages || [])
-        setOrphans(mapResult.orphans || [])
+        setRender((previous) => nextPdfRenderState(previous, renderResult, mapResult))
         restoreResetLatchRef.current.consume()
       },
       // Keep the last successful transcript map and render visible during a replacement retry.
@@ -156,11 +154,12 @@ export default function PdfWorkspace({ project, onBack }) {
       <main className="pdf-workspace-main">
         <section className="pdf-terminal-pane"><div className="pdf-terminal-head">Terminal</div><TermPanel initialCwd={projectDir} /></section>
         <PdfPreviewPane pages={render.pages} tokens={render.tokens} page={render.page} setPage={setPage} resetEpoch={transcriptResetEpoch}
-          slideMap={slideMap} orphans={orphans} onTranscriptSaved={refreshAfterTranscriptSave} />
+          slideMap={render.slideMap} orphans={render.orphans} onTranscriptSaved={refreshAfterTranscriptSave} />
       </main>
       {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={refreshAfterRestore} />}
       {presenting && <Presenter onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
-        onPointer={sendPointer} page={render.page} setPage={setPage} pages={render.pages} tokens={render.tokens} />}
+        onPointer={sendPointer} page={render.page} setPage={setPage} pages={render.pages} tokens={render.tokens}
+        slideMap={render.slideMap} generation={render.generation} />}
     </div>
   )
 }
