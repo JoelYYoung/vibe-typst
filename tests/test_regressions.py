@@ -923,6 +923,8 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
         before = self._doc()
         cases = [
             {"selector": {"by": "anchor", "text": ""}, "text": "X"},                 # empty anchor
+            {"selector": {"by": "anchor", "text": 123}, "text": "X"},                # non-text anchor
+            {"selector": {"by": "anchor", "text": "a", "side": []}, "text": "X"},     # bad side
             {"selector": {"by": "range", "from": 0, "to": 999}, "text": "X"},         # past EOF
             {"selector": {"by": "lines", "start": 2, "end": 1}, "text": "X"},         # inverted range
             {"selector": {"by": "bogus"}, "text": "X"},                              # unknown kind
@@ -1140,6 +1142,53 @@ class VcsVersioningTest(unittest.TestCase):
         tracked = set(self._git("ls-files").stdout.splitlines())
         self.assertNotIn(".slide-comments.db", tracked)
         self.assertNotIn("AGENTS.md", tracked)
+
+    def test_restore_unmigrated_legacy_repo_preserves_modified_live_state(self):
+        self._tooling()
+        db = self.d / ".slide-comments.db"
+        db.write_text("old comments\n", encoding="utf-8")
+        (self.d / "AGENTS.md").write_text("old agent config\n", encoding="utf-8")
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", "AGENTS.md", ".slide-comments.db")
+        self._git("commit", "-m", "legacy version")
+        self._git("tag", "-a", "v1", "-m", "Legacy version")
+
+        # Simulate a restart that reaches restore before project-open migration. These paths are
+        # still tracked at HEAD but their working copies contain newer live state.
+        db.write_text("current comments\n", encoding="utf-8")
+        (self.d / "AGENTS.md").write_text("current agent config\n", encoding="utf-8")
+        (self.d / "main.typ").write_text("#slide[discard this deck edit]\n", encoding="utf-8")
+
+        result = self.vcs.restore_version(self.d, "v1")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual((self.d / "main.typ").read_text(encoding="utf-8"), "#slide[hello]\n")
+        self.assertEqual(db.read_text(encoding="utf-8"), "current comments\n")
+        self.assertEqual(
+            (self.d / "AGENTS.md").read_text(encoding="utf-8"),
+            "current agent config\n",
+        )
+        tracked = set(self._git("ls-files").stdout.splitlines())
+        self.assertNotIn(".slide-comments.db", tracked)
+        self.assertNotIn("AGENTS.md", tracked)
+
+    def test_restore_aborts_if_live_tracked_state_cannot_be_protected(self):
+        db = self.d / ".slide-comments.db"
+        db.write_text("old comments\n", encoding="utf-8")
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", ".slide-comments.db")
+        self._git("commit", "-m", "legacy version")
+        self._git("tag", "-a", "v1", "-m", "Legacy version")
+        db.write_text("current comments\n", encoding="utf-8")
+
+        with patch.object(self.vcs, "_untrack_ignored", return_value=None):
+            result = self.vcs.restore_version(self.d, "v1")
+
+        self.assertFalse(result["ok"], result)
+        self.assertIn("could not protect", result["error"])
+        self.assertEqual(db.read_text(encoding="utf-8"), "current comments\n")
 
     def test_restore_keeps_nested_user_agents_file_in_version_history(self):
         self._tooling()
