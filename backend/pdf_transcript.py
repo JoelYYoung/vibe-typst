@@ -1,18 +1,26 @@
 """Durable, per-page transcript storage for PDF projects."""
 
+import fcntl
 import json
 import os
+import re
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 
 _SIDECAR_NAME = "transcript.json"
+_LOCK_NAME = ".pdf-transcript.lock"
 _SCHEMA_VERSION = 1
+_ORPHAN_KEY = re.compile(r"[1-9][0-9]*(?:#(?:[2-9]|[1-9][0-9]+))?")
+_PROCESS_LOCKS: dict[str, threading.RLock] = {}
+_PROCESS_LOCKS_GUARD = threading.Lock()
 
 
 def _validate_context(pdf_name, page_count) -> None:
-    if not isinstance(pdf_name, str) or not pdf_name.strip():
-        raise ValueError("pdf_name must be a non-empty string")
+    if not isinstance(pdf_name, str) or pdf_name != "document.pdf":
+        raise ValueError("pdf_name must be document.pdf")
     if isinstance(page_count, bool) or not isinstance(page_count, int) or page_count < 1:
         raise ValueError("page_count must be a positive integer")
 
@@ -33,6 +41,11 @@ def _validate_page_key(key) -> None:
         raise ValueError("page keys must be positive decimal strings")
 
 
+def _validate_orphan_key(key) -> None:
+    if not isinstance(key, str) or _ORPHAN_KEY.fullmatch(key) is None:
+        raise ValueError("orphan keys must be canonical page identifiers")
+
+
 def _validate_sidecar(data: object, pdf_name: str) -> dict:
     if not isinstance(data, dict) or set(data) != {"schema_version", "pdf", "pages", "orphans"}:
         raise ValueError("invalid transcript sidecar")
@@ -48,8 +61,7 @@ def _validate_sidecar(data: object, pdf_name: str) -> dict:
         _validate_page_key(key)
         _validate_record(record, f"page {key}")
     for key, record in data["orphans"].items():
-        if not isinstance(key, str) or not key:
-            raise ValueError("orphan keys must be non-empty strings")
+        _validate_orphan_key(key)
         _validate_record(record, f"orphan {key}")
     return data
 
@@ -60,6 +72,22 @@ def _new_sidecar(pdf_name: str) -> dict:
 
 def _sidecar_path(project_dir) -> Path:
     return Path(project_dir) / _SIDECAR_NAME
+
+
+@contextmanager
+def _transaction_lock(project_dir):
+    """Serialize a project sidecar transaction across threads and Unix processes."""
+    lock_path = Path(project_dir) / _LOCK_NAME
+    lock_key = str(lock_path.resolve())
+    with _PROCESS_LOCKS_GUARD:
+        process_lock = _PROCESS_LOCKS.setdefault(lock_key, threading.RLock())
+    with process_lock:
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_sidecar(project_dir, pdf_name: str) -> tuple[Path, dict, bool]:
@@ -130,10 +158,11 @@ def _atomic_write(path: Path, data: dict) -> None:
 def load(project_dir, pdf_name, page_count) -> dict:
     """Return a reconciled transcript sidecar, atomically persisting any reconciliation."""
     _validate_context(pdf_name, page_count)
-    path, data, changed = _load_reconciled(project_dir, pdf_name, page_count)
-    if changed:
-        _atomic_write(path, data)
-    return data
+    with _transaction_lock(project_dir):
+        path, data, changed = _load_reconciled(project_dir, pdf_name, page_count)
+        if changed:
+            _atomic_write(path, data)
+        return data
 
 
 def _validate_updates(updates, page_count: int) -> list[tuple[int, str]]:
@@ -150,10 +179,7 @@ def _validate_updates(updates, page_count: int) -> list[tuple[int, str]]:
     return validated
 
 
-def set_pages(project_dir, pdf_name, page_count, updates) -> dict:
-    """Replace multiple page transcripts, validating the entire batch before writing."""
-    _validate_context(pdf_name, page_count)
-    validated = _validate_updates(updates, page_count)
+def _set_pages_locked(project_dir, pdf_name, page_count, validated) -> dict:
     path, data, changed = _load_reconciled(project_dir, pdf_name, page_count)
     for page, text in validated:
         record = data["pages"][str(page)]
@@ -165,13 +191,22 @@ def set_pages(project_dir, pdf_name, page_count, updates) -> dict:
     return data
 
 
+def set_pages(project_dir, pdf_name, page_count, updates) -> dict:
+    """Replace multiple page transcripts, validating the entire batch before writing."""
+    _validate_context(pdf_name, page_count)
+    validated = _validate_updates(updates, page_count)
+    with _transaction_lock(project_dir):
+        return _set_pages_locked(project_dir, pdf_name, page_count, validated)
+
+
 def set_page(project_dir, pdf_name, page_count, page, text) -> dict:
     """Replace one page transcript."""
     _validate_context(pdf_name, page_count)
     _validate_page(page, page_count)
     if not isinstance(text, str):
         raise ValueError("transcript text must be a string")
-    return set_pages(project_dir, pdf_name, page_count, [{"page": page, "text": text}])
+    with _transaction_lock(project_dir):
+        return _set_pages_locked(project_dir, pdf_name, page_count, [(page, text)])
 
 
 def _orphan_selector(orphan_page) -> str:
@@ -181,7 +216,8 @@ def _orphan_selector(orphan_page) -> str:
         if orphan_page < 1:
             raise ValueError("orphan_page must be positive")
         return str(orphan_page)
-    if isinstance(orphan_page, str) and orphan_page:
+    if isinstance(orphan_page, str):
+        _validate_orphan_key(orphan_page)
         return orphan_page
     raise ValueError("orphan_page must identify an orphan")
 
@@ -191,15 +227,16 @@ def restore_orphan(project_dir, pdf_name, page_count, orphan_page, target_page) 
     _validate_context(pdf_name, page_count)
     orphan_key = _orphan_selector(orphan_page)
     target_page = _validate_page(target_page, page_count, "target_page")
-    path, data, changed = _load_reconciled(project_dir, pdf_name, page_count)
-    try:
-        orphan = data["orphans"].pop(orphan_key)
-    except KeyError as exc:
-        raise ValueError("orphan transcript not found") from exc
-    target_key = str(target_page)
-    target = data["pages"][target_key]
-    if target["text"]:
-        _store_orphan(data["orphans"], target_key, target)
-    data["pages"][target_key] = orphan
-    _atomic_write(path, data)
-    return data
+    with _transaction_lock(project_dir):
+        path, data, _ = _load_reconciled(project_dir, pdf_name, page_count)
+        try:
+            orphan = data["orphans"].pop(orphan_key)
+        except KeyError as exc:
+            raise ValueError("orphan transcript not found") from exc
+        target_key = str(target_page)
+        target = data["pages"][target_key]
+        if target["text"]:
+            _store_orphan(data["orphans"], target_key, target)
+        data["pages"][target_key] = orphan
+        _atomic_write(path, data)
+        return data
