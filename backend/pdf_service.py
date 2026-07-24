@@ -69,3 +69,17 @@ def render_pdf(path: Path, destination: Path) -> dict:
                 backup_dir = None
         raise ValueError(f"could not render PDF: {exc}") from exc
     return {**info, "pages": pages}
+
+
+def extract_page_text(path: Path, page_number: int) -> str:
+    """Extract embedded text for one 1-based PDF page.  This never performs OCR."""
+    if isinstance(page_number, bool) or not isinstance(page_number, int):
+        raise ValueError("page must be a positive integer")
+    info = inspect_pdf(path)
+    if not 1 <= page_number <= info["page_count"]:
+        raise ValueError("page must be within the document")
+    try:
+        with fitz.open(path) as doc:
+            return doc.load_page(page_number - 1).get_text()
+    except Exception as exc:
+        raise ValueError(f"could not extract PDF text: {exc}") from exc

@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import threading
+from contextlib import asynccontextmanager
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -425,3 +426,201 @@ class PdfTranscriptTest(unittest.TestCase):
         self.assertEqual(self.transcript.load(self.root, "document.pdf", 2)["pages"], {
             "1": {"text": "one"}, "2": {"text": "two"},
         })
+
+
+class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
+    """PDF projects deliberately bypass Typst's CRDT/resolver/comment lifecycle."""
+
+    async def asyncSetUp(self):
+        import app
+        import httpx
+        import runtime
+
+        self.app = app
+        self.httpx = httpx
+        self.runtime = runtime
+        self._tmp = tempfile.TemporaryDirectory()
+        self.project = Path(self._tmp.name) / "project"
+        self.project.mkdir()
+        self.pdf = self.project / "document.pdf"
+
+        # A genuine PyMuPDF PDF (including embedded text), not a renderer mock.
+        import fitz
+        doc = fitz.open()
+        page = doc.new_page()
+        page.insert_text((72, 72), "Embedded PDF text")
+        doc.save(self.pdf)
+        doc.close()
+
+        self.info = {"id": "pdf-project", "name": "Paper", "path": str(self.project),
+                     "type": "pdf", "main_file": "document.pdf"}
+        self._previous_file = runtime._state.get("file")
+        self._previous_project = app._active_project
+        self._state_path = patch.object(runtime, "GLOBAL_STATE_PATH", self.project / "state.json")
+        self._state_path.start()
+
+    async def asyncTearDown(self):
+        self.runtime._state["file"] = self._previous_file
+        self.app._active_project = self._previous_project
+        self._state_path.stop()
+        self._tmp.cleanup()
+
+    async def _request(self, method: str, path: str, payload=None):
+        transport = self.httpx.ASGITransport(app=self.app.app)
+        async with self.httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.request(method, path, json=payload)
+
+    async def test_pdf_open_renders_safe_pages_and_skips_typst_lifecycle(self):
+        self.assertEqual(self.runtime.set_file(str(self.pdf)), str(self.pdf.resolve()))
+        self.assertEqual(self.runtime.document_type(), "pdf")
+        self.runtime._state["file"] = self._previous_file
+
+        with (
+            patch.object(self.app.projects_mod, "get_project", return_value=self.info),
+            patch.object(self.app.resolver, "start") as resolver_start,
+            patch.object(self.app.resolver, "stop") as resolver_stop,
+            patch.object(self.app.docstore, "ensure_room") as ensure_room,
+            patch.object(self.app.docstore, "flush_now") as flush_now,
+            patch.object(self.app.store, "set_path") as set_store_path,
+            patch.object(self.app.workdir, "setup") as setup_workdir,
+        ):
+            opened = await self.app.open_project("pdf-project")
+
+        self.assertTrue(opened["ok"])
+        resolver_start.assert_not_called()
+        resolver_stop.assert_called_once()
+        ensure_room.assert_not_called()
+        flush_now.assert_not_called()
+        set_store_path.assert_not_called()
+        setup_workdir.assert_not_called()
+        self.assertTrue((self.runtime.render_dir() / "page-1.png").is_file())
+
+        state = (await self._request("GET", "/api/state")).json()
+        self.assertEqual(state["project_type"], "pdf")
+        self.assertEqual(state["source"], "")
+        self.assertEqual(state["pages"], ["page-1.png"])
+        self.assertEqual(state["main"], "document.pdf")
+        self.assertNotIn("room", state)
+        self.assertNotIn("store", state)
+        self.assertEqual((await self._request("GET", "/api/comments")).status_code, 400)
+
+        version = (await self._request("GET", "/api/render-version")).json()
+        self.assertEqual(version["pages"], ["page-1.png"])
+        self.assertIn("version", version)
+        self.assertNotIn("room", version)
+
+        served = await self._request("GET", "/api/render/page-1.png")
+        self.assertEqual(served.status_code, 200)
+        self.assertEqual(served.headers["content-type"], "image/png")
+        self.assertEqual((await self._request("GET", "/api/render/page-2.png")).status_code, 404)
+        self.assertEqual((await self._request("GET", "/api/render/../document.pdf")).status_code, 404)
+
+        slide_map = (await self._request("GET", "/api/slide-map")).json()
+        self.assertEqual(slide_map["pages"], [{"page": 1, "slide_no": 1, "slide_total": 1,
+                                                 "project_type": "pdf"}])
+        self.assertEqual(slide_map["orphans"], [])
+
+    async def test_pdf_transcripts_and_embedded_text_validate_all_input(self):
+        with patch.object(self.app.projects_mod, "get_project", return_value=self.info):
+            await self.app.open_project("pdf-project")
+
+        transcripts = await self._request("GET", "/api/pdf/transcripts")
+        self.assertEqual(transcripts.status_code, 200)
+        self.assertEqual(transcripts.json()["pages"], {"1": {"text": ""}})
+
+        patched = await self._request("PATCH", "/api/pdf/transcripts/1", {"text": "Narration"})
+        self.assertEqual(patched.status_code, 200)
+        self.assertEqual(patched.json()["pages"]["1"], {"text": "Narration"})
+        self.assertEqual((await self._request("PATCH", "/api/pdf/transcripts/0", {"text": "bad"})).status_code, 400)
+        self.assertEqual((await self._request("PATCH", "/api/pdf/transcripts/1", {"text": 7})).status_code, 400)
+
+        bad_batch = await self._request("POST", "/api/pdf/transcripts/batch", {
+            "updates": [{"page": 1, "text": "would write"}, {"page": 2, "text": "bad"}]
+        })
+        self.assertEqual(bad_batch.status_code, 400)
+        self.assertEqual((await self._request("GET", "/api/pdf/transcripts")).json()["pages"]["1"],
+                         {"text": "Narration"})
+
+        text = await self._request("GET", "/api/pdf/text?page=1")
+        self.assertEqual(text.status_code, 200)
+        self.assertEqual(text.json(), {"page": 1, "text": "Embedded PDF text\n", "ocr": False})
+        self.assertEqual((await self._request("GET", "/api/pdf/text?page=0")).status_code, 400)
+
+    async def test_open_file_rejects_unbound_pdf_without_mutating_runtime(self):
+        before_file = self.runtime.current_file()
+        before_project = self.app._active_project
+        opened = await self._request("POST", "/api/open-file", {"path": str(self.pdf)})
+
+        self.assertEqual(opened.status_code, 400)
+        self.assertEqual(self.runtime.current_file(), before_file)
+        self.assertIs(self.app._active_project, before_project)
+
+    async def test_lifespan_recovers_verified_persisted_pdf_without_typst_startup(self):
+        @asynccontextmanager
+        async def fake_docstore_server():
+            yield
+
+        self.runtime._state["file"] = str(self.pdf.resolve())
+        self.app._active_project = None
+        with (
+            patch.object(self.app.docstore, "server", fake_docstore_server()),
+            patch.object(self.app.app_config, "get_projects_root", return_value=self.project.parent),
+            patch.object(self.app.projects_mod, "get_project", return_value=self.info),
+            patch.object(self.app.docstore, "ensure_room") as ensure_room,
+            patch.object(self.app.resolver, "start") as resolver_start,
+            patch.object(self.app.store, "set_path") as set_store_path,
+        ):
+            async with self.app.lifespan(self.app.app):
+                self.assertEqual(self.app._active_project, self.info)
+                self.assertTrue((self.runtime.render_dir() / "page-1.png").is_file())
+                self.assertTrue((self.project / "transcript.json").is_file())
+
+        ensure_room.assert_not_called()
+        resolver_start.assert_not_called()
+        set_store_path.assert_not_called()
+
+    async def test_project_type_mismatch_fails_closed_and_typst_stays_typst(self):
+        bad_info = {**self.info, "main_file": "other.pdf"}
+        with patch.object(self.app.projects_mod, "get_project", return_value=bad_info):
+            with self.assertRaises(self.app.HTTPException) as exc:
+                await self.app.open_project("pdf-project")
+        self.assertEqual(exc.exception.status_code, 400)
+
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        with (
+            patch.object(self.app.projects_mod, "get_project", return_value=typ_info),
+            patch.object(self.app.docstore, "ensure_room") as ensure_room,
+            patch.object(self.app.resolver, "start") as resolver_start,
+            patch.object(self.app.workdir, "setup", return_value={}),
+            patch.object(self.app.vcs, "migrate"),
+        ):
+            await self.app.open_project("typst-project")
+        self.assertEqual(self.runtime.document_type(), "typst")
+        ensure_room.assert_called_once()
+        resolver_start.assert_called_once()
+
+    async def test_failed_pdf_switch_leaves_active_typst_runtime_and_services_intact(self):
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        self.runtime.set_file(str(typ))
+        self.app._active_project = typ_info
+
+        with (
+            patch.object(self.app.projects_mod, "get_project", return_value=self.info),
+            patch.object(self.app.pdf_service, "render_pdf", side_effect=ValueError("render failed")),
+            patch.object(self.app.resolver, "stop") as resolver_stop,
+            patch.object(self.app.store, "close") as store_close,
+        ):
+            with self.assertRaises(self.app.HTTPException) as exc:
+                await self.app.open_project("pdf-project")
+
+        self.assertEqual(exc.exception.status_code, 400)
+        self.assertEqual(self.runtime.current_file(), typ.resolve())
+        self.assertEqual(self.app._active_project, typ_info)
+        resolver_stop.assert_not_called()
+        store_close.assert_not_called()
