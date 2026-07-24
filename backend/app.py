@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 import app_config
 import context
@@ -1552,6 +1553,44 @@ async def create_project(request: Request):
     except ValueError as e:
         raise HTTPException(400, str(e))
     return p
+
+
+@app.post("/api/projects/pdf")
+async def create_pdf_project(request: Request):
+    """Create a PDF project from exactly one multipart upload."""
+    if not app_config.is_configured():
+        raise HTTPException(400, "app not configured")
+    try:
+        form = await request.form()
+    except Exception as exc:
+        raise HTTPException(400, "invalid multipart form") from exc
+
+    items = list(form.multi_items())
+    names = [value for key, value in items if key == "name" and isinstance(value, str)]
+    files = [(key, value) for key, value in items if isinstance(value, StarletteUploadFile)]
+    if (len(items) != 2 or len(names) != 1 or len(files) != 1
+            or files[0][0] != "file"):
+        for _, uploaded in files:
+            await uploaded.close()
+        raise HTTPException(400, "provide one name and exactly one PDF file")
+
+    name = names[0].strip()
+    file = files[0][1]
+    try:
+        filename = file.filename or ""
+        if not name:
+            raise HTTPException(400, "name is required")
+        if not filename or not filename.lower().endswith(".pdf"):
+            raise HTTPException(400, "file must be a PDF")
+        content = await file.read()
+        try:
+            return projects_mod.create_pdf_project(name, filename, content)
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    finally:
+        await file.close()
 
 
 @app.patch("/api/projects/{project_id:path}")

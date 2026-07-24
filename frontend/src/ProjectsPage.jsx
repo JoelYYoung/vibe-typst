@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
+import { projectType } from './projectTypes.js'
 
 function fmtDate(iso) {
   if (!iso) return ''
@@ -182,7 +183,10 @@ function ProjectCard({ project, onOpen, onRename, onDelete, onCopy }) {
           </form>
         ) : (
           <div className="project-info">
-            <div className="project-name">{project.name}</div>
+            <div className="project-name-row">
+              <div className="project-name">{project.name}</div>
+              <span className={`project-type-badge ${projectType(project)}`}>{projectType(project) === 'pdf' ? 'PDF' : 'Typst'}</span>
+            </div>
             {project.created && <div className="project-date">{fmtDate(project.created)}</div>}
           </div>
         )}
@@ -217,10 +221,13 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
+  const [newType, setNewType] = useState('typst')
+  const [pdfFile, setPdfFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [confirm, setConfirm] = useState(null)   // {msg, onConfirm}
   const [copyPrompt, setCopyPrompt] = useState(null)  // {id, defaultName}
   const newInputRef = useRef(null)
+  const pdfInputRef = useRef(null)
 
   const load = useCallback(async () => {
     try {
@@ -236,14 +243,31 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   useEffect(() => { load() }, [load])
   useEffect(() => { if (creating) newInputRef.current?.focus() }, [creating])
 
+  function resetNewProject() {
+    setCreating(false)
+    setNewName('')
+    setNewType('typst')
+    setPdfFile(null)
+    if (pdfInputRef.current) pdfInputRef.current.value = ''
+  }
+
+  function selectProjectType(type) {
+    setNewType(type)
+    if (type !== 'pdf') {
+      setPdfFile(null)
+      if (pdfInputRef.current) pdfInputRef.current.value = ''
+    }
+  }
+
   async function handleCreate(e) {
     e.preventDefault()
     const name = newName.trim()
-    if (!name) return
+    if (!name || (newType === 'pdf' && !pdfFile)) return
     setBusy(true)
     try {
-      await api.createProject(name)
-      setNewName(''); setCreating(false)
+      if (newType === 'pdf') await api.createPdfProject(name, pdfFile)
+      else await api.createProject(name)
+      resetNewProject()
       await load()
     } catch (err) {
       toast.error(err.message || 'Failed to create project')
@@ -253,12 +277,11 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   async function handleOpen(id) {
     setBusy(true)
     try {
-      await api.openProject(id)
-      onOpen()
+      const result = await api.openProject(id)
+      onOpen(result.project)
     } catch (err) {
       toast.error(err.message || 'Failed to open project')
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   async function handleRename(id, name) {
@@ -324,13 +347,30 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
               placeholder="Project name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Escape' && (setCreating(false), setNewName(''))}
+              onKeyDown={(e) => e.key === 'Escape' && resetNewProject()}
               maxLength={128}
             />
-            <button type="submit" className="primary" disabled={busy || !newName.trim()}>
+            <div className="new-project-type" role="group" aria-label="Project type">
+              <button type="button" className={newType === 'typst' ? 'selected' : ''} onClick={() => selectProjectType('typst')}>Typst</button>
+              <button type="button" className={newType === 'pdf' ? 'selected' : ''} onClick={() => selectProjectType('pdf')}>PDF</button>
+            </div>
+            {newType === 'pdf' && (
+              <input
+                ref={pdfInputRef}
+                className="new-project-file"
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={(e) => {
+                  const files = e.target.files
+                  const selected = files && files.length === 1 ? files[0] : null
+                  setPdfFile(selected && selected.name.toLowerCase().endsWith('.pdf') ? selected : null)
+                }}
+              />
+            )}
+            <button type="submit" className="primary" disabled={busy || !newName.trim() || (newType === 'pdf' && !pdfFile)}>
               {busy ? 'Creating…' : 'Create'}
             </button>
-            <button type="button" onClick={() => { setCreating(false); setNewName('') }}>Cancel</button>
+            <button type="button" onClick={resetNewProject}>Cancel</button>
           </form>
         )}
 

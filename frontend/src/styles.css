@@ -439,6 +439,11 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .new-project-form { display: flex; align-items: center; gap: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; }
 .new-project-input { flex: 1; padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; font: 14px inherit; }
 .new-project-input:focus { outline: none; border-color: var(--accent2); }
+.new-project-type { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.new-project-type button { border: 0; border-radius: 0; background: var(--panel); color: var(--muted); padding: 6px 9px; }
+.new-project-type button + button { border-left: 1px solid var(--line); }
+.new-project-type button.selected { background: #e7f0fa; color: var(--accent); font-weight: 600; }
+.new-project-file { max-width: 190px; font-size: 12px; }
 
 .projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
 .project-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: stretch; overflow: hidden; cursor: pointer; transition: box-shadow .15s, border-color .15s; }
@@ -446,7 +451,10 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .project-card-body { display: flex; align-items: center; gap: 14px; padding: 18px 14px; flex: 1; min-width: 0; }
 .project-icon { font-size: 20px; flex: none; }
 .project-info { min-width: 0; }
+.project-name-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .project-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.project-type-badge { flex: none; border-radius: 999px; padding: 2px 6px; font-size: 10px; font-weight: 700; line-height: 1.1; background: #edf0f4; color: var(--muted); }
+.project-type-badge.pdf { background: #fbe9e7; color: #b23a2a; }
 .project-date { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .rename-input { border: 1px solid var(--accent2); border-radius: 6px; padding: 3px 8px; font: 14px inherit; width: 100%; }
 .project-menu-wrap { position: relative; display: flex; align-items: center; padding-right: 8px; }
@@ -457,6 +465,10 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .project-dropdown button:hover { background: #f0f3f7; }
 .project-dropdown button.danger { color: var(--warn); }
 .project-dropdown button.danger:hover { background: #fff5f5; }
+
+.pdf-workspace-placeholder { min-height: 100vh; padding: 24px; background: var(--bg); color: var(--ink); }
+.pdf-workspace-placeholder > div { max-width: 620px; margin: 22vh auto 0; text-align: center; }
+.pdf-workspace-placeholder h1 { margin-bottom: 8px; }
 
 /* ── file manager overlay ───────────────────────────────────────────────── */
 .filemgr-overlay { position: fixed; inset: 0; background: rgba(20,28,38,.42); z-index: 100; display: flex; justify-content: flex-end; }

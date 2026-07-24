@@ -203,6 +203,70 @@ class PdfProjectCreationTest(unittest.TestCase):
         self.assertTrue(primary.is_file())
 
 
+class PdfProjectCreationApiTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import app
+        import httpx
+        import projects
+
+        self.app = app
+        self.httpx = httpx
+        self.projects = projects
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "projects"
+        self.root.mkdir()
+        self._configured = patch.object(app.app_config, "is_configured", return_value=True)
+        self._projects_root = patch.object(projects, "_projects_root", return_value=self.root.resolve())
+        self._configured.start()
+        self._projects_root.start()
+
+    async def asyncTearDown(self):
+        self._projects_root.stop()
+        self._configured.stop()
+        self._tmp.cleanup()
+
+    async def _post_pdf(self, *, data=None, files=None):
+        transport = self.httpx.ASGITransport(app=self.app.app)
+        async with self.httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            return await client.post("/api/projects/pdf", data=data, files=files)
+
+    async def test_valid_multipart_creation_preserves_pdf_metadata(self):
+        response = await self._post_pdf(
+            data={"name": "Paper"},
+            files={"file": ("Original.PDF", ONE_PAGE_PDF, "application/pdf")},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        created = response.json()
+        self.assertEqual(created["type"], "pdf")
+        self.assertEqual(created["main_file"], "document.pdf")
+        self.assertEqual(created["original_filename"], "Original.PDF")
+        self.assertTrue((Path(created["path"]) / "document.pdf").is_file())
+
+    async def test_invalid_or_non_pdf_uploads_are_rejected_without_a_project(self):
+        for filename, content in (("broken.pdf", b"not a PDF"), ("notes.txt", ONE_PAGE_PDF)):
+            with self.subTest(filename=filename):
+                response = await self._post_pdf(
+                    data={"name": "Paper"},
+                    files={"file": (filename, content, "application/octet-stream")},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(list(self.root.iterdir()), [])
+
+    async def test_missing_or_extra_uploads_are_rejected_without_a_project(self):
+        missing = await self._post_pdf(data={"name": "Paper"})
+        self.assertEqual(missing.status_code, 400, missing.text)
+
+        extra = await self._post_pdf(
+            data={"name": "Paper"},
+            files=[
+                ("file", ("one.pdf", ONE_PAGE_PDF, "application/pdf")),
+                ("file", ("two.pdf", ONE_PAGE_PDF, "application/pdf")),
+            ],
+        )
+        self.assertEqual(extra.status_code, 400, extra.text)
+        self.assertEqual(list(self.root.iterdir()), [])
+
 class PdfRenderingTest(unittest.TestCase):
     def setUp(self):
         import pdf_service

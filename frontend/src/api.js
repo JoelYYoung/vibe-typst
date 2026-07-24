@@ -102,6 +102,12 @@ export const setAppConfig = (config) =>
 // ── projects ────────────────────────────────────────────────────────────────
 export const listProjects = () => fetch('/api/projects').then(J)
 export const createProject = (name) => POST('/api/projects', { name })
+export const createPdfProject = (name, file) => {
+  const form = new FormData()
+  form.append('name', name)
+  form.append('file', file)
+  return fetch('/api/projects/pdf', { method: 'POST', body: form }).then(J)
+}
 export const renameProject = (id, name) => PATCH(`/api/projects/${encodeURIComponent(id)}`, { name })
 export const deleteProject = (id) =>
   fetch(`/api/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(J)
