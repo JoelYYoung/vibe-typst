@@ -385,17 +385,25 @@ def _resolve_selector(sel: dict, s: str):
     kind = (sel or {}).get("by")
     if kind == "anchor":
         anchor = sel.get("text") or sel.get("anchor") or ""
-        occ = int(sel.get("occurrence", 1) or 1)
+        occ = sel.get("occurrence", 1)
+        if isinstance(occ, bool) or not isinstance(occ, int):
+            return None, None, kind, "occurrence must be an integer >= 1"
         if not anchor:
             return None, None, kind, "empty anchor"
         n = s.count(anchor)
         if n == 0:
             return None, None, kind, "anchor not found"
+        if not 1 <= occ <= n:
+            return None, None, kind, f"occurrence out of bounds ({n} matches)"
         if occ == 1 and n > 1:
             return None, None, kind, (f"anchor is ambiguous ({n} matches); pass a longer "
                                       "anchor or `occurrence`")
         idx = _find(s, anchor, occ)
         side = sel.get("side", "in")
+        if side not in {"in", "before", "after"}:
+            return None, None, kind, f"unknown anchor side {side!r}"
+        if idx < 0:
+            return None, None, kind, "anchor occurrence not found"
         if side == "before":
             return idx, idx, kind, None
         if side == "after":
