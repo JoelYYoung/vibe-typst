@@ -1669,10 +1669,14 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._request("GET", "/api/render/page-2.png")).status_code, 404)
         self.assertEqual((await self._request("GET", "/api/render/../document.pdf")).status_code, 404)
 
-        slide_map = (await self._request("GET", "/api/slide-map")).json()
+        with patch.object(self.app.pdf_transcript, "load", return_value={
+            "pages": {"1": {"text": "Narration"}},
+            "orphans": {"2": {"text": "Removed page"}},
+        }):
+            slide_map = (await self._request("GET", "/api/slide-map")).json()
         self.assertEqual(slide_map["pages"], [{"page": 1, "slide_no": 1, "slide_total": 1,
-                                                 "project_type": "pdf"}])
-        self.assertEqual(slide_map["orphans"], [])
+                                                 "project_type": "pdf", "note": "Narration"}])
+        self.assertEqual(slide_map["orphans"], [{"page": 2, "text": "Removed page"}])
 
     async def test_pdf_transcripts_and_embedded_text_validate_all_input(self):
         with patch.object(self.app.projects_mod, "get_project", return_value=self.info):

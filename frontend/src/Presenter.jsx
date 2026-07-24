@@ -111,11 +111,12 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   useEffect(() => { if (noteRef.current) noteRef.current.scrollTop = 0 }, [page])
   async function saveScript() {
     const info = map[page - 1]
-    if (!info || !(info.slide_line || info.note_raw)) return
+    const pdfTranscript = info && info.project_type === 'pdf' && Number.isInteger(info.page)
+    if (!info || !(pdfTranscript || info.slide_line || info.note_raw)) return
     const savedDraft = draft
-    // Inline #speaker-note in the .typ source — the single shared source of truth.
-    const r = await api.saveNote(info, savedDraft)
-    if (r && r.ok) {
+    // Typst uses an anchored source note; PDFs use their authoritative page-number sidecar.
+    const r = pdfTranscript ? await api.savePdfTranscript(info.page, savedDraft) : await api.saveNote(info, savedDraft)
+    if ((pdfTranscript && r) || (!pdfTranscript && r && r.ok)) {
       // Optimistic: update local map so the save button hides immediately
       setMap(prev => { const next = [...prev]; next[page-1] = {...next[page-1], note: savedDraft}; return next })
       api.getSlideMap().then((res) => setMap(res.pages || [])).catch(() => {})
@@ -139,6 +140,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   // look "dirty" and flash the save/revert buttons — so gate on savedFor === page.
   const ready = savedFor === page
   const dirty = ready && draft !== (info.note || '')
+  const editableTranscript = info.project_type === 'pdf' || info.slide_line || info.note_raw
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
   const openProjection = () => window.open(location.pathname + '?project', 'tcb-projection', 'width=1280,height=720')
 
@@ -183,8 +185,8 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
             {nxt ? <img className="pr-slide" src={api.renderUrl(nxt, tokens[nxt])} alt="" /> : <div className="proj-empty pr-end">— end —</div>}
           </div>
           <div className="pr-notes">
-            <div className="pr-label">TRANSCRIPT{(info.slide_line || info.note_raw) ? ' · editable' : ''}{info.sub_total > 1 ? ` · sub ${info.sub_index}/${info.sub_total}` : ''}</div>
-            {(info.slide_line || info.note_raw) ? (
+            <div className="pr-label">TRANSCRIPT{editableTranscript ? ' · editable' : ''}{info.sub_total > 1 ? ` · sub ${info.sub_index}/${info.sub_total}` : ''}</div>
+            {editableTranscript ? (
               <>
                 <textarea
                   ref={noteRef}
@@ -196,7 +198,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
                 />
                 {ready && (dirty || !info.note_raw) && (
                   <div className="pr-note-actions">
-                    <button className="pr-btn" disabled={draft === (info.note || '')} onClick={saveScript}>{info.note_raw ? 'save' : 'add'} transcript</button>
+                    <button className="pr-btn" disabled={draft === (info.note || '')} onClick={saveScript}>{info.note_raw || info.project_type === 'pdf' ? 'save' : 'add'} transcript</button>
                     {dirty && <button className="pr-btn" onClick={() => setDraft(info.note || '')}>revert</button>}
                   </div>
                 )}

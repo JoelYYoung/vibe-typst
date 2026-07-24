@@ -69,6 +69,8 @@ export const saveNote = (info, text) =>
 export const notesExportUrl = '/api/notes/export'
 export const notesPdfpcUrl = '/api/notes/pdfpc'
 export const getSlideMap = () => fetch('/api/slide-map').then(J)
+export const getPdfTranscripts = () => fetch('/api/pdf/transcripts').then(J)
+export const savePdfTranscript = (page, text) => PATCH(`/api/pdf/transcripts/${encodeURIComponent(page)}`, { text })
 
 export const getComments = (status, file) => {
   const q = new URLSearchParams()
