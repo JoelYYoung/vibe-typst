@@ -1,6 +1,7 @@
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -276,6 +277,27 @@ class PdfTranscriptTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.transcript.load(self.root, pdf_name, page_count)
 
+    def test_only_the_stable_document_pdf_name_is_accepted_by_every_operation(self):
+        self.transcript.load(self.root, "document.pdf", 2)
+        sidecar = self.root / "transcript.json"
+        before = sidecar.read_bytes()
+
+        for number, pdf_name in enumerate(
+                ["other.pdf", " document.pdf", "document.pdf ", Path("document.pdf")], start=1):
+            fresh_project = self.root / f"fresh-{number}"
+            fresh_project.mkdir()
+            with self.assertRaises(ValueError):
+                self.transcript.load(fresh_project, pdf_name, 2)
+            with self.assertRaises(ValueError):
+                self.transcript.load(self.root, pdf_name, 2)
+            with self.assertRaises(ValueError):
+                self.transcript.set_page(self.root, pdf_name, 2, 1, "changed")
+            with self.assertRaises(ValueError):
+                self.transcript.set_pages(self.root, pdf_name, 2, [{"page": 1, "text": "changed"}])
+            with self.assertRaises(ValueError):
+                self.transcript.restore_orphan(self.root, pdf_name, 2, 3, 1)
+            self.assertEqual(sidecar.read_bytes(), before)
+
     def test_corrupt_or_unsupported_sidecar_is_rejected_without_replacing_it(self):
         sidecar = self.root / "transcript.json"
         for contents in ["{ not json", json.dumps({"schema_version": 2, "pdf": "document.pdf",
@@ -284,6 +306,33 @@ class PdfTranscriptTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.transcript.load(self.root, "document.pdf", 1)
             self.assertEqual(sidecar.read_text(encoding="utf-8"), contents)
+
+    def test_mismatched_pdf_sidecar_fails_closed_without_replacing_it(self):
+        sidecar = self.root / "transcript.json"
+        contents = json.dumps({"schema_version": 1, "pdf": "other.pdf",
+                               "pages": {"1": {"text": "old"}}, "orphans": {}})
+        sidecar.write_text(contents, encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            self.transcript.load(self.root, "document.pdf", 1)
+
+        self.assertEqual(sidecar.read_text(encoding="utf-8"), contents)
+
+    def test_orphan_keys_must_be_canonical_and_bad_sidecars_remain_unchanged(self):
+        sidecar = self.root / "transcript.json"
+        for bad_key in ["0", "01", "orphan", "3#1", "3#0", "3#02", "3#x", "3#2#3"]:
+            contents = json.dumps({"schema_version": 1, "pdf": "document.pdf",
+                                   "pages": {"1": {"text": ""}},
+                                   "orphans": {bad_key: {"text": "saved"}}})
+            sidecar.write_text(contents, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                self.transcript.load(self.root, "document.pdf", 1)
+            self.assertEqual(sidecar.read_text(encoding="utf-8"), contents)
+
+        valid = {"schema_version": 1, "pdf": "document.pdf", "pages": {"1": {"text": ""}},
+                 "orphans": {"3#2": {"text": "saved"}}}
+        sidecar.write_text(json.dumps(valid), encoding="utf-8")
+        self.assertEqual(self.transcript.load(self.root, "document.pdf", 1), valid)
 
     def test_failed_atomic_write_preserves_prior_sidecar_and_cleans_temp_file(self):
         self.transcript.set_page(self.root, "document.pdf", 1, 1, "before")
@@ -296,3 +345,83 @@ class PdfTranscriptTest(unittest.TestCase):
 
         self.assertEqual(sidecar.read_bytes(), before)
         self.assertEqual(list(self.root.glob(".transcript-*")), [])
+
+    def test_restore_preserves_existing_target_text_as_an_orphan(self):
+        self.transcript.set_page(self.root, "document.pdf", 3, 3, "closing")
+        self.transcript.load(self.root, "document.pdf", 2)
+        self.transcript.set_page(self.root, "document.pdf", 2, 1, "opening")
+
+        data = self.transcript.restore_orphan(self.root, "document.pdf", 2, 3, 1)
+
+        self.assertEqual(data["pages"]["1"], {"text": "closing"})
+        self.assertEqual(data["orphans"]["1"], {"text": "opening"})
+
+    def test_invalid_or_missing_restore_selectors_leave_the_sidecar_unchanged(self):
+        self.transcript.set_page(self.root, "document.pdf", 3, 3, "closing")
+        self.transcript.load(self.root, "document.pdf", 2)
+        sidecar = self.root / "transcript.json"
+        before = sidecar.read_bytes()
+
+        for selector in [0, True, "", "3#1", "missing", 9]:
+            with self.assertRaises(ValueError):
+                self.transcript.restore_orphan(self.root, "document.pdf", 2, selector, 1)
+            self.assertEqual(sidecar.read_bytes(), before)
+
+    def test_repeated_shrink_expand_shrink_retains_every_nonblank_transcript(self):
+        self.transcript.set_pages(self.root, "document.pdf", 4, [
+            {"page": 3, "text": "third"}, {"page": 4, "text": "fourth"},
+        ])
+        self.transcript.load(self.root, "document.pdf", 2)
+        self.transcript.set_pages(self.root, "document.pdf", 4, [
+            {"page": 3, "text": "third again"}, {"page": 4, "text": "fourth again"},
+        ])
+
+        data = self.transcript.load(self.root, "document.pdf", 2)
+
+        self.assertEqual(data["orphans"], {
+            "3": {"text": "third"}, "4": {"text": "fourth"},
+            "3#2": {"text": "third again"}, "4#2": {"text": "fourth again"},
+        })
+
+    def test_concurrent_different_page_updates_preserve_both_texts(self):
+        self.transcript.load(self.root, "document.pdf", 2)
+        first_write_started = threading.Event()
+        second_started = threading.Event()
+        original_write = self.transcript._atomic_write
+        write_count = 0
+        count_lock = threading.Lock()
+        errors = []
+
+        def pause_first_write(path, data):
+            nonlocal write_count
+            with count_lock:
+                write_count += 1
+                is_first_write = write_count == 1
+            if is_first_write:
+                first_write_started.set()
+                self.assertTrue(second_started.wait(timeout=3))
+            original_write(path, data)
+
+        def update(page, text, started=None):
+            try:
+                if started is not None:
+                    started.set()
+                self.transcript.set_page(self.root, "document.pdf", 2, page, text)
+            except Exception as exc:  # captured so assertion failures reach this test thread
+                errors.append(exc)
+
+        with patch.object(self.transcript, "_atomic_write", side_effect=pause_first_write):
+            first = threading.Thread(target=update, args=(1, "one"))
+            first.start()
+            self.assertTrue(first_write_started.wait(timeout=3))
+            second = threading.Thread(target=update, args=(2, "two", second_started))
+            second.start()
+            first.join(timeout=3)
+            second.join(timeout=3)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(self.transcript.load(self.root, "document.pdf", 2)["pages"], {
+            "1": {"text": "one"}, "2": {"text": "two"},
+        })
