@@ -14,6 +14,7 @@ com.vibe-typst.colima.daemon.plist
 com.vibe-typst.control.daemon.plist
 
 # Build/cache output
+.worktrees/
 frontend/node_modules/
 resolver/target/
 backend/.venv/
