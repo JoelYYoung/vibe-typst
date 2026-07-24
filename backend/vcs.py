@@ -17,31 +17,31 @@ from pathlib import Path
 # Things that change constantly and would otherwise keep the repo perpetually
 # "dirty" (and trigger false discard prompts) — keep them out of version control.
 _IGNORE_PATTERNS = [
-    "*.backup",
-    ".tcb/",
-    ".claude/",
-    ".mcp.json",
-    ".vibe-typst.json",       # app-managed project metadata
-    ".slide-comments.db",     # SQLite comment store (+ its WAL/SHM sidecars)
-    ".slide-comments.db-shm",
-    ".slide-comments.db-wal",
+    "/*.backup",
+    "/.tcb/",
+    "/.claude/",
+    "/.mcp.json",
+    "/.vibe-typst.json",       # app-managed project metadata
+    "/.slide-comments.db",     # SQLite comment store (+ its WAL/SHM sidecars)
+    "/.slide-comments.db-shm",
+    "/.slide-comments.db-wal",
     ".DS_Store",
     "Thumbs.db",
     # App-managed agent tooling — regenerated on EVERY project open (workdir.setup), so
     # versioning it makes the repo perpetually "dirty" and saves fire when the DECK itself is
     # unchanged. A version should capture the user's deck (.typ + assets), not this scaffolding.
-    "AGENTS.md",
-    "CLAUDE.md",
-    "AGENTS.md.backup-*",
-    "CLAUDE.md.backup-*",
-    ".codex/",
-    ".agent-home/",           # agent runtime state (auth/config/cache), if it lands in-project
+    "/AGENTS.md",
+    "/CLAUDE.md",
+    "/AGENTS.md.backup-*",
+    "/CLAUDE.md.backup-*",
+    "/.codex/",
+    "/.agent-home/",          # agent runtime state (auth/config/cache), if it lands in-project
     # Process crash dumps — a crashed codex/node (`--yolo`) can drop a multi-hundred-MB `core`.
-    "core",
-    "core.*",
-    "*.core",
-    "vgcore.*",
-    "*.heapsnapshot",
+    "/core",
+    "/core.*",
+    "/*.core",
+    "/vgcore.*",
+    "/*.heapsnapshot",
 ]
 
 _GIT_CONFIG = [("user.email", "vibe@local"), ("user.name", "Vibe Typst")]
@@ -76,14 +76,16 @@ def _is_managed_path(path: str) -> bool:
     clean = path.strip("/")
     name = Path(clean).name
     for pattern in _IGNORE_PATTERNS:
-        if pattern.endswith("/"):
-            prefix = pattern.rstrip("/")
+        anchored = pattern.startswith("/")
+        match_pattern = pattern.lstrip("/") if anchored else pattern
+        if match_pattern.endswith("/"):
+            prefix = match_pattern.rstrip("/")
             if clean == prefix or clean.startswith(prefix + "/"):
                 return True
-        elif "/" in pattern:
-            if fnmatchcase(clean, pattern):
+        elif anchored or "/" in match_pattern:
+            if fnmatchcase(clean, match_pattern):
                 return True
-        elif fnmatchcase(name, pattern):
+        elif fnmatchcase(name, match_pattern):
             return True
     return False
 
