@@ -341,7 +341,13 @@ def _is_pdf_managed_path(project_root: Path, target: Path) -> bool:
     )
 
 
-def reject_pdf_managed_mutation(project_dir: Path, target: Path, operation: str) -> None:
+def reject_pdf_managed_mutation(
+    project_dir: Path,
+    target: Path,
+    operation: str,
+    *,
+    include_descendants: bool = True,
+) -> None:
     """Keep generic file operations away from a PDF project's owned state."""
     if _pdf_primary(project_dir) is None:
         return
@@ -349,7 +355,7 @@ def reject_pdf_managed_mutation(project_dir: Path, target: Path, operation: str)
     target = Path(target)
     if _is_pdf_managed_path(root, target):
         raise ValueError(f"cannot {operation} PDF managed state")
-    if target.is_dir() and any(
+    if include_descendants and target.is_dir() and any(
         _is_pdf_managed_path(root, child) for child in target.rglob("*")
     ):
         raise ValueError(f"cannot {operation} PDF managed state")
@@ -480,16 +486,23 @@ def move_item(project_dir: Path, old_rel: str, dest_dir_rel: str) -> dict:
         raise FileNotFoundError(f"{old_rel!r} not found")
     _reject_pdf_tree_move(project_dir, old_target)
     dest_dir = project_dir if not dest_dir_rel else _resolve_project_path(project_dir, dest_dir_rel)
-    reject_pdf_managed_mutation(project_dir, dest_dir, "move into")
+    reject_pdf_managed_mutation(
+        project_dir, dest_dir, "move into", include_descendants=False
+    )
     if not dest_dir.is_dir():
         raise ValueError("destination is not a folder")
     if old_target.is_dir() and (dest_dir == old_target or str(dest_dir).startswith(str(old_target) + "/")):
         raise ValueError("cannot move a folder into itself")
     new_target = dest_dir / old_target.name
-    reject_pdf_managed_mutation(project_dir, new_target, "move into")
+    reject_pdf_managed_mutation(
+        project_dir, new_target, "move into", include_descendants=False
+    )
     if new_target == old_target:
         return {"path": old_rel, "name": old_target.name}  # no-op (already there)
     new_target, collision_renamed = _available_target(new_target, is_dir=old_target.is_dir())
+    reject_pdf_managed_mutation(
+        project_dir, new_target, "move into", include_descendants=False
+    )
     old_target.rename(new_target)
     rel = str(new_target.relative_to(project_dir.resolve()))
     return {"path": rel, "name": new_target.name,
@@ -509,7 +522,9 @@ def rename_item(project_dir: Path, old_rel: str, new_name: str) -> dict:
     _reject_pdf_addition(project_dir, new_name_clean)
     new_target = old_target.parent / new_name_clean
     _resolve_project_path(project_dir, str(new_target.relative_to(project_dir)))
-    reject_pdf_managed_mutation(project_dir, new_target, "rename to")
+    reject_pdf_managed_mutation(
+        project_dir, new_target, "rename to", include_descendants=False
+    )
     if new_target.exists() and new_target != old_target:
         raise FileExistsError(f"{new_name_clean!r} already exists")
     old_target.rename(new_target)
