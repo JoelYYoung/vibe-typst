@@ -159,6 +159,16 @@ _NEW_FILE_TEMPLATE = (
 )
 
 
+def _setup_workdir_and_migrate() -> dict:
+    """Refresh managed agent files, then keep them out of deck version history."""
+    paths = workdir.setup()
+    try:
+        vcs.migrate(runtime.project_dir())
+    except Exception:
+        pass
+    return paths
+
+
 async def _activate_current() -> dict:
     """Common work after the active file changes: backup, store, working-dir, room, render."""
     runtime.backup()  # snapshot the file before touching it
@@ -166,18 +176,11 @@ async def _activate_current() -> dict:
     await docstore.ensure_room()
     await docstore.flush_now()
     resolver.start()  # the Rust resolver follows the new file
-        # If this working dir was already set up, refresh the managed agent instructions/config.
+    # If this working dir was already set up, refresh the managed agent instructions/config.
     # so they name the NOW-current file instead of a stale one. We only refresh an already-set-up
     # dir — never auto-create files in a fresh dir (that stays opt-in via /api/setup-workdir).
     if workdir.is_ready():
-        workdir.setup()
-        # setup() just (re)wrote the app-managed tooling files; make sure version control
-        # isn't tracking them (or crash dumps), so 'dirty'/'current version' reflect the DECK
-        # only — not scaffolding that changes on every open. Idempotent, no-op once clean.
-        try:
-            vcs.migrate(runtime.project_dir())
-        except Exception:
-            pass
+        _setup_workdir_and_migrate()
     return {
         "file": str(runtime.current_file()),
         "project": str(runtime.project_dir()),
@@ -234,7 +237,7 @@ async def new_file(request: Request):
 def setup_workdir():
     """Create/merge Claude + Codex agent config in the current working dir (called after the user
     confirms). Not done automatically — only when the user opts in."""
-    paths = workdir.setup()
+    paths = _setup_workdir_and_migrate()
     return {"ok": True, "ready": workdir.is_ready(), **paths}
 
 
@@ -934,7 +937,7 @@ async def open_project(project_id: str):
     # project open, in BOTH local and server mode — so `claude` run in the project dir finds the
     # MCP. (Local mode previously never wrote a .mcp.json, so the MCP couldn't be found.)
     try:
-        workdir.setup()
+        _setup_workdir_and_migrate()
     except Exception:
         pass
     return {"ok": True, "project": info}

@@ -83,20 +83,37 @@ def _build():
 
 def _slide_end_line(lines: list[str], sl: int) -> int | None:
     """1-based line of the `]` that closes the `#slide[ ... ]` opening at 1-based line `sl`,
-    by matching bracket depth (ignoring `"..."` strings and `//` comments). None if unbalanced.
-    This is exact where the "next column-0 #slide opener" heuristic is not — nested/`#let`
-    bodies, a stray column-0 `#slide` in a string, and the last slide (which over-includes any
-    trailing top-level content)."""
+    by matching bracket depth while ignoring strings, line/block comments, raw code, and escaped
+    markup. None if unbalanced. This is exact where the "next column-0 #slide opener" heuristic
+    is not — nested/`#let` bodies, a stray column-0 `#slide` in literal content, and the last
+    slide (which over-includes any trailing top-level content)."""
     depth = 0
     started = False
     in_str = False
     escaped = False
+    block_comment_depth = 0
+    raw_ticks = 0
     for li in range(sl - 1, len(lines)):
         line = lines[li]
         j = 0
         while j < len(line):
             ch = line[j]
-            if in_str:
+            if raw_ticks:
+                fence = "`" * raw_ticks
+                if line.startswith(fence, j):
+                    raw_ticks = 0
+                    j += len(fence)
+                    continue
+            elif block_comment_depth:
+                if line.startswith("/*", j):
+                    block_comment_depth += 1
+                    j += 2
+                    continue
+                if line.startswith("*/", j):
+                    block_comment_depth -= 1
+                    j += 2
+                    continue
+            elif in_str:
                 if escaped:
                     escaped = False
                 elif ch == "\\":
@@ -105,8 +122,22 @@ def _slide_end_line(lines: list[str], sl: int) -> int | None:
                     in_str = False
             elif ch == "/" and j + 1 < len(line) and line[j + 1] == "/":
                 break                      # rest of the line is a comment
+            elif ch == "/" and j + 1 < len(line) and line[j + 1] == "*":
+                block_comment_depth = 1
+                j += 2
+                continue
             elif ch == '"':
                 in_str = True
+            elif ch == "`":
+                end = j + 1
+                while end < len(line) and line[end] == "`":
+                    end += 1
+                raw_ticks = end - j
+                j = end
+                continue
+            elif ch == "\\" and j + 1 < len(line):
+                j += 2                    # escaped markup delimiter, e.g. \]
+                continue
             elif ch == "[":
                 depth += 1
                 started = True
