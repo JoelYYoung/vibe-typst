@@ -5,11 +5,14 @@ import Projection from './Projection.jsx'
 import OnboardingPage from './OnboardingPage.jsx'
 import ProjectsPage from './ProjectsPage.jsx'
 import AdminPage from './AdminPage.jsx'
+import PdfWorkspace from './PdfWorkspace.jsx'
 import Toaster from './Toaster.jsx'
+import { workspaceComponentFor } from './projectTypes.js'
 import './styles.css'
 
 function Root() {
   const [view, setView] = useState('loading')
+  const [activeProject, setActiveProject] = useState(null)
 
   async function checkState() {
     try {
@@ -26,9 +29,13 @@ function Root() {
 
   useEffect(() => { checkState() }, [])
 
-  function goToEditor() { setView('editor') }
+  function goToEditor(project) {
+    setActiveProject(project)
+    setView('editor')
+  }
   function goToProjects() {
     fetch('/api/projects/close', { method: 'POST' }).catch(() => {})
+    setActiveProject(null)
     setView('projects')
   }
   function goToAdmin() { setView('admin') }
@@ -39,7 +46,12 @@ function Root() {
       {view === 'onboarding' && <OnboardingPage onDone={() => setView('projects')} />}
       {view === 'projects' && <ProjectsPage onOpen={goToEditor} onOpenAdmin={goToAdmin} />}
       {view === 'admin' && <AdminPage onBack={goToProjects} />}
-      {view === 'editor' && <App onBackToProjects={goToProjects} />}
+      {view === 'editor' && workspaceComponentFor(activeProject) === 'typst' && (
+        <App project={activeProject} onBack={goToProjects} onBackToProjects={goToProjects} />
+      )}
+      {view === 'editor' && workspaceComponentFor(activeProject) === 'pdf' && (
+        <PdfWorkspace project={activeProject} onBack={goToProjects} />
+      )}
       <Toaster />
     </>
   )
