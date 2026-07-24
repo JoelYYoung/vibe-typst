@@ -62,19 +62,21 @@ def _project_document(info: dict) -> tuple[str, Path]:
     main_name = info.get("main_file")
     if not isinstance(main_name, str) or not main_name:
         raise ValueError("project main file is invalid")
-    main_path = (project_dir / main_name).resolve()
+    main_lexical = project_dir / main_name
+    main_path = main_lexical.resolve()
     try:
         main_path.relative_to(project_dir)
     except ValueError as exc:
         raise ValueError("project main file escapes its project") from exc
     if project_type == "pdf":
-        if main_name != "document.pdf" or main_path.parent != project_dir:
+        if (main_name != "document.pdf" or main_lexical.parent != project_dir
+                or main_lexical.is_symlink()):
             raise ValueError("PDF project main file must be document.pdf")
         if main_path.suffix.lower() != ".pdf":
             raise ValueError("PDF project has an invalid document type")
     elif main_path.suffix.lower() != ".typ":
         raise ValueError("Typst project has an invalid main file")
-    if not main_path.is_file():
+    if not main_lexical.is_file():
         raise ValueError(f"main file {main_name!r} not found in project")
     return project_type, main_path
 
@@ -84,8 +86,19 @@ def _pdf_pages(path: Path | None = None) -> list[str]:
     if not directory.is_dir():
         return []
     pages = [path.name for path in directory.iterdir()
-             if path.is_file() and _PDF_PAGE_NAME.fullmatch(path.name)]
+             if path.is_file() and not path.is_symlink() and _PDF_PAGE_NAME.fullmatch(path.name)]
     return sorted(pages, key=lambda name: int(_PDF_PAGE_NAME.fullmatch(name).group(1)))
+
+
+def _pdf_render_page(name: str) -> Path | None:
+    """Return one current regular PDF render page, never a symlink or arbitrary file."""
+    if _PDF_PAGE_NAME.fullmatch(name) is None:
+        return None
+    directory = runtime.render_dir().resolve()
+    candidate = directory / name
+    if candidate.parent != directory or candidate.is_symlink() or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _pdf_context() -> tuple[Path, int]:
@@ -117,8 +130,17 @@ def _matching_pdf_project(pdf_path: Path) -> dict | None:
     return info if project_type == "pdf" and main_path == pdf_path else None
 
 
-def _record_pdf_render_version(pages: list[str], path: Path | None = None) -> int:
+def _pdf_identity(path: Path, project: dict | None = None) -> str:
+    project = project if project is not None else _active_project
+    project_id = project.get("id", "") if project else ""
+    return f"{project_id}:{path.resolve()}"
+
+
+def _record_pdf_render_version(pages: list[str], path: Path | None = None,
+                               identity: str | None = None) -> int:
     digest = hashlib.sha1()
+    target = path or runtime.current_file()
+    digest.update((identity or _pdf_identity(target)).encode("utf-8"))
     for name in pages:
         page = runtime.render_dir(path) / name
         digest.update(name.encode("utf-8"))
@@ -134,19 +156,19 @@ def _pdf_render_version() -> int:
     pages = _pdf_pages()
     if not pages:
         return _pdf_render_state["version"]
-    return _record_pdf_render_version(pages)
+    return _record_pdf_render_version(pages, runtime.current_file())
 
 
-def _prepare_pdf(pdf_path: Path, project_pdf: bool) -> tuple[dict, dict | None]:
+def _prepare_pdf(pdf_path: Path, project_pdf: bool, identity: str) -> tuple[dict, dict | None, int]:
     """Render/reconcile before disrupting the active Typst runtime."""
     rendered = pdf_service.render_pdf(pdf_path, runtime.render_dir(pdf_path))
     transcripts = (pdf_transcript.load(pdf_path.parent, "document.pdf", rendered["page_count"])
                    if project_pdf else None)
-    return rendered, transcripts
+    version = _record_pdf_render_version(rendered["pages"], pdf_path, identity)
+    return rendered, transcripts, version
 
 
-def _pdf_activation_response(rendered: dict, transcripts: dict | None) -> dict:
-    version = _record_pdf_render_version(rendered["pages"], runtime.current_file())
+def _pdf_activation_response(rendered: dict, transcripts: dict | None, version: int) -> dict:
     return {
         "file": str(runtime.current_file()), "project": str(runtime.project_dir()),
         "project_name": (_active_project or {}).get("name", ""), "mode": app_config.APP_MODE,
@@ -163,22 +185,26 @@ def _activate_pdf() -> dict:
         if runtime.document_type() != "pdf" or not pdf_path.is_file():
             raise ValueError("no active PDF document")
         project_pdf = False
+        identity = _pdf_identity(pdf_path, None)
     else:
         pdf_path, _ = _pdf_context()
         project_pdf = True
-    rendered, transcripts = _prepare_pdf(pdf_path, project_pdf)
+        identity = _pdf_identity(pdf_path)
+    rendered, transcripts, version = _prepare_pdf(pdf_path, project_pdf, identity)
     resolver.stop()
     try:
         store.close()
     except Exception:
         pass
-    return _pdf_activation_response(rendered, transcripts)
+    return _pdf_activation_response(rendered, transcripts, version)
 
 
 def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
     """Prepare PDF state before publishing a switch away from a Typst project."""
     global _active_project
-    rendered, transcripts = _prepare_pdf(pdf_path, project_pdf=True)
+    rendered, transcripts, version = _prepare_pdf(
+        pdf_path, project_pdf=True, identity=_pdf_identity(pdf_path, info)
+    )
     previous_file = runtime._state.get("file")
     previous_project = _active_project
     try:
@@ -189,7 +215,7 @@ def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
             store.close()
         except Exception:
             pass
-        return _pdf_activation_response(rendered, transcripts)
+        return _pdf_activation_response(rendered, transcripts, version)
     except Exception:
         _active_project = previous_project
         runtime.restore_file(previous_file)
@@ -245,6 +271,12 @@ def current_source() -> str:
     """The live document text (CRDT snapshot, falling back to disk)."""
     text = docstore.get_text()
     return text if text is not None else typst_service.read_source()
+
+
+def _require_typst_mode() -> None:
+    """Reject legacy source/preview functionality before it can touch Typst state."""
+    if runtime.document_type() == "pdf":
+        raise HTTPException(400, "endpoint is unavailable for PDF projects")
 
 
 # ---------------------------------------------------------------- crdt websocket
@@ -401,16 +433,31 @@ async def open_file(request: Request):
             return _activate_pdf_project(info, requested_path)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+    previous_file = runtime._state.get("file")
+    previous_project = _active_project
     try:
         runtime.set_file(requested)
+        _active_project = None
+        return await _activate_current()
     except ValueError as e:
-        raise HTTPException(400, str(e))
-    _active_project = None
-    return await _activate_current()
+        raise HTTPException(400, str(e)) from e
+    except Exception:
+        try:
+            resolver.stop()
+        except Exception:
+            pass
+        try:
+            store.close()
+        except Exception:
+            pass
+        _active_project = previous_project
+        runtime.restore_file(previous_file)
+        raise
 
 
 @app.post("/api/new-file")
 async def new_file(request: Request):
+    _require_typst_mode()
     body = await request.json()
     d = (body or {}).get("dir", "")
     name = (body or {}).get("name", "").strip()
@@ -438,6 +485,7 @@ async def new_file(request: Request):
 def setup_workdir():
     """Create/merge Claude + Codex agent config in the current working dir (called after the user
     confirms). Not done automatically — only when the user opts in."""
+    _require_typst_mode()
     paths = _setup_workdir_and_migrate()
     return {"ok": True, "ready": workdir.is_ready(), **paths}
 
@@ -663,23 +711,27 @@ def terminal_info():
 
 @app.post("/api/preview/start")
 def preview_start():
+    _require_typst_mode()
     return resolver.start()
 
 
 @app.post("/api/preview/stop")
 def preview_stop():
+    _require_typst_mode()
     resolver.stop()
     return resolver.status()
 
 
 @app.get("/api/preview/status")
 def preview_status():
+    _require_typst_mode()
     return resolver.status()
 
 
 @app.post("/api/preview/resolve")
 async def preview_resolve(request: Request):
     """Resolve a page coordinate (pt) to a source range, in-process via the Rust resolver."""
+    _require_typst_mode()
     body = await request.json()
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -693,6 +745,7 @@ async def preview_locate(request: Request):
     The exact caret may sit on MARKUP (`#only(3)[`, a closing `]`, the line end) which renders
     nothing, so if it misses we scan that source line for the nearest rendered position. This
     makes a caret click anywhere on a line — and a chip jump that selects a whole line — work."""
+    _require_typst_mode()
     body = await request.json()
     off = (body or {}).get("off")
     if off is None:
@@ -724,12 +777,14 @@ async def preview_locate(request: Request):
 @app.get("/api/notes")
 def get_notes():
     """Every speaker note in the live deck, with its slide/section."""
+    _require_typst_mode()
     return {"notes": notes_mod.list_notes()}
 
 
 @app.patch("/api/notes")
 async def patch_note(request: Request):
     """Edit one speaker note. Body: {raw: <exact existing content>, text: <new content>}."""
+    _require_typst_mode()
     body = await request.json() or {}
     return await notes_mod.update_note(body.get("raw", ""), body.get("text", ""))
 
@@ -738,6 +793,7 @@ async def patch_note(request: Request):
 async def create_note(request: Request):
     """Add a speaker note. Body: {slide_line, text, sub_index?, sub_total?}. When the slide
     has multiple subslides the note is gated to `sub_index` (see notes.create_note)."""
+    _require_typst_mode()
     body = await request.json() or {}
     return await notes_mod.create_note(
         body.get("slide_line"), body.get("text", ""),
@@ -896,6 +952,7 @@ async def api_locate(page: Optional[int] = None, slide: Optional[int] = None):
     `#slide[...]` call; one slide can render as several pages) to SOURCE LINES. These are
     DIFFERENT: a page maps to its enclosing slide's opener + a subslide index; a slide spans
     opener..close and may cover several pages."""
+    _require_typst_mode()
     smap = await slide_map()
     pages = smap.get("pages", [])
     if page is not None:
@@ -925,6 +982,7 @@ async def api_locate(page: Optional[int] = None, slide: Optional[int] = None):
 @app.get("/api/notes/export")
 async def export_notes():
     """Per-page narration as one plain-text script (TTS-ready), downloadable."""
+    _require_typst_mode()
     from fastapi.responses import PlainTextResponse
     await docstore.flush_now()
     loop = asyncio.get_running_loop()
@@ -938,6 +996,7 @@ async def export_notes():
 async def export_pdfpc():
     """The deck's `.pdfpc` file (per-page speaker notes) that the pdfpc presenter reads directly.
     Generated natively by touying via `typst query <deck> "<pdfpc-file>"`."""
+    _require_typst_mode()
     from fastapi.responses import PlainTextResponse
     await docstore.flush_now()
     loop = asyncio.get_running_loop()
@@ -952,6 +1011,7 @@ async def export_pdfpc():
 @app.post("/api/export-pdf")
 async def export_pdf():
     """Compile the CURRENT deck to PDF and return it as a download."""
+    _require_typst_mode()
     await docstore.flush_now()  # make sure disk has the latest live content
     main = runtime.current_file()
     proj = runtime.project_dir()
@@ -972,6 +1032,7 @@ async def export_pdf():
 @app.post("/api/preview/page-start")
 async def preview_page_start(request: Request):
     """Resolve the source location of a page's start (for jumping the editor there)."""
+    _require_typst_mode()
     body = await request.json()
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, resolver.page_start, int(body["page_no"]))
@@ -979,6 +1040,7 @@ async def preview_page_start(request: Request):
 
 @app.get("/api/source")
 def get_source():
+    _require_typst_mode()
     return {"source": current_source()}
 
 
@@ -986,6 +1048,7 @@ def get_source():
 def get_document(file: Optional[str] = None):
     """Live document text for a file (defaults to the active file). For the MCP edit tools.
     `rev` is the room's monotonic revision — pass it back as apply_edits(base_rev=...)."""
+    _require_typst_mode()
     return {"file": file or runtime.current_main(), "source": docstore.get_text(file),
             "rev": docstore.get_rev(file)}
 
@@ -993,6 +1056,7 @@ def get_document(file: Optional[str] = None):
 @app.post("/api/edit")
 async def edit(request: Request):
     """Apply one content-anchored edit to the live CRDT doc; broadcasts + persists."""
+    _require_typst_mode()
     op = await request.json()
     kind = (op or {}).get("op")
     rel = op.get("file")
@@ -1021,6 +1085,7 @@ async def edit(request: Request):
 async def reset_from_disk():
     """Discard the in-memory CRDT state and re-seed from the .typ on disk (use after an
     external edit). Reload the browser afterward."""
+    _require_typst_mode()
     r = await docstore.reset_from_disk()
     return r
 
@@ -1031,6 +1096,7 @@ async def compile_():
     # Refresh reports the real result instead of a blind "success" (or a stale error).
     # We key off `seq`, which bumps on every compile whether it rendered or errored, so a
     # pre-existing error from the previous compile never short-circuits the wait.
+    _require_typst_mode()
     seq0 = resolver.status()["seq"]
     await docstore.flush_now()
     waited = 0.0
@@ -1055,9 +1121,10 @@ def serve_render(name: str):
         raise HTTPException(400, "bad name")
     if runtime.document_type() == "pdf":
         _pdf_http_context()
-        if _PDF_PAGE_NAME.fullmatch(name) is None or name not in _pdf_pages():
+        p = _pdf_render_page(name)
+        if p is None or name not in _pdf_pages():
             raise HTTPException(404)
-        return FileResponse(runtime.render_dir() / name, headers={"Cache-Control": "no-cache"})
+        return FileResponse(p, headers={"Cache-Control": "no-cache"})
     p = typst_service.render_path(name)
     if not p.exists():
         raise HTTPException(404)
@@ -1211,15 +1278,27 @@ async def open_project(project_id: str):
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return {"ok": True, "project": info}
+    previous_file = runtime._state.get("file")
+    previous_project = _active_project
     try:
         runtime.set_file(str(main_path))
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    _active_project = info
-    store.set_path(str(runtime.store_path()))
-    runtime.backup()
-    await docstore.ensure_room()
-    resolver.start()
+        _active_project = info
+        store.set_path(str(runtime.store_path()))
+        runtime.backup()
+        await docstore.ensure_room()
+        resolver.start()
+    except Exception:
+        try:
+            resolver.stop()
+        except Exception:
+            pass
+        try:
+            store.close()
+        except Exception:
+            pass
+        _active_project = previous_project
+        runtime.restore_file(previous_file)
+        raise
     # Auto-set-up the workdir (Claude + Codex config + enabled vibe-typst MCP server) on every
     # project open, in BOTH local and server mode — so `claude` run in the project dir finds the
     # MCP. (Local mode previously never wrote a .mcp.json, so the MCP couldn't be found.)
@@ -1472,7 +1551,8 @@ async def git_commit(request: Request):
         raise HTTPException(400, "no active project")
     body = await request.json() or {}
     message = (body.get("message") or "").strip()
-    await docstore.flush_now()  # persist in-memory edits before snapshotting
+    if runtime.document_type() == "typst":
+        await docstore.flush_now()  # persist in-memory edits before snapshotting
     return vcs.save_version(runtime.project_dir(), message)
 
 
@@ -1485,6 +1565,15 @@ async def git_restore(request: Request):
     tag = (body.get("tag") or "").strip()
     if not tag:
         raise HTTPException(400, "tag is required")
+    if runtime.document_type() == "pdf":
+        result = vcs.restore_version(runtime.project_dir(), tag)
+        if not result["ok"]:
+            raise HTTPException(400, result.get("error", "restore failed"))
+        try:
+            _activate_pdf()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"ok": True, "project_type": "pdf"}
     # Rotate the CRDT room FIRST so the soon-to-be-orphaned room can't write its
     # stale in-memory content back over the files we're about to restore.
     new_room = docstore.rotate()
