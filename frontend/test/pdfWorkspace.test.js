@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import {
   createPdfPollController,
+  createPdfRestoreResetLatch,
   editPdfTranscriptDraft,
   finishPdfTranscriptSave,
   nextPdfRenderState,
@@ -79,6 +80,33 @@ test('PDF poll controller commits only a matched render/map generation after a m
   assert.equal(renderCalls, 2)
   assert.equal(mapCalls, 2)
   assert.equal(controller.maxConcurrent, 1)
+})
+
+test('PDF poll controller stops after one persistent generation mismatch and lets the scheduler retry', async () => {
+  const pairs = []
+  const errors = []
+  let renderCalls = 0
+  let mapCalls = 0
+  const controller = createPdfPollController({
+    loadRender: () => [
+      { generation: 'generation-A', pages: [] },
+      { generation: 'generation-A', pages: [] },
+      { generation: 'generation-C', pages: [] },
+    ][renderCalls++],
+    loadMap: () => [
+      { generation: 'generation-B', pages: [], orphans: [] },
+      { generation: 'generation-B', pages: [], orphans: [] },
+      { generation: 'generation-C', pages: [], orphans: [] },
+    ][mapCalls++],
+    onPair: (render) => pairs.push(render.generation),
+    onError: (error) => errors.push(error.message),
+  })
+
+  assert.equal(await controller.poll(), false)
+  assert.deepEqual(pairs, [])
+  assert.equal(renderCalls, 2)
+  assert.equal(mapCalls, 2)
+  assert.deepEqual(errors, ['PDF render and transcript generations did not converge'])
 })
 
 test('PDF poll controller does not start a map request before its render request settles', async () => {
@@ -178,6 +206,30 @@ test('PDF poll invalidation does not report a prior mutation when its queued ref
   assert.equal(await controller.poll(), false)
 })
 
+test('PDF restore reset stays pending through a failed refresh and consumes once after periodic recovery', async () => {
+  const resets = []
+  const latch = createPdfRestoreResetLatch(() => resets.push('reset'))
+  let renders = 0
+  const controller = createPdfPollController({
+    loadRender: () => renders++ === 0
+      ? Promise.reject(new Error('temporary refresh failure'))
+      : { generation: 'generation-B', pages: ['restored.png'] },
+    loadMap: () => ({ generation: 'generation-B', pages: [{ page: 1, note: 'restored' }], orphans: [] }),
+    onPair: () => latch.consume(),
+  })
+
+  latch.markPending()
+  assert.equal(await controller.invalidateMapAfterSave(), false)
+  assert.deepEqual(resets, [])
+  assert.equal(latch.pending, true)
+
+  assert.equal(await controller.poll(), true)
+  assert.deepEqual(resets, ['reset'])
+  assert.equal(latch.pending, false)
+  await controller.poll()
+  assert.deepEqual(resets, ['reset'])
+})
+
 test('PDF transcript drafts remain per-page when page one saves after page two is edited', () => {
   let drafts = reconcilePdfTranscriptDrafts({}, [
     { page: 1, note: 'one' }, { page: 2, note: 'two' },
@@ -207,18 +259,18 @@ test('PDF transcript save request is captured synchronously and marks only that 
 })
 
 test('PDF transcript export uses the last saved per-page base and restore reset discards drafts', () => {
-  const rows = [{ page: 1, note: 'server one' }, { page: 2, note: 'server two' }]
+  const rows = [{ page: 1, note: 'server fresh one' }, { page: 2, note: 'server two' }]
   const drafts = {
     1: { draft: 'dirty one', base: 'saved one', saving: false },
     2: { draft: 'saved two', base: 'saved two', saving: false },
   }
-  assert.equal(pdfTranscriptExportText(['page-1.png', 'page-2.png'], rows, drafts), 'Page 1\nsaved one\n\nPage 2\nsaved two\n')
+  assert.equal(pdfTranscriptExportText(['page-1.png', 'page-2.png'], rows, drafts), 'Page 1\nserver fresh one\n\nPage 2\nsaved two\n')
   assert.deepEqual(resetPdfTranscriptDrafts(drafts, [{ page: 1, note: 'restored one' }], 1), {
     1: { draft: 'restored one', base: 'restored one', saving: false },
   })
   const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
   assert.match(workspace, /Unsaved transcript drafts will be discarded/)
-  assert.match(workspace, /await onRestored\?\.\(\)/)
+  assert.match(workspace, /await onRestored\?\.\(\)\n        await reload\(\)/)
 })
 
 test('PDF versions keep the API array response and the drawer exposes restore', () => {

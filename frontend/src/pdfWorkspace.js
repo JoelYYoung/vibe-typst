@@ -39,6 +39,7 @@ export function createPdfPollController({ loadRender, loadMap, onPair = () => {}
 
   const run = async () => {
     let committedMutation = -1
+    let mismatchRetries = 0
     do {
       queued = false
       const expectedMapMutation = mapMutation
@@ -48,8 +49,13 @@ export function createPdfPollController({ loadRender, loadMap, onPair = () => {}
         const render = await loadRender()
         const map = await loadMap()
         if (!render?.generation || render.generation !== map?.generation) {
-          queued = true
-          continue
+          if (mismatchRetries++ === 0) {
+            queued = true
+            continue
+          }
+          onError(new Error('PDF render and transcript generations did not converge'))
+          queued = false
+          break
         }
         if (expectedMapMutation === mapMutation) {
           onPair(render, map)
@@ -83,6 +89,20 @@ export function createPdfPollController({ loadRender, loadMap, onPair = () => {}
   }
 }
 
+export function createPdfRestoreResetLatch(onReset = () => {}) {
+  let pending = false
+  return {
+    markPending() { pending = true },
+    consume() {
+      if (!pending) return false
+      pending = false
+      onReset()
+      return true
+    },
+    get pending() { return pending },
+  }
+}
+
 const pageNote = (rows, page) => {
   const row = Array.isArray(rows) ? rows.find((candidate) => candidate && candidate.page === page) : null
   return row && typeof row.note === 'string' ? row.note : ''
@@ -111,8 +131,11 @@ export function resetPdfTranscriptDrafts(_previous = {}, rows, total) {
 export function pdfTranscriptExportText(pages, rows, drafts = {}) {
   return pageNames(pages).map((_, index) => {
     const page = index + 1
-    const base = drafts[page]?.base
-    const text = typeof base === 'string' ? base : pageNote(rows, page)
+    const draft = drafts[page]
+    const base = draft?.base
+    const text = draft && pdfTranscriptDirty(draft.draft, base)
+      ? pageNote(rows, page)
+      : (typeof base === 'string' ? base : pageNote(rows, page))
     return `Page ${page}\n${text}`
   }).join('\n\n') + '\n'
 }

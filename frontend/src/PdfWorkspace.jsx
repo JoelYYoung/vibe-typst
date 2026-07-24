@@ -3,7 +3,7 @@ import * as api from './api.js'
 import TermPanel from './TermPanel.jsx'
 import Presenter from './Presenter.jsx'
 import PdfPreviewPane from './PdfPreviewPane.jsx'
-import { createPdfPollController, nextPdfRenderState, pdfVersions } from './pdfWorkspace.js'
+import { createPdfPollController, createPdfRestoreResetLatch, nextPdfRenderState, pdfVersions } from './pdfWorkspace.js'
 import { toast } from './Toaster.jsx'
 
 function PdfFilesDrawer({ onClose, onRestored }) {
@@ -25,8 +25,8 @@ function PdfFilesDrawer({ onClose, onRestored }) {
     try {
       const result = await api.gitRestore(version.tag)
       if (result && result.ok) {
-        await reload()
         await onRestored?.()
+        await reload()
       } else {
         toast.error((result && result.error) || 'Could not restore version')
       }
@@ -66,6 +66,12 @@ export default function PdfWorkspace({ project, onBack }) {
   const pointerRef = useRef(null)
   const lastPongRef = useRef(0)
   const initialLoadRef = useRef(true)
+  const restoreResetLatchRef = useRef(null)
+  if (!restoreResetLatchRef.current) {
+    restoreResetLatchRef.current = createPdfRestoreResetLatch(
+      () => setTranscriptResetEpoch((epoch) => epoch + 1)
+    )
+  }
   const pollerRef = useRef(null)
   if (!pollerRef.current) {
     pollerRef.current = createPdfPollController({
@@ -80,6 +86,7 @@ export default function PdfWorkspace({ project, onBack }) {
         setRender((previous) => nextPdfRenderState(previous, renderResult))
         setSlideMap(mapResult.pages || [])
         setOrphans(mapResult.orphans || [])
+        restoreResetLatchRef.current.consume()
       },
       // Keep the last successful transcript map and render visible during a replacement retry.
       onError: () => {},
@@ -88,9 +95,9 @@ export default function PdfWorkspace({ project, onBack }) {
   const poller = pollerRef.current
   const refreshAfterTranscriptSave = useCallback(() => poller.invalidateMapAfterSave(), [poller])
   const refreshAfterRestore = useCallback(async () => {
+    restoreResetLatchRef.current.markPending()
     const refreshed = await poller.invalidateMapAfterSave()
     if (!refreshed) throw new Error('Could not refresh the restored PDF')
-    setTranscriptResetEpoch((epoch) => epoch + 1)
   }, [poller])
 
   useEffect(() => {
