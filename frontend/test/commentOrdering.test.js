@@ -19,6 +19,17 @@ test('legacy done comments fall back to updated time and then sequence', () => {
   assert.deepEqual(filterAndSortComments(comments, 'done').map((c) => c.id), ['second', 'first'])
 })
 
+test('done sequence wins when completion timestamps are identical', () => {
+  const comments = [
+    { id: 'created-first-completed-last', seq: 1, done_seq: 2, status: 'done', done_at: 'same' },
+    { id: 'created-second-completed-first', seq: 2, done_seq: 1, status: 'done', done_at: 'same' },
+  ]
+  assert.deepEqual(filterAndSortComments(comments, 'done').map((c) => c.id), [
+    'created-first-completed-last',
+    'created-second-completed-first',
+  ])
+})
+
 test('pending and all views retain their existing sequence order', () => {
   const comments = [
     { id: 'first', seq: 1, status: 'pending' },

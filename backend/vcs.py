@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import tempfile
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 # Things that change constantly and would otherwise keep the repo perpetually
@@ -45,7 +46,9 @@ _IGNORE_PATTERNS = [
 
 _GIT_CONFIG = [("user.email", "vibe@local"), ("user.name", "Vibe Typst")]
 _US = "\x1f"  # unit separator for --format parsing
-_HOUSEKEEPING_MESSAGE = "chore: stop tracking app-managed files"
+_HOUSEKEEPING_SUBJECT = "chore: stop tracking app-managed files"
+_HOUSEKEEPING_TRAILER = "Vibe-Typst-Housekeeping: 1"
+_HOUSEKEEPING_MESSAGE = f"{_HOUSEKEEPING_SUBJECT}\n\n{_HOUSEKEEPING_TRAILER}"
 
 
 def _run(args, cwd, input=None, env=None):
@@ -68,20 +71,51 @@ def is_repo(project_dir: Path) -> bool:
     return rc == 0
 
 
-def _ensure_gitignore(project_dir: Path) -> None:
-    gi = project_dir / ".gitignore"
-    existing = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+def _is_managed_path(path: str) -> bool:
+    """Whether *path* is runtime state owned by Vibe Typst rather than deck content."""
+    clean = path.strip("/")
+    name = Path(clean).name
+    for pattern in _IGNORE_PATTERNS:
+        if pattern.endswith("/"):
+            prefix = pattern.rstrip("/")
+            if clean == prefix or clean.startswith(prefix + "/"):
+                return True
+        elif "/" in pattern:
+            if fnmatchcase(clean, pattern):
+                return True
+        elif fnmatchcase(name, pattern):
+            return True
+    return False
+
+
+def _ensure_excludes(project_dir: Path) -> None:
+    """Ignore runtime state locally without editing the user's versioned .gitignore."""
+    raw, _, rc = _run(["rev-parse", "--git-path", "info/exclude"], project_dir)
+    if rc != 0 or not raw:
+        return
+    exclude = Path(raw)
+    if not exclude.is_absolute():
+        exclude = project_dir / exclude
+    existing = exclude.read_text(encoding="utf-8").splitlines() if exclude.exists() else []
     have = {l.strip() for l in existing}
     missing = [p for p in _IGNORE_PATTERNS if p not in have]
     if missing:
-        header = [] if existing else ["# Vibe Typst — generated"]
-        gi.write_text("\n".join(existing + header + missing) + "\n", encoding="utf-8")
+        exclude.parent.mkdir(parents=True, exist_ok=True)
+        header = ["", "# Vibe Typst — app-managed runtime state"] if existing else [
+            "# Vibe Typst — app-managed runtime state"
+        ]
+        exclude.write_text("\n".join(existing + header + missing) + "\n", encoding="utf-8")
 
 
 def _untrack_ignored(project_dir: Path) -> None:
-    """Stop tracking any file that now matches .gitignore (app-managed configs a prior version
-    committed, crash dumps, a comment DB). Without this those volatile files keep the repo
-    permanently 'dirty' and trigger false discard prompts / spurious saves.
+    """Stop tracking app-managed files now covered by the repository's local excludes.
+
+    User-authored ignore rules are deliberately out of scope: an ignored file is only removed
+    when its path also matches Vibe Typst's explicit runtime-state allowlist.
+
+    This covers app-managed configs committed by an older version, crash dumps, and comment
+    databases. Without cleanup those volatile files keep the repo permanently "dirty" and
+    trigger false discard prompts or spurious saves.
 
     The removal is committed through an isolated temporary index, so pre-existing staged deck
     edits remain staged instead of leaking into the housekeeping commit. Existing version tags
@@ -89,7 +123,7 @@ def _untrack_ignored(project_dir: Path) -> None:
     the current deck version.
     """
     out, _, _ = _run(["ls-files", "-i", "-c", "--exclude-standard"], project_dir)
-    ignored = [x.strip() for x in out.splitlines() if x.strip()]
+    ignored = [x.strip() for x in out.splitlines() if x.strip() and _is_managed_path(x)]
     old_head = _head_commit(project_dir)
     if old_head is None:
         return  # no history yet — save_version() will make the first commit
@@ -99,10 +133,9 @@ def _untrack_ignored(project_dir: Path) -> None:
         if _run(["read-tree", old_head], project_dir, env=index_env)[2] != 0:
             return
         for f in ignored:
-            if _run(["rm", "--cached", "--", f], project_dir, env=index_env)[2] != 0:
+            if _run(["update-index", "--force-remove", "--", f],
+                    project_dir, env=index_env)[2] != 0:
                 return
-        if _run(["add", "--", ".gitignore"], project_dir, env=index_env)[2] != 0:
-            return
         if _run(["diff", "--cached", "--quiet"], project_dir, env=index_env)[2] == 0:
             return
         tree, _, rc = _run(["write-tree"], project_dir, env=index_env)
@@ -118,11 +151,35 @@ def _untrack_ignored(project_dir: Path) -> None:
     # Bring only the housekeeping paths in the caller's real index to the new commit state.
     # Any deck changes already staged there are deliberately untouched.
     for f in ignored:
-        if _run(["rm", "--cached", "--", f], project_dir)[2] != 0:
+        if _run(["update-index", "--force-remove", "--", f], project_dir)[2] != 0:
             return
-    if _run(["add", "--", ".gitignore"], project_dir)[2] != 0:
+    _, _, rc = _run(
+        ["update-ref", "-m", "vibe-typst housekeeping", "HEAD", new_head, old_head],
+        project_dir,
+    )
+    if rc != 0:
         return
-    _run(["update-ref", "-m", "vibe-typst housekeeping", "HEAD", new_head, old_head], project_dir)
+
+
+def _is_housekeeping_commit(project_dir: Path, commit: str) -> bool:
+    """Recognize only commits created by this module, never a matching user subject alone."""
+    body, _, rc = _run(["show", "-s", "--format=%B", commit], project_dir)
+    if rc != 0 or _HOUSEKEEPING_TRAILER not in body.splitlines():
+        return False
+    parent, _, rc = _run(["rev-parse", f"{commit}^"], project_dir)
+    if rc != 0:
+        return False
+    changes, _, rc = _run(
+        ["diff-tree", "--no-commit-id", "--name-status", "-r", parent, commit],
+        project_dir,
+    )
+    if rc != 0 or not changes:
+        return False
+    for line in changes.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) != 2 or parts[0] != "D" or not _is_managed_path(parts[1]):
+            return False
+    return True
 
 
 def _current_version_tag(project_dir: Path) -> str | None:
@@ -139,8 +196,7 @@ def _current_version_tag(project_dir: Path) -> str | None:
         tags = [t for t in out.splitlines() if t.strip()]
         if tags:
             return tags[-1]
-        subject, _, rc = _run(["show", "-s", "--format=%s", commit], project_dir)
-        if rc != 0 or subject != _HOUSEKEEPING_MESSAGE:
+        if not _is_housekeeping_commit(project_dir, commit):
             return None
         parent, _, rc = _run(["rev-parse", f"{commit}^"], project_dir)
         commit = parent if rc == 0 else None
@@ -148,13 +204,13 @@ def _current_version_tag(project_dir: Path) -> str | None:
 
 
 def migrate(project_dir: Path) -> None:
-    """Idempotent housekeeping for an EXISTING repo: refresh .gitignore and stop tracking any
+    """Idempotent housekeeping for an EXISTING repo: refresh local excludes and stop tracking any
     now-ignored app-managed/junk files. Safe to call on every project open; a no-op once clean."""
     if not is_repo(project_dir):
         return
     for k, v in _GIT_CONFIG:                     # ensure identity exists before any commit
         _run(["config", k, v], project_dir)
-    _ensure_gitignore(project_dir)
+    _ensure_excludes(project_dir)
     _untrack_ignored(project_dir)
 
 
@@ -163,7 +219,7 @@ def _ensure_init(project_dir: Path) -> None:
         _run(["init"], project_dir)
     for k, v in _GIT_CONFIG:                     # always ensure identity (needed before commit)
         _run(["config", k, v], project_dir)
-    _ensure_gitignore(project_dir)
+    _ensure_excludes(project_dir)
     _untrack_ignored(project_dir)
 
 
@@ -234,7 +290,9 @@ def save_version(project_dir: Path, message: str = "") -> dict:
     """Commit the current working tree and tag it as a new version."""
     _ensure_init(project_dir)
     msg = message.strip()
-    _run(["add", "-A"], project_dir)
+    out, err, rc = _run(["add", "-A"], project_dir)
+    if rc != 0:
+        return {"ok": False, "error": err or out or "could not stage project files"}
     out, err, rc = _run(["commit", "-m", msg or "snapshot"], project_dir)
     nothing = "nothing to commit" in (out + err).lower()
     if rc != 0 and not nothing:
@@ -251,6 +309,41 @@ def save_version(project_dir: Path, message: str = "") -> dict:
     return {"ok": True, "tag": tag}
 
 
+def _restore_commit_without_managed_files(
+    project_dir: Path, commit: str
+) -> tuple[str | None, str | None]:
+    """Return a safe restore commit which cannot overwrite live runtime state.
+
+    Old version tags may contain comment databases and agent configuration from before those
+    paths were excluded. The tag remains immutable; an untagged housekeeping child removes only
+    those known paths before checkout.
+    """
+    out, err, rc = _run(["ls-tree", "-r", "--name-only", commit], project_dir)
+    if rc != 0:
+        return None, err or "could not inspect version"
+    managed = [path for path in out.splitlines() if _is_managed_path(path)]
+    if not managed:
+        return commit, None
+    with tempfile.TemporaryDirectory(prefix="vibe-typst-restore-index-") as td:
+        index_env = {"GIT_INDEX_FILE": str(Path(td) / "index")}
+        if _run(["read-tree", commit], project_dir, env=index_env)[2] != 0:
+            return None, "could not prepare version restore"
+        for path in managed:
+            if _run(["update-index", "--force-remove", "--", path],
+                    project_dir, env=index_env)[2] != 0:
+                return None, f"could not protect app-managed file: {path}"
+        tree, err, rc = _run(["write-tree"], project_dir, env=index_env)
+        if rc != 0:
+            return None, err or "could not prepare protected version tree"
+    safe_commit, err, rc = _run(
+        ["commit-tree", tree, "-p", commit, "-m", _HOUSEKEEPING_MESSAGE],
+        project_dir,
+    )
+    if rc != 0:
+        return None, err or "could not prepare protected version"
+    return safe_commit, None
+
+
 def restore_version(project_dir: Path, tag: str) -> dict:
     """Reset the working tree (and the master branch) to a tagged version.
 
@@ -263,10 +356,13 @@ def restore_version(project_dir: Path, tag: str) -> dict:
     commit, _, rc = _run(["rev-parse", "--verify", f"{tag}^{{commit}}"], project_dir)
     if rc != 0:
         return {"ok": False, "error": "unknown version"}
-    # Clear any local changes, then point master at the tag's commit and check it
-    # out (this also reattaches HEAD if a legacy detached state was left behind).
-    _run(["reset", "--hard"], project_dir)
-    _, err, rc = _run(["checkout", "-B", "master", commit.strip()], project_dir)
+    _ensure_excludes(project_dir)
+    safe_commit, error = _restore_commit_without_managed_files(project_dir, commit.strip())
+    if error or not safe_commit:
+        return {"ok": False, "error": error or "could not prepare version"}
+    # Point master at a tree that never contains live comment/agent state. `-f` implements the
+    # caller-confirmed discard for versioned deck files while leaving excluded runtime files.
+    _, err, rc = _run(["checkout", "-f", "-B", "master", safe_commit], project_dir)
     if rc != 0:
         return {"ok": False, "error": err}
     return {"ok": True}

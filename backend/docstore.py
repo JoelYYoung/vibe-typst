@@ -452,6 +452,31 @@ def _neighborhood(s: str, frm: int, to: int, pad: int = 80) -> str:
     return s[max(0, frm - pad):min(len(s), to + pad)]
 
 
+def _selector_neighborhood(s: str, selector: dict) -> str:
+    """Best-effort live context even when a malformed selector has no resolvable span."""
+    kind = selector.get("by")
+    if kind == "anchor":
+        anchor = selector.get("text") or selector.get("anchor")
+        if isinstance(anchor, str) and anchor:
+            at = s.find(anchor)
+            if at >= 0:
+                return _neighborhood(s, at, at + len(anchor))
+    elif kind == "lines":
+        start = selector.get("start")
+        if isinstance(start, int) and not isinstance(start, bool):
+            offsets = _line_starts(s)
+            at = offsets[min(max(start - 1, 0), len(offsets) - 1)]
+            return _neighborhood(s, at, at)
+    elif kind == "range":
+        frm = selector.get("from")
+        to = selector.get("to")
+        if all(isinstance(value, int) and not isinstance(value, bool) for value in (frm, to)):
+            a = min(max(frm, 0), len(s))
+            b = min(max(to, a), len(s))
+            return _neighborhood(s, a, b)
+    return s[:160]
+
+
 def _line_newline_fixup(kind: str, s: str, frm: int, to: int, txt: str) -> str:
     """Keep whole-line structure for `lines` edits: a line replacement/insertion ends on its
     own line (and an append past EOF starts on one)."""
@@ -501,11 +526,39 @@ async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> di
     text = st["text"]
     s = str(text)
     cur_rev = st.get("rev", 0)
+    if not isinstance(edits, list):
+        return {"ok": False, "conflict": True, "error": "edits must be a list",
+                "rev": cur_rev, "room": st["key"]}
+    for i, edit in enumerate(edits):
+        if not isinstance(edit, dict):
+            return {"ok": False, "conflict": True, "index": i,
+                    "error": "each edit must be an object", "rev": cur_rev, "room": st["key"]}
+        selector = edit.get("selector")
+        if selector is not None and not isinstance(selector, dict):
+            return {"ok": False, "conflict": True, "index": i,
+                    "error": "selector must be an object", "rev": cur_rev, "room": st["key"]}
+        if not isinstance(edit.get("text", ""), str):
+            return {"ok": False, "conflict": True, "index": i,
+                    "error": "replacement text must be a string",
+                    "rev": cur_rev, "room": st["key"]}
+        if "expect" in edit and not isinstance(edit["expect"], str):
+            return {"ok": False, "conflict": True, "index": i,
+                    "error": "expect must be a string",
+                    "rev": cur_rev, "room": st["key"]}
+
+    stale = base_rev is not None and base_rev != cur_rev
     resolved = []                                            # (from_cp, to_cp, txt, idx)
     for i, e in enumerate(edits or []):
-        frm, to, kind, err = _resolve_selector(_selector_of(e), s)
+        selector = _selector_of(e)
+        frm, to, kind, err = _resolve_selector(selector, s)
         if err:
             return {"ok": False, "conflict": True, "index": i, "error": err,
+                    "context": _selector_neighborhood(s, selector),
+                    "rev": cur_rev, "room": st["key"]}
+        if stale and kind in {"lines", "range"} and "expect" not in e:
+            return {"ok": False, "conflict": True, "index": i,
+                    "error": "stale base_rev requires expect for positional selectors",
+                    "context": _neighborhood(s, frm, to),
                     "rev": cur_rev, "room": st["key"]}
         expect = e.get("expect")
         if expect is not None and s[frm:to] != expect:
@@ -540,7 +593,7 @@ async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> di
         _guard_external_edit(st, s)
         _refresh(st)
     return {"ok": True, "rev": st["rev"], "applied": len(resolved),
-            "rebased": base_rev is not None and base_rev != cur_rev,
+            "rebased": stale,
             "external_edit_seq": _mark_external_edit(), "room": st["key"]}
 
 
