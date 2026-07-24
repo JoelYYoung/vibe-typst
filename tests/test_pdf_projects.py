@@ -200,3 +200,99 @@ class PdfRenderingTest(unittest.TestCase):
         after = {path.name: path.read_bytes() for path in destination.iterdir()}
         self.assertEqual(after, before)
         self.assertEqual([path for path in self.root.iterdir() if path.name.startswith(".")], [])
+
+
+class PdfTranscriptTest(unittest.TestCase):
+    def setUp(self):
+        import pdf_transcript
+
+        self.transcript = pdf_transcript
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "project"
+        self.root.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_new_sidecar_has_one_blank_entry_per_page(self):
+        data = self.transcript.load(self.root, "document.pdf", 2)
+
+        self.assertEqual(data["pages"], {"1": {"text": ""}, "2": {"text": ""}})
+
+    def test_shrink_moves_text_to_orphans_without_loss(self):
+        self.transcript.set_page(self.root, "document.pdf", 3, 3, "closing")
+
+        data = self.transcript.load(self.root, "document.pdf", 2)
+
+        self.assertEqual(data["orphans"]["3"]["text"], "closing")
+
+    def test_batch_validation_is_atomic(self):
+        before = self.transcript.load(self.root, "document.pdf", 2)
+
+        with self.assertRaises(ValueError):
+            self.transcript.set_pages(self.root, "document.pdf", 2, [
+                {"page": 1, "text": "valid"}, {"page": 9, "text": "invalid"}
+            ])
+
+        self.assertEqual(self.transcript.load(self.root, "document.pdf", 2), before)
+
+    def test_restore_orphan_moves_its_text_to_an_active_page(self):
+        self.transcript.set_page(self.root, "document.pdf", 3, 3, "closing")
+        self.transcript.load(self.root, "document.pdf", 2)
+
+        data = self.transcript.restore_orphan(self.root, "document.pdf", 2, 3, 1)
+
+        self.assertEqual(data["pages"]["1"]["text"], "closing")
+        self.assertNotIn("3", data["orphans"])
+
+    def test_orphan_collision_preserves_every_text_with_a_stable_suffix(self):
+        self.transcript.set_page(self.root, "document.pdf", 3, 3, "first")
+        self.transcript.load(self.root, "document.pdf", 2)
+        self.transcript.set_page(self.root, "document.pdf", 3, 3, "second")
+
+        data = self.transcript.load(self.root, "document.pdf", 2)
+
+        self.assertEqual(data["orphans"]["3"], {"text": "first"})
+        self.assertEqual(data["orphans"]["3#2"], {"text": "second"})
+
+    def test_invalid_and_malformed_batches_leave_the_sidecar_unchanged(self):
+        before = self.transcript.load(self.root, "document.pdf", 2)
+        invalid_updates = [
+            ({"page": 1, "text": "not a list"},),
+            ([{"page": 1, "text": "valid"}, {"page": True, "text": "bad"}],),
+            ([{"page": 1, "text": "valid"}, {"page": 2}],),
+            ([{"page": 1, "text": 42}],),
+            ([{"page": 1, "text": "valid", "extra": "bad"}],),
+        ]
+
+        for (updates,) in invalid_updates:
+            with self.assertRaises(ValueError):
+                self.transcript.set_pages(self.root, "document.pdf", 2, updates)
+            self.assertEqual(self.transcript.load(self.root, "document.pdf", 2), before)
+
+    def test_invalid_pdf_name_and_page_count_are_rejected(self):
+        for pdf_name, page_count in [("", 1), (None, 1), ("document.pdf", 0),
+                                     ("document.pdf", True)]:
+            with self.assertRaises(ValueError):
+                self.transcript.load(self.root, pdf_name, page_count)
+
+    def test_corrupt_or_unsupported_sidecar_is_rejected_without_replacing_it(self):
+        sidecar = self.root / "transcript.json"
+        for contents in ["{ not json", json.dumps({"schema_version": 2, "pdf": "document.pdf",
+                                                       "pages": {}, "orphans": {}})]:
+            sidecar.write_text(contents, encoding="utf-8")
+            with self.assertRaises(ValueError):
+                self.transcript.load(self.root, "document.pdf", 1)
+            self.assertEqual(sidecar.read_text(encoding="utf-8"), contents)
+
+    def test_failed_atomic_write_preserves_prior_sidecar_and_cleans_temp_file(self):
+        self.transcript.set_page(self.root, "document.pdf", 1, 1, "before")
+        sidecar = self.root / "transcript.json"
+        before = sidecar.read_bytes()
+
+        with patch.object(self.transcript.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.transcript.set_page(self.root, "document.pdf", 1, 1, "after")
+
+        self.assertEqual(sidecar.read_bytes(), before)
+        self.assertEqual(list(self.root.glob(".transcript-*")), [])
