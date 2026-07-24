@@ -676,7 +676,6 @@ async def new_file(request: Request):
 def setup_workdir():
     """Create/merge Claude + Codex agent config in the current working dir (called after the user
     confirms). Not done automatically — only when the user opts in."""
-    _require_typst_mode()
     paths = _setup_workdir_and_migrate()
     return {"ok": True, "ready": workdir.is_ready(), **paths}
 
@@ -1148,6 +1147,29 @@ async def patch_pdf_transcripts(request: Request):
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/pdf/transcripts/restore")
+async def restore_pdf_orphan_transcript(request: Request):
+    """Restore a retained transcript entry to a current PDF page."""
+    body = await _json_object(request)
+    if set(body) != {"orphan_page", "target_page"}:
+        raise HTTPException(400, "body must contain only orphan_page and target_page")
+    try:
+        expected = _capture_pdf_identity()
+
+        def restore_sync():
+            return _locked_pdf_observation(
+                lambda _pdf_path, page_count: pdf_transcript.restore_orphan(
+                    expected.project, "document.pdf", page_count,
+                    body["orphan_page"], body["target_page"],
+                ),
+                expected,
+            )
+
+        return await asyncio.to_thread(restore_sync)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/api/pdf/replace")
 async def replace_pdf(request: Request):
     """Replace the active immutable PDF with durable before/after version snapshots."""
@@ -1612,6 +1634,10 @@ async def open_project(project_id: str):
             await _activate_pdf_project(info, main_path)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        try:
+            _setup_workdir_and_migrate()
+        except Exception:
+            pass
         return {"ok": True, "project": info}
     previous_file = runtime._state.get("file")
     previous_project = _active_project
