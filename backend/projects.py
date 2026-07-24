@@ -158,7 +158,8 @@ def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
     root = _projects_root()
     root.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
-    project_dir: Path | None = None
+    staging_dir: Path | None = None
+    published_dir: Path | None = None
     try:
         fd, raw_temp_path = tempfile.mkstemp(prefix=".pdf-upload-", suffix=".pdf", dir=root)
         temp_path = Path(raw_temp_path)
@@ -173,21 +174,26 @@ def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
         while project_dir.exists():
             dir_id = uuid.uuid4().hex[:12]
             project_dir = root / dir_id
-        project_dir.mkdir()
+        staging_dir = Path(tempfile.mkdtemp(prefix=".pdf-project-", dir=root))
 
-        os.replace(temp_path, project_dir / "document.pdf")
+        os.replace(temp_path, staging_dir / "document.pdf")
         temp_path = None
-        _write_meta(project_dir, {
+        _write_meta(staging_dir, {
             "name": name,
             "created": datetime.now(timezone.utc).isoformat(),
             "type": "pdf",
             "main_file": "document.pdf",
             "original_filename": filename,
         })
+        staging_dir.rename(project_dir)
+        published_dir = project_dir
+        staging_dir = None
         return _project_info(project_dir)
     except Exception:
-        if project_dir is not None:
-            shutil.rmtree(project_dir, ignore_errors=True)
+        if staging_dir is not None:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        if published_dir is not None:
+            shutil.rmtree(published_dir, ignore_errors=True)
         raise
     finally:
         if temp_path is not None:
