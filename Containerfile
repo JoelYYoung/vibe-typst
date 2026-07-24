@@ -11,8 +11,8 @@
 #
 # Python venv (same OS/Python as container — bookworm Python 3.11.2):
 #   cd backend && /mnt/scratch/PAG/yjw/tools/uv/uv sync
-#   tar czf .venv.tar.gz .venv
-#   (re-run after any changes to pyproject.toml)
+#   tar czf ../.venv.tar.gz .venv
+#   (re-run after any changes to pyproject.toml; never substitute a macOS venv)
 #
 # Then run:  podman build -t tcb-workspace:latest .
 
@@ -53,7 +53,8 @@ COPY backend/ /app/backend/
 COPY .venv.tar.gz /tmp/venv.tar.gz
 RUN tar xzf /tmp/venv.tar.gz -C /app/backend/ --no-same-owner && \
     rm /tmp/venv.tar.gz && \
-    /app/backend/.venv/bin/python --version
+    /app/backend/.venv/bin/python --version && \
+    /app/backend/.venv/bin/python -c 'import fitz'
 
 # Pre-compiled resolver binary (built natively on O3 to avoid Docker/Podman resource limits)
 COPY resolver/target/release/tcb-resolver ./resolver/target/release/tcb-resolver
