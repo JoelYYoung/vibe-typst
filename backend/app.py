@@ -309,6 +309,11 @@ def _pdf_render_version(path: Path | None = None, identity: str | None = None) -
     return _pdf_render_state["version"]
 
 
+def _pdf_render_generation() -> str:
+    """The restart-stable opaque identity of the recorded PDF render generation."""
+    return _pdf_render_state["fingerprint"]
+
+
 def _prepare_pdf(pdf_path: Path, project_pdf: bool, identity: str) -> tuple[dict, dict | None, int]:
     """Render/reconcile before disrupting the active Typst runtime."""
     rendered = pdf_service.render_pdf(pdf_path, runtime.render_dir(pdf_path))
@@ -330,7 +335,7 @@ def _pdf_activation_response(
         "project_name": target.project_name, "mode": app_config.APP_MODE,
         "project_type": "pdf", "main": target.pdf.name,
         "selected_file": target.pdf.name, "source": "", "pages": rendered["pages"],
-        "tokens": {}, "version": version, "transcripts": transcripts,
+        "tokens": {}, "version": version, "generation": _pdf_render_generation(), "transcripts": transcripts,
     }
 
 
@@ -517,6 +522,7 @@ def state():
                     "pages": pages,
                     "tokens": {},
                     "version": _pdf_render_version(expected.pdf, expected.identity),
+                    "generation": _pdf_render_generation(),
                 }
             return _locked_pdf_observation(observe, expected, recorded_render=True)
         except ValueError as exc:
@@ -548,6 +554,7 @@ def render_version():
             return _locked_pdf_observation(
                 lambda _pdf_path, _page_count: {
                     "version": _pdf_render_version(expected.pdf, expected.identity),
+                    "generation": _pdf_render_generation(),
                     "pages": _pdf_pages(expected.pdf),
                     "tokens": {},
                     "project_type": "pdf",
@@ -1055,7 +1062,8 @@ async def slide_map():
                         key=lambda item: (int(item[0].split("#", 1)[0]), item[0]),
                     )
                 ]
-                return {"pages": pages, "total": page_count, "orphans": orphans}
+                return {"pages": pages, "total": page_count, "orphans": orphans,
+                        "generation": _pdf_render_generation()}
             return await asyncio.to_thread(_locked_pdf_observation, observe, expected, True)
         except ValueError as exc:
             raise HTTPException(400, str(exc))

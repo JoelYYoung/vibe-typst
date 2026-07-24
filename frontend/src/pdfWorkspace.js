@@ -13,49 +13,55 @@ export function pdfTranscriptDirty(draft, saved) {
 }
 
 export function nextPdfRenderState(previous = {}, response = {}) {
-  if (Number.isFinite(response.version) && Number.isFinite(previous.version) && response.version < previous.version) return previous
   const pages = pageNames(response.pages)
   const version = response.version ?? previous.version ?? 0
+  const generation = typeof response.generation === 'string' && response.generation
+    ? response.generation
+    : `legacy-${version}`
   const serverTokens = response.tokens && typeof response.tokens === 'object' ? response.tokens : {}
-  const tokens = Object.fromEntries(pages.map((name) => [name, serverTokens[name] ?? `pdf-${version}-${name}`]))
+  const tokens = Object.fromEntries(pages.map((name) => [name, serverTokens[name] ?? `pdf-${generation}-${name}`]))
   const total = pages.length
   const requested = Number.isInteger(previous.page) ? previous.page : 1
   const page = total ? Math.max(1, Math.min(requested, total)) : 1
-  return { pages, tokens, version, page }
+  return { pages, tokens, version, generation, page }
 }
 
 export function pdfTerminalCdCommand(path) {
   return `cd ${quoteShell(path)}\n`
 }
 
-export function createPdfPollController({ loadRender, loadMap, onRender, onMap, onError = () => {} }) {
+export function createPdfPollController({ loadRender, loadMap, onPair = () => {}, onError = () => {} }) {
   let inFlight = null
   let queued = false
-  let mapGeneration = 0
-  let lastVersion = -Infinity
+  let mapMutation = 0
   let concurrent = 0
   let maxConcurrent = 0
 
   const run = async () => {
+    let committedMutation = -1
     do {
       queued = false
-      const expectedMapGeneration = mapGeneration
+      const expectedMapMutation = mapMutation
       concurrent += 1
       maxConcurrent = Math.max(maxConcurrent, concurrent)
       try {
         const render = await loadRender()
-        if (!Number.isFinite(render.version) || render.version >= lastVersion) {
-          lastVersion = Number.isFinite(render.version) ? render.version : lastVersion
-          onRender(render)
-        }
         const map = await loadMap()
-        if (expectedMapGeneration === mapGeneration) onMap(map)
+        if (!render?.generation || render.generation !== map?.generation) {
+          queued = true
+          continue
+        }
+        if (expectedMapMutation === mapMutation) {
+          onPair(render, map)
+          committedMutation = expectedMapMutation
+        }
       } catch (error) {
         onError(error)
       } finally {
         concurrent -= 1
       }
     } while (queued)
+    return committedMutation === mapMutation
   }
 
   const poll = () => {
@@ -69,13 +75,8 @@ export function createPdfPollController({ loadRender, loadMap, onRender, onMap, 
 
   return {
     poll,
-    replaceMapAfterSave(map) {
-      mapGeneration += 1
-      onMap(map)
-      return poll()
-    },
     invalidateMapAfterSave() {
-      mapGeneration += 1
+      mapMutation += 1
       return poll()
     },
     get maxConcurrent() { return maxConcurrent },
@@ -97,6 +98,23 @@ export function reconcilePdfTranscriptDrafts(previous = {}, rows, total) {
     }
   }
   return next
+}
+
+export function resetPdfTranscriptDrafts(_previous = {}, rows, total) {
+  return Object.fromEntries(Array.from({ length: total }, (_, index) => {
+    const page = index + 1
+    const saved = pageNote(rows, page)
+    return [page, { draft: saved, base: saved, saving: false }]
+  }))
+}
+
+export function pdfTranscriptExportText(pages, rows, drafts = {}) {
+  return pageNames(pages).map((_, index) => {
+    const page = index + 1
+    const base = drafts[page]?.base
+    const text = typeof base === 'string' ? base : pageNote(rows, page)
+    return `Page ${page}\n${text}`
+  }).join('\n\n') + '\n'
 }
 
 export function editPdfTranscriptDraft(drafts, page, draft) {
