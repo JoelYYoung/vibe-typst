@@ -55,10 +55,6 @@ def room_name(file=None) -> str:
     return f"{base}~g{g}" if g else base
 
 
-def _base_of(room: str) -> str:
-    return room.split("~g", 1)[0]
-
-
 def rotate(file=None) -> str:
     base = _base_key(file)
     _gen[base] = _gen.get(base, 0) + 1
@@ -108,6 +104,11 @@ async def stop() -> None:
         active = server
         server = None
         stale = list(_rooms.values())
+        # Every lineage retired by a PDF transition needs a new room key on its next Typst
+        # activation. A base can have multiple stale generations, but it advances exactly
+        # once: otherwise the next valid key would depend on incidental stale-room count.
+        for base in {st.get("base") for st in stale if st.get("base") is not None}:
+            _gen[base] = _gen.get(base, 0) + 1
         _rooms.clear()
         _latest.clear()
         _loop = None
@@ -177,11 +178,12 @@ def set_loop(loop: asyncio.AbstractEventLoop) -> None:
 
 
 def path_for_key(key: str) -> Path | None:
-    if key in _rooms:
-        return _rooms[key]["path"]
-    if _base_of(key) == runtime.file_key(runtime.current_file()):
-        return runtime.current_file()
-    return None
+    # Only the currently issued generation may address the active file. In particular, an
+    # old browser reconnect must not recreate its retired lineage, and an invented future
+    # generation must never become a route to the current document.
+    current = runtime.current_file()
+    base = runtime.file_key(current)
+    return current if key == _cur_room(base) else None
 
 
 async def ensure_room(file: str | Path | None = None, key: str | None = None) -> dict:
