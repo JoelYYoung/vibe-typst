@@ -337,6 +337,8 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self._previous_file = runtime._state.get("file")
         self._previous_project = app._active_project
         self._previous_pdf_render_state = dict(app._pdf_render_state)
+        self._previous_store_override = app.store._override
+        self._previous_docstore_generations = dict(app.docstore._gen)
         self._configured = patch.object(app.app_config, "is_configured", return_value=True)
         self._projects_root = patch.object(projects, "_projects_root", return_value=self.root.resolve())
         self._state_path = patch.object(runtime, "GLOBAL_STATE_PATH", self.root / ".state.json")
@@ -362,6 +364,9 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.app._active_project = self._previous_project
         self.app._pdf_render_state.clear()
         self.app._pdf_render_state.update(self._previous_pdf_render_state)
+        self.app.store._override = self._previous_store_override
+        self.app.docstore._gen.clear()
+        self.app.docstore._gen.update(self._previous_docstore_generations)
         self._state_path.stop()
         self._projects_root.stop()
         self._configured.stop()
@@ -429,6 +434,36 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typst_state["project_type"], "typst")
         self.assertEqual(typst_state["main"], "main.typ")
         self.assertIn("Original Typst flow", typst_state["source"])
+
+
+class PdfEndToEndFixtureIsolationTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fixture_restores_store_override_and_docstore_generations(self):
+        import app
+
+        prior_override = app.store._override
+        prior_generations = dict(app.docstore._gen)
+        sentinel_override = "/tmp/pre-existing-comment-store.db"
+        sentinel_generations = {"pre-existing-room": 17}
+        app.store._override = sentinel_override
+        app.docstore._gen.clear()
+        app.docstore._gen.update(sentinel_generations)
+        fixture = PdfEndToEndTest(
+            "test_pdf_workflow_and_legacy_typst_workflow_share_the_public_api"
+        )
+        try:
+            await fixture.asyncSetUp()
+            try:
+                await fixture.test_pdf_workflow_and_legacy_typst_workflow_share_the_public_api()
+            finally:
+                await fixture.asyncTearDown()
+
+            self.assertEqual(app.store._override, sentinel_override)
+            self.assertEqual(app.docstore._gen, sentinel_generations)
+        finally:
+            app.store.close()
+            app.store._override = prior_override
+            app.docstore._gen.clear()
+            app.docstore._gen.update(prior_generations)
 
 
 class PdfDeploymentContractTest(unittest.TestCase):

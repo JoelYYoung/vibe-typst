@@ -10,5 +10,5 @@
 !resolver/target/release/tcb-resolver
 !frontend/dist
 # .venv dir excluded (1000+ files → Podman pthread_create failures under pids.max=1200)
-# Use the pre-built tar instead: backend/.venv.tar.gz is COPY'd and extracted in one tar step.
-!backend/.venv.tar.gz
+# Use the pre-built tar instead: .venv.tar.gz is COPY'd and extracted in one tar step.
+!.venv.tar.gz

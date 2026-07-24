@@ -459,4 +459,3 @@ Expected: all Python and frontend tests pass; resolver passes with only the exis
 - [ ] **Step 5: Request code review and commit**
 
 Commit: `feat: complete PDF project workflow`
-
