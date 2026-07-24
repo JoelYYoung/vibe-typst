@@ -1532,7 +1532,7 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         ensure_room.assert_not_called()
         flush_now.assert_not_called()
         set_store_path.assert_not_called()
-        setup_workdir.assert_not_called()
+        setup_workdir.assert_called_once()
         self.assertTrue((self.runtime.render_dir() / "page-1.png").is_file())
 
         state = (await self._request("GET", "/api/state")).json()
@@ -1668,7 +1668,6 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
     async def test_pdf_mode_rejects_every_typst_only_endpoint_before_side_effects(self):
         await self._open_pdf()
         routes = [
-            ("POST", "/api/setup-workdir", None),
             ("POST", "/api/preview/start", None),
             ("POST", "/api/preview/stop", None),
             ("GET", "/api/preview/status", None),
@@ -1693,16 +1692,18 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
             patch.object(self.app.resolver, "stop") as resolver_stop,
             patch.object(self.app.docstore, "flush_now", new=AsyncMock()) as flush_now,
             patch.object(self.app.docstore, "get_text") as get_text,
-            patch.object(self.app.workdir, "setup") as setup_workdir,
+            patch.object(self.app.workdir, "setup", return_value={}) as setup_workdir,
             patch.object(self.app.notes_mod, "list_notes") as list_notes,
         ):
             for method, path, payload in routes:
                 self.assertEqual((await self._request(method, path, payload)).status_code, 400, path)
+            setup = await self._request("POST", "/api/setup-workdir")
+            self.assertEqual(setup.status_code, 200, setup.text)
+            setup_workdir.assert_called_once()
         resolver_start.assert_not_called()
         resolver_stop.assert_not_called()
         flush_now.assert_not_called()
         get_text.assert_not_called()
-        setup_workdir.assert_not_called()
         list_notes.assert_not_called()
 
     async def test_pdf_project_primary_symlink_is_rejected(self):
@@ -2140,3 +2141,159 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stream.read(), original)
         finally:
             stream.close()
+
+
+class PdfMcpTest(unittest.TestCase):
+    """The PDF terminal bridge is deliberately independent from Typst/comment state."""
+
+    def setUp(self):
+        import app
+        import httpx
+        import pdf_mcp_server
+        import runtime
+
+        self.app = app
+        self.httpx = httpx
+        self.mcp = pdf_mcp_server
+        self.runtime = runtime
+        self.loop = asyncio.new_event_loop()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.project = Path(self._tmp.name) / "PDF project & notes"
+        self.project.mkdir()
+        self.pdf = self.project / "document.pdf"
+        self._write_pdf(self.pdf, 2)
+        self.info = {"id": "pdf-mcp", "name": "PDF", "path": str(self.project),
+                     "type": "pdf", "main_file": "document.pdf"}
+        self.previous_file = runtime._state.get("file")
+        self.previous_project = app._active_project
+        self.state_path = patch.object(runtime, "GLOBAL_STATE_PATH", self.project / "state.json")
+        self.state_path.start()
+        self.original_backend = self.mcp._backend
+        self.mcp._backend = self._backend_shim
+        self.loop.run_until_complete(self._open_pdf())
+
+    def tearDown(self):
+        self.mcp._backend = self.original_backend
+        self.loop.run_until_complete(self.app.docstore.stop())
+        self.runtime._state["file"] = self.previous_file
+        self.app._active_project = self.previous_project
+        shutil.rmtree(self.runtime.render_dir(self.pdf), ignore_errors=True)
+        self.state_path.stop()
+        self._tmp.cleanup()
+        self.loop.close()
+
+    def _write_pdf(self, path: Path, pages: int) -> None:
+        import fitz
+
+        document = fitz.open()
+        for number in range(pages):
+            page = document.new_page()
+            page.insert_text((72, 72), f"PDF MCP page {number + 1}")
+        document.save(path)
+        document.close()
+
+    async def _open_pdf(self):
+        with patch.object(self.app.projects_mod, "get_project", return_value=self.info):
+            await self.app.open_project(self.info["id"])
+
+    def _backend_shim(self, method, path, payload=None):
+        return self.loop.run_until_complete(self._route(method, path, payload))
+
+    async def _route(self, method, path, payload):
+        transport = self.httpx.ASGITransport(app=self.app.app)
+        async with self.httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.request(method, path, json=payload)
+            body = response.json()
+            if response.status_code >= 400:
+                return {"ok": False, "error": f"backend {response.status_code}: {body}"}
+            return body
+
+    def test_pdf_tools_use_only_pdf_http_api_with_encoded_inputs(self):
+        self.assertEqual(self.mcp.get_pdf_info()["project_type"], "pdf")
+        self.assertEqual(self.mcp.get_pdf_text(1), {
+            "page": 1, "text": "PDF MCP page 1\n", "ocr": False,
+        })
+        self.assertEqual(self.mcp.get_transcripts()["pages"]["1"], {"text": ""})
+        self.assertEqual(self.mcp.set_transcript(1, "One")["pages"]["1"], {"text": "One"})
+        self.assertEqual(
+            self.mcp.set_transcripts([{"page": 1, "text": "Batch one"},
+                                      {"page": 2, "text": "Batch two"}])["pages"]["2"],
+            {"text": "Batch two"},
+        )
+
+        candidate = self.project / "candidate & #1.pdf"
+        self._write_pdf(candidate, 1)
+        replaced = self.mcp.replace_pdf(candidate.name, "replace & preserve")
+        self.assertTrue(replaced["ok"])
+        self.assertEqual(replaced["page_count"], 1)
+        self.assertEqual(self.mcp.list_orphan_transcripts(), {
+            "orphans": {"2": {"text": "Batch two"}},
+        })
+        restored = self.mcp.restore_orphan_transcript("2", 1)
+        self.assertEqual(restored["pages"]["1"], {"text": "Batch two"})
+        self.assertEqual(restored["orphans"]["1"], {"text": "Batch one"})
+
+    def test_pdf_mcp_returns_backend_errors_and_encodes_query_values(self):
+        calls = []
+
+        def failing_backend(method, path, payload=None):
+            calls.append((method, path, payload))
+            return {"ok": False, "error": "backend 400: invalid input"}
+
+        with patch.object(self.mcp, "_backend", new=failing_backend):
+            self.assertEqual(self.mcp.get_pdf_text("1 & #"), {
+                "ok": False, "error": "backend 400: invalid input",
+            })
+            self.assertEqual(self.mcp.replace_pdf("/tmp/a & #.pdf", "message"), {
+                "ok": False, "error": "backend 400: invalid input",
+            })
+        self.assertEqual(calls, [
+            ("GET", "/api/pdf/text?page=1+%26+%23", None),
+            ("POST", "/api/pdf/replace", {"candidate": "/tmp/a & #.pdf", "message": "message"}),
+        ])
+
+    def test_pdf_workdir_uses_pdf_server_and_preserves_typst_and_user_content(self):
+        import workdir
+
+        (self.project / "AGENTS.md").write_text("# User rules\n", encoding="utf-8")
+        (self.project / ".mcp.json").write_text(json.dumps({"mcpServers": {
+            "other": {"command": "other"},
+        }}), encoding="utf-8")
+        typst_section = workdir._section("main.typ")
+        self.assertEqual(self.runtime.set_file(str(self.pdf)), str(self.pdf.resolve()))
+        workdir.setup(8123)
+
+        mcp_config = json.loads((self.project / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertEqual(mcp_config["mcpServers"]["other"], {"command": "other"})
+        pdf_server = mcp_config["mcpServers"][workdir.MCP_NAME]
+        self.assertEqual(pdf_server["args"], [str(workdir._PDF_MCP_SERVER)])
+        self.assertEqual(pdf_server["env"], {"TCB_BACKEND_URL": "http://127.0.0.1:8123"})
+        agents = (self.project / "AGENTS.md").read_text(encoding="utf-8")
+        codex = (self.project / ".codex" / "config.toml").read_text(encoding="utf-8")
+        self.assertIn("# User rules", agents)
+        self.assertIn("native PDF utilities", agents)
+        self.assertIn("replace_pdf", agents)
+        self.assertIn("must not overwrite, delete, or move `document.pdf`", agents)
+        for forbidden in ("apply_edits", "get_pending_comments", "touying", "Typst", "COMMENT_STORE_PATH"):
+            self.assertNotIn(forbidden, agents + codex)
+        self.assertTrue(workdir.is_ready())
+        pdf_outputs = {
+            path: path.read_bytes() for path in (
+                self.project / ".mcp.json",
+                self.project / "AGENTS.md",
+                self.project / ".codex" / "config.toml",
+            )
+        }
+        workdir.setup(8123)
+        self.assertEqual({path: path.read_bytes() for path in pdf_outputs}, pdf_outputs)
+
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        self.runtime.set_file(str(typ))
+        self.assertFalse(workdir.is_ready())
+        workdir.setup(8123)
+        self.assertEqual(workdir._section("main.typ"), typst_section)
+        typst_config = json.loads((self.project / ".mcp.json").read_text(encoding="utf-8"))
+        self.assertEqual(typst_config["mcpServers"][workdir.MCP_NAME]["args"], [str(workdir._MCP_SERVER)])
+        self.assertIn("COMMENT_STORE_PATH", typst_config["mcpServers"][workdir.MCP_NAME]["env"])
+        self.assertTrue(workdir.is_ready())

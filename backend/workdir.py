@@ -14,6 +14,7 @@ import runtime
 _HERE = Path(__file__).resolve().parent
 _VENV_PY = _HERE / ".venv" / "bin" / "python"
 _MCP_SERVER = _HERE / "mcp_server.py"
+_PDF_MCP_SERVER = _HERE / "pdf_mcp_server.py"
 
 MCP_NAME = "vibe-typst"           # the MCP server name agents see
 _OLD_MCP_NAMES = ("slide-comments", "web-typst")  # migrate away from these old names
@@ -22,6 +23,10 @@ _BEGIN = "<!-- TYPST-COMMENT-BRIDGE:BEGIN (auto-managed — edits here will be o
 _END = "<!-- TYPST-COMMENT-BRIDGE:END -->"
 _CODEX_BEGIN = "# TYPST-COMMENT-BRIDGE:BEGIN (auto-managed - edits here will be overwritten)"
 _CODEX_END = "# TYPST-COMMENT-BRIDGE:END"
+_PDF_BEGIN = "<!-- PDF-AGENT-BRIDGE:BEGIN (auto-managed — edits here will be overwritten) -->"
+_PDF_END = "<!-- PDF-AGENT-BRIDGE:END -->"
+_PDF_CODEX_BEGIN = "# PDF-AGENT-BRIDGE:BEGIN (auto-managed - edits here will be overwritten)"
+_PDF_CODEX_END = "# PDF-AGENT-BRIDGE:END"
 
 
 def _section(main: str) -> str:
@@ -107,20 +112,47 @@ same anchor tools). They export to a `.pdfpc` file the human downloads for the p
 {_END}"""
 
 
+def _pdf_section(main: str) -> str:
+    return f"""{_PDF_BEGIN}
+## Working with `{main}`
+
+This project has one validated primary PDF. The permitted native PDF utilities are allowed to read
+`document.pdf` and create a separate candidate PDF.
+
+- Use `get_pdf_info` to inspect the active document and `get_pdf_text(page)` for embedded
+  page text. Embedded text has no OCR.
+- Use `get_transcripts`, `set_transcript`, and `set_transcripts` for the page-number
+  transcript sidecar. Use `list_orphan_transcripts` and `restore_orphan_transcript` after a
+  page-count change so narration is not lost.
+- To change the document, generate a candidate PDF in another path, then call
+  `replace_pdf(candidate, message)`. You must not overwrite, delete, or move `document.pdf`
+  directly: doing so bypasses validation and versioning.
+
+### Tool loading
+
+The `vibe-typst` MCP server is configured for Claude and Codex in this directory. The web
+backend must be running at the URL in those configuration files.
+{_PDF_END}"""
+
+
 def is_ready() -> bool:
     """True if the working dir already has agent configs + AGENTS.md section."""
     d = runtime.project_dir()
     mcp = d / ".mcp.json"
     agents = d / "AGENTS.md"
     codex_cfg = d / ".codex" / "config.toml"
+    pdf_mode = runtime.document_type() == "pdf"
+    begin, codex_begin = ((_PDF_BEGIN, _PDF_CODEX_BEGIN) if pdf_mode else (_BEGIN, _CODEX_BEGIN))
+    server = _PDF_MCP_SERVER if pdf_mode else _MCP_SERVER
     has_mcp = False
     if mcp.exists():
         try:
-            has_mcp = MCP_NAME in json.loads(mcp.read_text(encoding="utf-8")).get("mcpServers", {})
+            configured = json.loads(mcp.read_text(encoding="utf-8")).get("mcpServers", {}).get(MCP_NAME, {})
+            has_mcp = configured.get("args") == [str(server)]
         except Exception:
             has_mcp = False
-    has_agents = agents.exists() and _BEGIN in agents.read_text(encoding="utf-8") if agents.exists() else False
-    has_codex = codex_cfg.exists() and _CODEX_BEGIN in codex_cfg.read_text(encoding="utf-8") if codex_cfg.exists() else False
+    has_agents = agents.exists() and begin in agents.read_text(encoding="utf-8") if agents.exists() else False
+    has_codex = codex_cfg.exists() and codex_begin in codex_cfg.read_text(encoding="utf-8") if codex_cfg.exists() else False
     return has_mcp and has_agents and has_codex
 
 
@@ -134,6 +166,14 @@ def _merge_managed(existing: str, section: str, begin: str, end: str) -> str:
     return section + "\n"
 
 
+def _replace_mode_section(existing: str, section: str, begin: str, end: str,
+                          old_begin: str, old_end: str) -> str:
+    """Install one managed mode section while removing a stale opposite-mode section."""
+    if old_begin in existing and old_end in existing:
+        existing = existing.split(old_begin, 1)[0] + existing.split(old_end, 1)[1]
+    return _merge_managed(existing, section, begin, end)
+
+
 def _codex_section(store: str, backend_port: int) -> str:
     return f"""{_CODEX_BEGIN}
 [mcp_servers.{MCP_NAME}]
@@ -144,6 +184,17 @@ args = ["{str(_MCP_SERVER)}"]
 COMMENT_STORE_PATH = "{store}"
 TCB_BACKEND_URL = "http://127.0.0.1:{backend_port}"
 {_CODEX_END}"""
+
+
+def _pdf_codex_section(backend_port: int) -> str:
+    return f"""{_PDF_CODEX_BEGIN}
+[mcp_servers.{MCP_NAME}]
+command = "{str(_VENV_PY) if _VENV_PY.exists() else "python3"}"
+args = ["{str(_PDF_MCP_SERVER)}"]
+
+[mcp_servers.{MCP_NAME}.env]
+TCB_BACKEND_URL = "http://127.0.0.1:{backend_port}"
+{_PDF_CODEX_END}"""
 
 
 def _ensure_claude_symlink(d: Path, agents_path: Path) -> None:
@@ -161,9 +212,11 @@ def _ensure_claude_symlink(d: Path, agents_path: Path) -> None:
             return
 
         existing = claude_path.read_text(encoding="utf-8")
-        pre = existing.split(_BEGIN)[0] if _BEGIN in existing else existing
-        post = existing.split(_END, 1)[1] if _END in existing else ""
-        unmanaged = (pre + post).strip()
+        unmanaged = existing
+        for begin, end in ((_BEGIN, _END), (_PDF_BEGIN, _PDF_END)):
+            if begin in unmanaged and end in unmanaged:
+                unmanaged = unmanaged.split(begin, 1)[0] + unmanaged.split(end, 1)[1]
+        unmanaged = unmanaged.strip()
 
         if unmanaged:
             agents = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
@@ -189,8 +242,9 @@ def setup(backend_port: int | None = None) -> dict:
     if backend_port is None:
         backend_port = int(os.environ.get("PORT", "8787"))
     d = runtime.project_dir()
-    store = str(runtime.store_path())
     main = runtime.current_main()
+    pdf_mode = runtime.document_type() == "pdf"
+    server = _PDF_MCP_SERVER if pdf_mode else _MCP_SERVER
 
     # --- .mcp.json (merge, don't clobber other servers) ---
     mcp_path = d / ".mcp.json"
@@ -203,14 +257,22 @@ def setup(backend_port: int | None = None) -> dict:
     cfg.setdefault("mcpServers", {})
     for old in _OLD_MCP_NAMES:        # migrate the old server name away
         cfg["mcpServers"].pop(old, None)
-    cfg["mcpServers"][MCP_NAME] = {
-        "command": str(_VENV_PY) if _VENV_PY.exists() else "python3",
-        "args": [str(_MCP_SERVER)],
-        "env": {
-            "COMMENT_STORE_PATH": store,
-            "TCB_BACKEND_URL": f"http://127.0.0.1:{backend_port}",
-        },
-    }
+    if pdf_mode:
+        mcp_server = {
+            "command": str(_VENV_PY) if _VENV_PY.exists() else "python3",
+            "args": [str(server)],
+            "env": {"TCB_BACKEND_URL": f"http://127.0.0.1:{backend_port}"},
+        }
+    else:
+        mcp_server = {
+            "command": str(_VENV_PY) if _VENV_PY.exists() else "python3",
+            "args": [str(server)],
+            "env": {
+                "COMMENT_STORE_PATH": str(runtime.store_path()),
+                "TCB_BACKEND_URL": f"http://127.0.0.1:{backend_port}",
+            },
+        }
+    cfg["mcpServers"][MCP_NAME] = mcp_server
     try:
         mcp_path.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
     except Exception:
@@ -240,17 +302,30 @@ def setup(backend_port: int | None = None) -> dict:
         codex_path.parent.mkdir(parents=True, exist_ok=True)
         existing = codex_path.read_text(encoding="utf-8") if codex_path.exists() else ""
         codex_path.write_text(
-            _merge_managed(existing, _codex_section(store, backend_port), _CODEX_BEGIN, _CODEX_END),
+            _replace_mode_section(
+                existing,
+                _pdf_codex_section(backend_port) if pdf_mode else _codex_section(str(runtime.store_path()), backend_port),
+                _PDF_CODEX_BEGIN if pdf_mode else _CODEX_BEGIN,
+                _PDF_CODEX_END if pdf_mode else _CODEX_END,
+                _CODEX_BEGIN if pdf_mode else _PDF_CODEX_BEGIN,
+                _CODEX_END if pdf_mode else _PDF_CODEX_END,
+            ),
             encoding="utf-8",
         )
     except Exception:
         pass
 
     # --- AGENTS.md (idempotent auto-managed section) + CLAUDE.md symlink ---
-    section = _section(main)
+    section = _pdf_section(main) if pdf_mode else _section(main)
     agents_path = d / "AGENTS.md"
     existing = agents_path.read_text(encoding="utf-8") if agents_path.exists() else ""
-    new = _merge_managed(existing, section, _BEGIN, _END)
+    new = _replace_mode_section(
+        existing, section,
+        _PDF_BEGIN if pdf_mode else _BEGIN,
+        _PDF_END if pdf_mode else _END,
+        _BEGIN if pdf_mode else _PDF_BEGIN,
+        _END if pdf_mode else _PDF_END,
+    )
     try:
         agents_path.write_text(new, encoding="utf-8")
         _ensure_claude_symlink(d, agents_path)
