@@ -818,6 +818,62 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.app.docstore._rooms)
         self.assertIsNot(self.app.docstore.server, first_server)
 
+    async def test_pdf_transition_retires_crdt_generation_and_rejects_stale_room_updates(self):
+        """A pre-PDF Yjs update cannot merge into the new disk-seeded Typst lineage."""
+        typ = self.project / "main.typ"
+        typ.write_text("hello", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        await self._open_pdf(typ_info)
+        old_key = self.app.docstore.room_name()
+        base = self.app.docstore._base_key()
+        old_update = self.app.docstore._rooms[old_key]["doc"].get_update()
+        self.assertTrue(old_update)
+
+        # A retired poisoned room can coexist with the live one; stopping must advance its
+        # shared base only once, rather than once per room.
+        future_key = f"{base}~g999"
+        await self.app.docstore.ensure_room(typ, key=future_key)
+        before_generation = self.app.docstore._gen.get(base, 0)
+
+        await self._open_pdf()
+        self.assertFalse(self.app.docstore.is_running())
+        self.assertEqual(self.app.docstore._rooms, {})
+        self.assertEqual(self.app.docstore._gen[base], before_generation + 1)
+
+        await self._open_pdf(typ_info)
+        current_key = self.app.docstore.room_name()
+        current = self.app.docstore._rooms[current_key]
+        self.assertNotEqual(current_key, old_key)
+        self.assertEqual(str(current["text"]), "hello")
+        self.assertIsNone(await self.app.docstore.ensure_room_by_key(old_key))
+        self.assertIsNone(await self.app.docstore.ensure_room_by_key(future_key))
+
+        class StaleWebSocket:
+            accepted = False
+            closed = None
+            received = False
+
+            async def accept(self):
+                self.accepted = True
+
+            async def close(self, code):
+                self.closed = code
+
+            async def receive_bytes(self):
+                self.received = True
+                return old_update
+
+        stale_socket = StaleWebSocket()
+        with patch.object(self.app.docstore, "start", new=AsyncMock(
+                side_effect=AssertionError("stale room must be rejected before CRDT startup"))):
+            await self.app.yjs_ws(stale_socket, old_key)
+        self.assertEqual(stale_socket.closed, 1008)
+        self.assertFalse(stale_socket.accepted)
+        self.assertFalse(stale_socket.received)
+        self.assertEqual(str(self.app.docstore._rooms[current_key]["text"]), "hello")
+        self.assertEqual(typ.read_text(encoding="utf-8"), "hello")
+
     async def test_pdf_render_directory_symlink_is_not_listed_or_served(self):
         await self._open_pdf()
         render_dir = self.runtime.render_dir()

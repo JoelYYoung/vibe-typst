@@ -303,9 +303,15 @@ async def yjs_ws(websocket: WebSocket, room: str):
     if runtime.document_type() == "pdf":
         await websocket.close(code=1008)
         return
-    await websocket.accept()
+    # Reject stale or invented room generations before accepting or starting CRDT work.
+    if docstore.path_for_key(room) is None:
+        await websocket.close(code=1008)
+        return
     active_server = await docstore.start()
-    await docstore.ensure_room_by_key(room)
+    if await docstore.ensure_room_by_key(room) is None:
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
     try:
         await active_server.serve(docstore.StarletteYChannel(websocket, room))
     except WebSocketDisconnect:
