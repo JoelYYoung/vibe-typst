@@ -29,6 +29,7 @@ def render_pdf(path: Path, destination: Path) -> dict:
 
     staging_dir = Path(tempfile.mkdtemp(prefix=".pdf-render-", dir=destination.parent))
     backup_dir: Path | None = None
+    installed_destination = False
     pages = []
     try:
         with fitz.open(path) as doc:
@@ -41,13 +42,8 @@ def render_pdf(path: Path, destination: Path) -> dict:
             while backup_dir.exists():
                 backup_dir = destination.with_name(f".pdf-render-backup-{uuid.uuid4().hex}")
             destination.rename(backup_dir)
-        try:
-            staging_dir.rename(destination)
-        except Exception:
-            if backup_dir is not None:
-                backup_dir.rename(destination)
-                backup_dir = None
-            raise
+        staging_dir.rename(destination)
+        installed_destination = True
         staging_dir = None
         if backup_dir is not None:
             shutil.rmtree(backup_dir)
@@ -55,7 +51,21 @@ def render_pdf(path: Path, destination: Path) -> dict:
     except Exception as exc:
         if staging_dir is not None:
             shutil.rmtree(staging_dir, ignore_errors=True)
-        if backup_dir is not None and not destination.exists():
-            backup_dir.rename(destination)
+        if backup_dir is not None:
+            if installed_destination:
+                failed_destination = destination.with_name(
+                    f".pdf-render-failed-{uuid.uuid4().hex}"
+                )
+                while failed_destination.exists():
+                    failed_destination = destination.with_name(
+                        f".pdf-render-failed-{uuid.uuid4().hex}"
+                    )
+                destination.rename(failed_destination)
+                backup_dir.rename(destination)
+                backup_dir = None
+                shutil.rmtree(failed_destination, ignore_errors=True)
+            elif not destination.exists():
+                backup_dir.rename(destination)
+                backup_dir = None
         raise ValueError(f"could not render PDF: {exc}") from exc
     return {**info, "pages": pages}

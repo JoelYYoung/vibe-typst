@@ -174,3 +174,29 @@ class PdfRenderingTest(unittest.TestCase):
         after = {path.name: path.read_bytes() for path in destination.iterdir()}
         self.assertEqual(after, before)
         self.assertEqual([path for path in self.root.iterdir() if path.name.startswith(".")], [])
+
+    def test_backup_cleanup_failure_restores_previous_destination_and_removes_hidden_residue(self):
+        source = self.root / "source.pdf"
+        destination = self.root / "pages"
+        source.write_bytes(ONE_PAGE_PDF)
+        destination.mkdir()
+        (destination / "page-1.png").write_bytes(b"old page one")
+        (destination / "page-2.png").write_bytes(b"old page two")
+        before = {path.name: path.read_bytes() for path in destination.iterdir()}
+        original_rmtree = self.pdf_service.shutil.rmtree
+        failed_backup_cleanup = False
+
+        def fail_first_backup_cleanup(path, *args, **kwargs):
+            nonlocal failed_backup_cleanup
+            if Path(path).name.startswith(".pdf-render-backup-") and not failed_backup_cleanup:
+                failed_backup_cleanup = True
+                raise OSError("forced backup cleanup failure")
+            return original_rmtree(path, *args, **kwargs)
+
+        with patch.object(self.pdf_service.shutil, "rmtree", side_effect=fail_first_backup_cleanup):
+            with self.assertRaises(ValueError):
+                self.pdf_service.render_pdf(source, destination)
+
+        after = {path.name: path.read_bytes() for path in destination.iterdir()}
+        self.assertEqual(after, before)
+        self.assertEqual([path for path in self.root.iterdir() if path.name.startswith(".")], [])
