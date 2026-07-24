@@ -1697,6 +1697,23 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
             response = await self._request("GET", "/api/render-version")
         self.assertEqual(response.status_code, 200, response.text)
 
+    async def test_pdf_observations_expose_one_restart_stable_generation(self):
+        await self._open_pdf()
+        state = (await self._request("GET", "/api/state")).json()
+        render = (await self._request("GET", "/api/render-version")).json()
+        slide_map = (await self._request("GET", "/api/slide-map")).json()
+        self.assertIsInstance(state["generation"], str)
+        self.assertEqual(state["generation"], render["generation"])
+        self.assertEqual(state["generation"], slide_map["generation"])
+
+        self.app._pdf_render_state.clear()
+        self.app._pdf_render_state.update({"fingerprint": None, "identity": None,
+                                           "version": 0, "page_count": 0})
+        await self._open_pdf()
+        restarted = (await self._request("GET", "/api/render-version")).json()
+        self.assertEqual(restarted["version"], 1)
+        self.assertEqual(restarted["generation"], state["generation"])
+
     async def test_pdf_slide_map_uses_recorded_page_count_without_reinspecting_pdf(self):
         await self._open_pdf()
         with (patch.object(self.app.pdf_service, "inspect_pdf",

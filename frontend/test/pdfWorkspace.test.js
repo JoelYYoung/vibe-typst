@@ -8,9 +8,11 @@ import {
   finishPdfTranscriptSave,
   nextPdfRenderState,
   pdfTerminalCdCommand,
+  pdfTranscriptExportText,
   pdfTranscriptDirty,
   pdfVersions,
   reconcilePdfTranscriptDrafts,
+  resetPdfTranscriptDrafts,
   startPdfTranscriptSave,
   pdfWorkspacePanes,
 } from '../src/pdfWorkspace.js'
@@ -34,15 +36,16 @@ test('PDF transcript draft is dirty only when it differs from saved page text', 
   assert.equal(pdfTranscriptDirty('Changed narration', 'Narration'), true)
 })
 
-test('PDF render polling derives stable page tokens and clamps the active page after shrink', () => {
+test('PDF render polling uses an opaque generation for tokens and accepts a restarted lower version', () => {
   const previous = { pages: ['page-1.png', 'page-2.png', 'page-3.png'], tokens: {}, page: 3 }
-  const first = nextPdfRenderState(previous, { version: 7, pages: ['page-1.png', 'page-2.png'] })
-  const second = nextPdfRenderState(first, { version: 7, pages: ['page-1.png', 'page-2.png'] })
+  const first = nextPdfRenderState(previous, { version: 7, generation: 'generation-A', pages: ['page-1.png', 'page-2.png'] })
+  const restarted = nextPdfRenderState(first, { version: 1, generation: 'generation-B', pages: ['page-1.png'] })
 
   assert.equal(first.page, 2)
-  assert.deepEqual(first.tokens, { 'page-1.png': 'pdf-7-page-1.png', 'page-2.png': 'pdf-7-page-2.png' })
-  assert.deepEqual(second.tokens, first.tokens)
-  assert.equal(nextPdfRenderState(first, { version: 6, pages: ['stale.png'] }), first)
+  assert.deepEqual(first.tokens, { 'page-1.png': 'pdf-generation-A-page-1.png', 'page-2.png': 'pdf-generation-A-page-2.png' })
+  assert.equal(restarted.version, 1)
+  assert.equal(restarted.generation, 'generation-B')
+  assert.deepEqual(restarted.tokens, { 'page-1.png': 'pdf-generation-B-page-1.png' })
 })
 
 test('PDF terminal cd command works with the deployed one-argument wrapper and quoted paths', () => {
@@ -53,48 +56,51 @@ test('PDF terminal cd command works with the deployed one-argument wrapper and q
   assert.equal(observed, "/workspace/Paper's draft")
 })
 
-test('PDF poll controller stays single-flight, rejects older generations, and protects a saved map from stale responses', async () => {
-  const renderOne = deferred()
-  const mapOne = deferred()
-  const renderTwo = deferred()
-  const mapTwo = deferred()
-  const renders = []
-  const maps = []
+test('PDF poll controller commits only a matched render/map generation after a mismatch', async () => {
+  const pairs = []
   let renderCalls = 0
   let mapCalls = 0
   const controller = createPdfPollController({
-    loadRender: () => [renderOne, renderTwo][renderCalls++].promise,
-    loadMap: () => [mapOne, mapTwo][mapCalls++].promise,
-    onRender: (value) => renders.push(value.version),
-    onMap: (value) => maps.push(value),
+    loadRender: () => [
+      { version: 7, generation: 'generation-A', pages: ['page-a.png'] },
+      { version: 1, generation: 'generation-B', pages: ['page-b.png'] },
+    ][renderCalls++],
+    loadMap: () => [
+      { generation: 'generation-B', pages: [{ page: 1, note: 'wrong pair' }], orphans: [] },
+      { generation: 'generation-B', pages: [{ page: 1, note: 'matched pair' }], orphans: [] },
+    ][mapCalls++],
+    onPair: (render, map) => pairs.push({ generation: render.generation, note: map.pages[0].note }),
     onError: () => assert.fail('unexpected poll error'),
   })
 
-  const first = controller.poll()
-  controller.poll()
-  assert.equal(renderCalls, 1)
-  renderOne.resolve({ version: 7, pages: ['page-1.png'] })
-  await Promise.resolve()
-  assert.equal(mapCalls, 1)
-  const saved = { pages: [{ page: 1, note: 'saved' }], orphans: [] }
-  controller.replaceMapAfterSave(saved)
-  mapOne.resolve({ pages: [{ page: 1, note: 'stale' }], orphans: [] })
-  await Promise.resolve()
-  assert.equal(renderCalls, 2)
-  renderTwo.resolve({ version: 6, pages: ['stale.png'] })
-  await Promise.resolve()
-  mapTwo.resolve({ pages: [{ page: 1, note: 'fresh' }], orphans: [] })
-  await first
+  await controller.poll()
 
-  assert.deepEqual(renders, [7])
-  assert.deepEqual(maps, [saved, { pages: [{ page: 1, note: 'fresh' }], orphans: [] }])
+  assert.deepEqual(pairs, [{ generation: 'generation-B', note: 'matched pair' }])
+  assert.equal(renderCalls, 2)
+  assert.equal(mapCalls, 2)
   assert.equal(controller.maxConcurrent, 1)
+})
+
+test('PDF poll controller does not start a map request before its render request settles', async () => {
+  const render = deferred()
+  let mapCalls = 0
+  const controller = createPdfPollController({
+    loadRender: () => render.promise,
+    loadMap: () => {
+      mapCalls += 1
+      return { generation: 'generation-A', pages: [], orphans: [] }
+    },
+  })
+  const poll = controller.poll()
+  assert.equal(mapCalls, 0)
+  render.resolve({ generation: 'generation-A', pages: [] })
+  await poll
+  assert.equal(mapCalls, 1)
 })
 
 test('PDF poll controller keeps the last good render and map through a transient failure, then recovers', async () => {
   const renderFailure = deferred()
-  const maps = []
-  const renders = []
+  const pairs = []
   const errors = []
   let renderCalls = 0
   let mapCalls = 0
@@ -102,14 +108,13 @@ test('PDF poll controller keeps the last good render and map through a transient
     loadRender: () => {
       renderCalls += 1
       if (renderCalls === 2) return renderFailure.promise
-      return Promise.resolve({ version: renderCalls === 1 ? 4 : 5, pages: [`page-${renderCalls}.png`] })
+      return Promise.resolve({ version: renderCalls === 1 ? 4 : 5, generation: 'generation-A', pages: [`page-${renderCalls}.png`] })
     },
     loadMap: () => {
       mapCalls += 1
-      return Promise.resolve({ pages: [{ page: 1, note: `map-${mapCalls}` }], orphans: [] })
+      return Promise.resolve({ generation: 'generation-A', pages: [{ page: 1, note: `map-${mapCalls}` }], orphans: [] })
     },
-    onRender: (value) => renders.push(value),
-    onMap: (value) => maps.push(value),
+    onPair: (render, map) => pairs.push({ render, map }),
     onError: (error) => errors.push(error.message),
   })
 
@@ -119,17 +124,58 @@ test('PDF poll controller keeps the last good render and map through a transient
   renderFailure.reject(new Error('temporary render failure'))
   await failed
 
-  assert.deepEqual(renders, [
-    { version: 4, pages: ['page-1.png'] },
-    { version: 5, pages: ['page-3.png'] },
-  ])
-  assert.deepEqual(maps, [
-    { pages: [{ page: 1, note: 'map-1' }], orphans: [] },
-    { pages: [{ page: 1, note: 'map-2' }], orphans: [] },
+  assert.deepEqual(pairs, [
+    { render: { version: 4, generation: 'generation-A', pages: ['page-1.png'] }, map: { generation: 'generation-A', pages: [{ page: 1, note: 'map-1' }], orphans: [] } },
+    { render: { version: 5, generation: 'generation-A', pages: ['page-3.png'] }, map: { generation: 'generation-A', pages: [{ page: 1, note: 'map-2' }], orphans: [] } },
   ])
   assert.deepEqual(errors, ['temporary render failure'])
   assert.equal(mapCalls, 2)
   assert.equal(controller.maxConcurrent, 1)
+})
+
+test('PDF poll controller invalidation drops a stale matched pair before retrying', async () => {
+  const renderOne = deferred()
+  const mapOne = deferred()
+  const pairs = []
+  let calls = 0
+  const controller = createPdfPollController({
+    loadRender: () => calls++ === 0 ? renderOne.promise : { generation: 'generation-A', pages: ['page.png'] },
+    loadMap: () => calls++ === 1 ? mapOne.promise : { generation: 'generation-A', pages: [{ page: 1, note: 'fresh' }], orphans: [] },
+    onPair: (render, map) => pairs.push({ render, map }),
+  })
+
+  const first = controller.poll()
+  const refreshed = controller.invalidateMapAfterSave()
+  renderOne.resolve({ generation: 'generation-A', pages: ['page.png'] })
+  mapOne.resolve({ generation: 'generation-A', pages: [{ page: 1, note: 'stale' }], orphans: [] })
+  await first
+  assert.equal(await refreshed, true)
+
+  assert.deepEqual(pairs, [{
+    render: { generation: 'generation-A', pages: ['page.png'] },
+    map: { generation: 'generation-A', pages: [{ page: 1, note: 'fresh' }], orphans: [] },
+  }])
+})
+
+test('PDF poll invalidation reports failure without pretending a stale map was refreshed', async () => {
+  const controller = createPdfPollController({
+    loadRender: () => Promise.reject(new Error('render unavailable')),
+    loadMap: () => ({ generation: 'generation-A', pages: [], orphans: [] }),
+  })
+  assert.equal(await controller.invalidateMapAfterSave(), false)
+})
+
+test('PDF poll invalidation does not report a prior mutation when its queued refresh fails', async () => {
+  let controller
+  let renders = 0
+  controller = createPdfPollController({
+    loadRender: () => renders++ === 0
+      ? { generation: 'generation-A', pages: [] }
+      : Promise.reject(new Error('refresh failed')),
+    loadMap: () => ({ generation: 'generation-A', pages: [], orphans: [] }),
+    onPair: () => controller.invalidateMapAfterSave(),
+  })
+  assert.equal(await controller.poll(), false)
 })
 
 test('PDF transcript drafts remain per-page when page one saves after page two is edited', () => {
@@ -158,6 +204,21 @@ test('PDF transcript save request is captured synchronously and marks only that 
   assert.equal(started.drafts[2].saving, false)
   const preview = fs.readFileSync(new URL('../src/PdfPreviewPane.jsx', import.meta.url), 'utf8')
   assert.match(preview, /if \(!dirty \|\| !page \|\| draftState\.saving\) return/)
+})
+
+test('PDF transcript export uses the last saved per-page base and restore reset discards drafts', () => {
+  const rows = [{ page: 1, note: 'server one' }, { page: 2, note: 'server two' }]
+  const drafts = {
+    1: { draft: 'dirty one', base: 'saved one', saving: false },
+    2: { draft: 'saved two', base: 'saved two', saving: false },
+  }
+  assert.equal(pdfTranscriptExportText(['page-1.png', 'page-2.png'], rows, drafts), 'Page 1\nsaved one\n\nPage 2\nsaved two\n')
+  assert.deepEqual(resetPdfTranscriptDrafts(drafts, [{ page: 1, note: 'restored one' }], 1), {
+    1: { draft: 'restored one', base: 'restored one', saving: false },
+  })
+  const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
+  assert.match(workspace, /Unsaved transcript drafts will be discarded/)
+  assert.match(workspace, /await onRestored\?\.\(\)/)
 })
 
 test('PDF versions keep the API array response and the drawer exposes restore', () => {

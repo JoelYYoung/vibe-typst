@@ -1,10 +1,12 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import {
   editPdfTranscriptDraft,
   finishPdfTranscriptSave,
   pdfTranscriptDirty,
+  pdfTranscriptExportText,
   reconcilePdfTranscriptDrafts,
+  resetPdfTranscriptDrafts,
   startPdfTranscriptSave,
 } from './pdfWorkspace.js'
 import { toast } from './Toaster.jsx'
@@ -14,17 +16,24 @@ function transcriptText(slideMap, page) {
   return row && typeof row.note === 'string' ? row.note : ''
 }
 
-export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap, orphans, onTranscriptSaved }) {
+export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap, orphans, onTranscriptSaved, resetEpoch = 0 }) {
   const [transcriptsOn, setTranscriptsOn] = useState(true)
   const [drafts, setDrafts] = useState({})
+  const resetEpochRef = useRef(resetEpoch)
   const total = pages.length
   const current = pages[page - 1]
   const draftState = drafts[page] || { draft: transcriptText(slideMap, page), base: transcriptText(slideMap, page), saving: false }
   const dirty = pdfTranscriptDirty(draftState.draft, draftState.base)
 
   useEffect(() => {
-    setDrafts((previous) => reconcilePdfTranscriptDrafts(previous, slideMap, total))
-  }, [slideMap, total])
+    setDrafts((previous) => {
+      const reset = resetEpochRef.current !== resetEpoch
+      resetEpochRef.current = resetEpoch
+      return reset
+        ? resetPdfTranscriptDrafts(previous, slideMap, total)
+        : reconcilePdfTranscriptDrafts(previous, slideMap, total)
+    })
+  }, [slideMap, total, resetEpoch])
 
   async function save() {
     if (!dirty || !page || draftState.saving) return
@@ -48,7 +57,7 @@ export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap,
   }
 
   function downloadTranscripts() {
-    const body = pages.map((_, index) => `Page ${index + 1}\n${transcriptText(slideMap, index + 1)}`).join('\n\n') + '\n'
+    const body = pdfTranscriptExportText(pages, slideMap, drafts)
     const url = URL.createObjectURL(new Blob([body], { type: 'text/plain;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url

@@ -20,13 +20,13 @@ function PdfFilesDrawer({ onClose, onRestored }) {
   }, [])
   useEffect(() => { reload() }, [reload])
   async function restore(version) {
-    if (!window.confirm(`Restore “${version.message}”? This replaces the active PDF with that saved version.`)) return
+    if (!window.confirm(`Restore “${version.message}”? This replaces the active PDF with that saved version. Unsaved transcript drafts will be discarded.`)) return
     setBusy(true)
     try {
       const result = await api.gitRestore(version.tag)
       if (result && result.ok) {
         await reload()
-        onRestored && onRestored()
+        await onRestored?.()
       } else {
         toast.error((result && result.error) || 'Could not restore version')
       }
@@ -53,13 +53,14 @@ function PdfFilesDrawer({ onClose, onRestored }) {
 }
 
 export default function PdfWorkspace({ project, onBack }) {
-  const [render, setRender] = useState({ pages: [], tokens: {}, version: 0, page: 1 })
+  const [render, setRender] = useState({ pages: [], tokens: {}, version: 0, generation: '', page: 1 })
   const [projectDir, setProjectDir] = useState(project?.path || '')
   const [slideMap, setSlideMap] = useState([])
   const [orphans, setOrphans] = useState([])
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [presenting, setPresenting] = useState(false)
   const [presentationLive, setPresentationLive] = useState(false)
+  const [transcriptResetEpoch, setTranscriptResetEpoch] = useState(0)
   const channelRef = useRef(null)
   const presentationStateRef = useRef({ page: 1, pages: [], tokens: {}, pointer: null })
   const pointerRef = useRef(null)
@@ -75,10 +76,10 @@ export default function PdfWorkspace({ project, onBack }) {
         return result
       },
       loadMap: api.getSlideMap,
-      onRender: (result) => setRender((previous) => nextPdfRenderState(previous, result)),
-      onMap: (result) => {
-        setSlideMap(result.pages || [])
-        setOrphans(result.orphans || [])
+      onPair: (renderResult, mapResult) => {
+        setRender((previous) => nextPdfRenderState(previous, renderResult))
+        setSlideMap(mapResult.pages || [])
+        setOrphans(mapResult.orphans || [])
       },
       // Keep the last successful transcript map and render visible during a replacement retry.
       onError: () => {},
@@ -86,6 +87,11 @@ export default function PdfWorkspace({ project, onBack }) {
   }
   const poller = pollerRef.current
   const refreshAfterTranscriptSave = useCallback(() => poller.invalidateMapAfterSave(), [poller])
+  const refreshAfterRestore = useCallback(async () => {
+    const refreshed = await poller.invalidateMapAfterSave()
+    if (!refreshed) throw new Error('Could not refresh the restored PDF')
+    setTranscriptResetEpoch((epoch) => epoch + 1)
+  }, [poller])
 
   useEffect(() => {
     let cancelled = false
@@ -142,10 +148,10 @@ export default function PdfWorkspace({ project, onBack }) {
       </header>
       <main className="pdf-workspace-main">
         <section className="pdf-terminal-pane"><div className="pdf-terminal-head">Terminal</div><TermPanel initialCwd={projectDir} /></section>
-        <PdfPreviewPane pages={render.pages} tokens={render.tokens} page={render.page} setPage={setPage}
+        <PdfPreviewPane pages={render.pages} tokens={render.tokens} page={render.page} setPage={setPage} resetEpoch={transcriptResetEpoch}
           slideMap={slideMap} orphans={orphans} onTranscriptSaved={refreshAfterTranscriptSave} />
       </main>
-      {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={() => poller.invalidateMapAfterSave()} />}
+      {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={refreshAfterRestore} />}
       {presenting && <Presenter onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
         onPointer={sendPointer} page={render.page} setPage={setPage} pages={render.pages} tokens={render.tokens} />}
     </div>
