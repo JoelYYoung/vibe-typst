@@ -2,6 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
 import { projectType } from './projectTypes.js'
+import {
+  canSubmitProjectCreation,
+  pdfFileFromSelection,
+  resetProjectCreation as resetProjectCreationState,
+  switchProjectCreationType,
+} from './projectCreation.js'
+import { canonicalProjectFromOpen } from './projectRouting.js'
 
 function fmtDate(iso) {
   if (!iso) return ''
@@ -244,17 +251,21 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   useEffect(() => { if (creating) newInputRef.current?.focus() }, [creating])
 
   function resetNewProject() {
+    const reset = resetProjectCreationState()
     setCreating(false)
-    setNewName('')
-    setNewType('typst')
-    setPdfFile(null)
+    setNewName(reset.name)
+    setNewType(reset.type)
+    setPdfFile(reset.file)
     if (pdfInputRef.current) pdfInputRef.current.value = ''
   }
 
   function selectProjectType(type) {
-    setNewType(type)
+    const next = switchProjectCreationType(
+      { name: newName, type: newType, file: pdfFile }, type,
+    )
+    setNewType(next.type)
+    setPdfFile(next.file)
     if (type !== 'pdf') {
-      setPdfFile(null)
       if (pdfInputRef.current) pdfInputRef.current.value = ''
     }
   }
@@ -262,7 +273,7 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   async function handleCreate(e) {
     e.preventDefault()
     const name = newName.trim()
-    if (!name || (newType === 'pdf' && !pdfFile)) return
+    if (!canSubmitProjectCreation({ name, type: newType, file: pdfFile, busy })) return
     setBusy(true)
     try {
       if (newType === 'pdf') await api.createPdfProject(name, pdfFile)
@@ -278,7 +289,7 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
     setBusy(true)
     try {
       const result = await api.openProject(id)
-      onOpen(result.project)
+      onOpen(canonicalProjectFromOpen(result))
     } catch (err) {
       toast.error(err.message || 'Failed to open project')
     } finally { setBusy(false) }
@@ -361,13 +372,11 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
                 type="file"
                 accept=".pdf,application/pdf"
                 onChange={(e) => {
-                  const files = e.target.files
-                  const selected = files && files.length === 1 ? files[0] : null
-                  setPdfFile(selected && selected.name.toLowerCase().endsWith('.pdf') ? selected : null)
+                  setPdfFile(pdfFileFromSelection(e.target.files))
                 }}
               />
             )}
-            <button type="submit" className="primary" disabled={busy || !newName.trim() || (newType === 'pdf' && !pdfFile)}>
+            <button type="submit" className="primary" disabled={!canSubmitProjectCreation({ name: newName, type: newType, file: pdfFile, busy })}>
               {busy ? 'Creating…' : 'Create'}
             </button>
             <button type="button" onClick={resetNewProject}>Cancel</button>

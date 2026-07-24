@@ -55,6 +55,10 @@ HERE = Path(__file__).resolve().parent
 _active_project: dict | None = None
 _pdf_render_state = {"fingerprint": None, "version": 0}
 _PDF_PAGE_NAME = re.compile(r"page-([1-9][0-9]*)\.png$")
+MAX_PDF_UPLOAD_BYTES = projects_mod.MAX_PDF_UPLOAD_BYTES
+_PDF_UPLOAD_CHUNK_BYTES = 1024 * 1024
+_PDF_MULTIPART_OVERHEAD_BYTES = 64 * 1024
+_PDF_FORM_MAX_PART_BYTES = 16 * 1024
 
 
 @dataclass(frozen=True)
@@ -1560,8 +1564,16 @@ async def create_pdf_project(request: Request):
     """Create a PDF project from exactly one multipart upload."""
     if not app_config.is_configured():
         raise HTTPException(400, "app not configured")
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length:
+        try:
+            content_length = int(raw_content_length)
+        except ValueError as exc:
+            raise HTTPException(400, "invalid Content-Length") from exc
+        if content_length > MAX_PDF_UPLOAD_BYTES + _PDF_MULTIPART_OVERHEAD_BYTES:
+            raise HTTPException(413, "PDF upload is too large")
     try:
-        form = await request.form()
+        form = await request.form(max_files=1, max_fields=1, max_part_size=_PDF_FORM_MAX_PART_BYTES)
     except Exception as exc:
         raise HTTPException(400, "invalid multipart form") from exc
 
@@ -1576,20 +1588,39 @@ async def create_pdf_project(request: Request):
 
     name = names[0].strip()
     file = files[0][1]
+    staged_path: Path | None = None
     try:
         filename = file.filename or ""
         if not name:
             raise HTTPException(400, "name is required")
         if not filename or not filename.lower().endswith(".pdf"):
             raise HTTPException(400, "file must be a PDF")
-        content = await file.read()
+        if file.size is not None and file.size > MAX_PDF_UPLOAD_BYTES:
+            raise HTTPException(413, "PDF upload is too large")
+        root = projects_mod._projects_root()
+        root.mkdir(parents=True, exist_ok=True)
+        fd, raw_staged_path = tempfile.mkstemp(prefix=".pdf-http-upload-", suffix=".pdf", dir=root)
+        staged_path = Path(raw_staged_path)
+        total = 0
+        with os.fdopen(fd, "wb") as stream:
+            while chunk := await file.read(_PDF_UPLOAD_CHUNK_BYTES):
+                total += len(chunk)
+                if total > MAX_PDF_UPLOAD_BYTES:
+                    raise HTTPException(413, "PDF upload is too large")
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
         try:
-            return projects_mod.create_pdf_project(name, filename, content)
+            return projects_mod.create_pdf_project_from_file(
+                name, filename, staged_path, max_bytes=MAX_PDF_UPLOAD_BYTES,
+            )
         except FileExistsError as exc:
             raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     finally:
+        if staged_path is not None:
+            staged_path.unlink(missing_ok=True)
         await file.close()
 
 

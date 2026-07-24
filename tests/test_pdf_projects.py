@@ -267,6 +267,49 @@ class PdfProjectCreationApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(extra.status_code, 400, extra.text)
         self.assertEqual(list(self.root.iterdir()), [])
 
+    async def test_upload_at_size_limit_is_created_and_oversize_is_rejected_without_residue(self):
+        limit = len(ONE_PAGE_PDF)
+        with patch.object(self.app, "MAX_PDF_UPLOAD_BYTES", limit):
+            boundary = await self._post_pdf(
+                data={"name": "At limit"},
+                files={"file": ("at-limit.pdf", ONE_PAGE_PDF, "application/pdf")},
+            )
+        self.assertEqual(boundary.status_code, 200, boundary.text)
+
+        shutil.rmtree(Path(boundary.json()["path"]))
+        with patch.object(self.app, "MAX_PDF_UPLOAD_BYTES", limit - 1):
+            oversize = await self._post_pdf(
+                data={"name": "Too large"},
+                files={"file": ("too-large.pdf", ONE_PAGE_PDF, "application/pdf")},
+            )
+        self.assertEqual(oversize.status_code, 413, oversize.text)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    async def test_chunked_oversize_upload_without_content_length_is_rejected(self):
+        boundary = "pdf-upload-boundary"
+        body = b"".join([
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nToo large\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"too-large.pdf\"\r\n".encode(),
+            b"Content-Type: application/pdf\r\n\r\n",
+            ONE_PAGE_PDF,
+            f"\r\n--{boundary}--\r\n".encode(),
+        ])
+
+        async def streamed_body():
+            yield body[:80]
+            yield body[80:]
+
+        transport = self.httpx.ASGITransport(app=self.app.app)
+        with patch.object(self.app, "MAX_PDF_UPLOAD_BYTES", len(ONE_PAGE_PDF) - 1):
+            async with self.httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                response = await client.post(
+                    "/api/projects/pdf",
+                    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                    content=streamed_body(),
+                )
+        self.assertEqual(response.status_code, 413, response.text)
+        self.assertEqual(list(self.root.iterdir()), [])
+
 class PdfRenderingTest(unittest.TestCase):
     def setUp(self):
         import pdf_service

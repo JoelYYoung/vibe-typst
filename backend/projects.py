@@ -22,6 +22,8 @@ import app_config
 from pdf_service import inspect_pdf
 
 _META_FILE = ".vibe-typst.json"
+MAX_PDF_UPLOAD_BYTES = 100 * 1024 * 1024
+_PDF_COPY_CHUNK_BYTES = 1024 * 1024
 
 _STARTER_TYPST = """\
 // A touying deck. Speaker transcripts live inline as #speaker-note("...") inside each
@@ -144,16 +146,20 @@ def create_project(name: str) -> dict:
     return _project_info(project_dir)
 
 
-def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
-    """Create a PDF project with one validated primary document.
+def create_pdf_project_from_file(
+    name: str, filename: str, source: Path, *, max_bytes: int = MAX_PDF_UPLOAD_BYTES,
+) -> dict:
+    """Create a PDF project from a staged file without loading it into memory.
 
-    The uploaded data is first written beside the project directory and parsed before a
-    project becomes visible.  The validated temporary file is then atomically installed
-    under its stable internal name, ``document.pdf``.
+    The source is copied in bounded chunks beside the projects root, parsed before a project
+    becomes visible, then atomically installed under its stable internal name,
+    ``document.pdf``.  The caller retains ownership of ``source``.
     """
     name = _safe_name(name)
     if not name:
         raise ValueError("Project name cannot be empty")
+    if max_bytes < 1:
+        raise ValueError("PDF upload size limit must be positive")
 
     root = _projects_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -163,8 +169,13 @@ def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
     try:
         fd, raw_temp_path = tempfile.mkstemp(prefix=".pdf-upload-", suffix=".pdf", dir=root)
         temp_path = Path(raw_temp_path)
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
+        total = 0
+        with Path(source).open("rb") as input_stream, os.fdopen(fd, "wb") as stream:
+            while chunk := input_stream.read(_PDF_COPY_CHUNK_BYTES):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ValueError(f"PDF upload exceeds {max_bytes} byte limit")
+                stream.write(chunk)
             stream.flush()
             os.fsync(stream.fileno())
         inspect_pdf(temp_path)
@@ -198,6 +209,22 @@ def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
     finally:
         if temp_path is not None:
             temp_path.unlink(missing_ok=True)
+
+
+def create_pdf_project(name: str, filename: str, content: bytes) -> dict:
+    """Backwards-compatible bytes API for PDF project creation."""
+    if len(content) > MAX_PDF_UPLOAD_BYTES:
+        raise ValueError(f"PDF upload exceeds {MAX_PDF_UPLOAD_BYTES} byte limit")
+    fd, raw_staging_path = tempfile.mkstemp(prefix=".pdf-bytes-upload-", suffix=".pdf")
+    staging_path = Path(raw_staging_path)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return create_pdf_project_from_file(name, filename, staging_path)
+    finally:
+        staging_path.unlink(missing_ok=True)
 
 
 def rename_project(project_id: str, new_name: str) -> dict:
