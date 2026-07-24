@@ -25,6 +25,14 @@ _IGNORE_PATTERNS = [
     "/.slide-comments.db",     # SQLite comment store (+ its WAL/SHM sidecars)
     "/.slide-comments.db-shm",
     "/.slide-comments.db-wal",
+    "/.pdf-transcript.lock", # cross-process transcript transaction lock
+    "/.pdf-replace.lock",    # legacy cross-process PDF replacement lock
+    "/.pdf-project-write.lock",
+    "/.pdf-replacement-journal.json",
+    "/.pdf-txn-*",
+    "/.pdf-replacement-*",
+    "/.pdf-primary-txn-*",
+    "/.pdf-candidate-txn-*",
     ".DS_Store",
     "Thumbs.db",
     # App-managed agent tooling — regenerated on EVERY project open (workdir.setup), so
@@ -256,7 +264,9 @@ def list_versions(project_dir: Path) -> list[dict]:
     current_tag = _current_version_tag(project_dir) if head and not dirty else None
     fmt = _US.join(["%(refname:short)", "%(*objectname)", "%(objectname)",
                     "%(contents:subject)", "%(creatordate:relative)"])
-    out, _, rc = _run(["for-each-ref", "--sort=-creatordate", "refs/tags",
+    # A pair of snapshots can be tagged in the same second.  Use the numeric version tag as a
+    # deterministic newest-first tiebreaker so a replacement reliably reports v2 before v1.
+    out, _, rc = _run(["for-each-ref", "--sort=-creatordate", "--sort=-version:refname", "refs/tags",
                        f"--format={fmt}"], project_dir)
     if rc != 0:
         return []

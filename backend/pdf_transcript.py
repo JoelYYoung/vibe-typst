@@ -76,18 +76,20 @@ def _sidecar_path(project_dir) -> Path:
 
 @contextmanager
 def _transaction_lock(project_dir):
-    """Serialize a project sidecar transaction across threads and Unix processes."""
+    """Lock order: project-write lock, then this transcript lock (both process-safe)."""
+    from pdf_service import project_write_lock
     lock_path = Path(project_dir) / _LOCK_NAME
     lock_key = str(lock_path.resolve())
     with _PROCESS_LOCKS_GUARD:
         process_lock = _PROCESS_LOCKS.setdefault(lock_key, threading.RLock())
-    with process_lock:
-        with lock_path.open("a+") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    with project_write_lock(project_dir):
+        with process_lock:
+            with lock_path.open("a+") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_sidecar(project_dir, pdf_name: str) -> tuple[Path, dict, bool]:

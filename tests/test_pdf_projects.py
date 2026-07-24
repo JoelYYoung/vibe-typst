@@ -135,6 +135,30 @@ class PdfProjectCreationTest(unittest.TestCase):
 
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_pdf_projects_keep_document_pdf_immutable_but_allow_non_pdf_assets(self):
+        info = self.projects.create_pdf_project("Paper", "paper.pdf", ONE_PAGE_PDF)
+        project = Path(info["path"])
+        primary = project / "document.pdf"
+        (project / "notes.txt").write_text("notes", encoding="utf-8")
+        folder = project / "assets"
+        folder.mkdir()
+
+        for action in [
+            lambda: self.projects.create_file(project, "another.pdf"),
+            lambda: self.projects.store_upload(project, "another.PDF", ONE_PAGE_PDF),
+            lambda: self.projects.delete_file(project, "document.pdf"),
+            lambda: self.projects.rmdir(project, "."),
+            lambda: self.projects.move_item(project, "document.pdf", "assets"),
+            lambda: self.projects.rename_item(project, "document.pdf", "old.pdf"),
+            lambda: self.projects.rename_item(project, "notes.txt", "notes.pdf"),
+        ]:
+            with self.assertRaises(ValueError):
+                action()
+
+        stored = self.projects.store_upload(project, "image.png", b"png", "assets")
+        self.assertEqual(stored["path"], "assets/image.png")
+        self.assertTrue(primary.is_file())
+
 
 class PdfRenderingTest(unittest.TestCase):
     def setUp(self):
@@ -204,6 +228,92 @@ class PdfRenderingTest(unittest.TestCase):
         after = {path.name: path.read_bytes() for path in destination.iterdir()}
         self.assertEqual(after, before)
         self.assertEqual([path for path in self.root.iterdir() if path.name.startswith(".")], [])
+
+
+class PdfReplacementTest(unittest.TestCase):
+    """Replacement is prepare-then-swap: bad input cannot disturb live pages."""
+
+    def setUp(self):
+        import pdf_service
+
+        self.pdf_service = pdf_service
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "project"
+        self.root.mkdir()
+        self.primary = self.root / "document.pdf"
+        self.primary.write_bytes(ONE_PAGE_PDF)
+        self.candidate = self.root / "replacement.pdf"
+        self.render_dir = Path(self._tmp.name) / "render"
+        self.render_dir.mkdir()
+        (self.render_dir / "page-1.png").write_bytes(b"old render")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_invalid_candidate_never_changes_primary_render_or_candidate(self):
+        self.candidate.write_bytes(b"not a PDF")
+        primary_before = self.primary.read_bytes()
+        render_before = {p.name: p.read_bytes() for p in self.render_dir.iterdir()}
+        candidate_before = self.candidate.read_bytes()
+
+        with self.assertRaises(ValueError):
+            self.pdf_service.replace_primary(self.root, self.candidate, self.primary,
+                                             self.render_dir)
+
+        self.assertEqual(self.primary.read_bytes(), primary_before)
+        self.assertEqual({p.name: p.read_bytes() for p in self.render_dir.iterdir()}, render_before)
+        self.assertEqual(self.candidate.read_bytes(), candidate_before)
+        self.assertEqual([p.name for p in self.root.iterdir()
+                          if p.name.startswith(".") and "write.lock" not in p.name], [])
+
+    def test_success_consumes_candidate_and_replaces_every_render_page(self):
+        self.candidate.write_bytes(ONE_PAGE_PDF)
+
+        result = self.pdf_service.replace_primary(self.root, self.candidate, self.primary,
+                                                  self.render_dir)
+
+        self.assertEqual(result["page_count"], 1)
+        self.assertFalse(self.candidate.exists())
+        self.assertEqual([p.name for p in self.render_dir.iterdir()], ["page-1.png"])
+        self.assertEqual([p.name for p in self.root.iterdir()
+                          if p.name.startswith(".") and "write.lock" not in p.name], [])
+
+    def test_backup_cleanup_failure_rolls_back_primary_render_and_candidate(self):
+        self.candidate.write_bytes(ONE_PAGE_PDF)
+        primary_before = self.primary.read_bytes()
+        render_before = {p.name: p.read_bytes() for p in self.render_dir.iterdir()}
+        candidate_before = self.candidate.read_bytes()
+        original_unlink = self.pdf_service.os.unlink
+
+        def fail_primary_backup(path, *args, **kwargs):
+            if Path(path).name.startswith(".pdf-primary-backup-"):
+                raise OSError("forced backup cleanup failure")
+            return original_unlink(path, *args, **kwargs)
+
+        with patch.object(self.pdf_service.os, "unlink", side_effect=fail_primary_backup):
+            result = self.pdf_service.replace_primary(self.root, self.candidate, self.primary,
+                                                      self.render_dir)
+
+        self.assertEqual(result["page_count"], 1)
+        self.assertFalse(self.candidate.exists())
+        self.assertEqual(self.primary.read_bytes(), primary_before)
+        self.assertNotEqual({p.name: p.read_bytes() for p in self.render_dir.iterdir()}, render_before)
+
+    def test_interrupted_published_transaction_recovers_old_pair_and_candidate(self):
+        self.candidate.write_bytes(ONE_PAGE_PDF)
+        old_render = {p.name: p.read_bytes() for p in self.render_dir.iterdir()}
+
+        with self.pdf_service.project_write_lock(self.root):
+            transaction = self.pdf_service.prepare_replacement(
+                self.root, self.candidate, self.primary, self.render_dir
+            )
+            transaction.publish()  # simulate process death before v2/finalize
+            self.assertTrue((self.root / ".pdf-replacement-journal.json").exists())
+            self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertTrue(self.candidate.exists())
+        self.assertEqual({p.name: p.read_bytes() for p in self.render_dir.iterdir()}, old_render)
+        self.assertFalse((self.root / ".pdf-replacement-journal.json").exists())
 
 
 class PdfTranscriptTest(unittest.TestCase):
@@ -481,6 +591,39 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
     async def _open_pdf(self, info=None):
         with patch.object(self.app.projects_mod, "get_project", return_value=info or self.info):
             return await self.app.open_project((info or self.info)["id"])
+
+    def _write_pdf(self, path: Path, pages: int) -> None:
+        import fitz
+
+        document = fitz.open()
+        for number in range(pages):
+            page = document.new_page()
+            page.insert_text((72, 72), f"PDF page {number + 1}")
+        document.save(path)
+        document.close()
+
+    async def test_pdf_replacement_saves_before_after_versions_and_orphans_shrunk_text(self):
+        self.pdf.unlink()
+        self._write_pdf(self.pdf, 2)
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 1)
+        await self._open_pdf()
+        self.assertEqual((await self._request("PATCH", "/api/pdf/transcripts/2", {
+            "text": "page two"
+        })).status_code, 200)
+
+        replaced = await self._request("POST", "/api/pdf/replace", {
+            "candidate": "replacement.pdf", "message": "shorter revision"
+        })
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        result = replaced.json()
+        self.assertTrue(result["before_version"]["ok"])
+        self.assertTrue(result["after_version"]["ok"])
+        self.assertEqual(result["page_count"], 1)
+        self.assertEqual(result["transcripts"]["orphans"]["2"], {"text": "page two"})
+        self.assertFalse(candidate.exists())
+        self.assertEqual([entry["tag"] for entry in self.app.vcs.list_versions(self.project)], ["v2", "v1"])
 
     async def test_pdf_open_renders_safe_pages_and_skips_typst_lifecycle(self):
         self.assertEqual(self.runtime.set_file(str(self.pdf)), str(self.pdf.resolve()))
