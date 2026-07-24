@@ -145,11 +145,23 @@ rsync -avz --delete \
 ### 2. Build the workspace image
 
 ```bash
-# On the server — stop any running containers first (PID pressure)
+# On the Debian bookworm server, rebuild the Python artifact from the current lockfile.
+# This must be repeated after every backend/pyproject.toml or backend/uv.lock change.
+cd /path/to/vibe-typst/backend
+/mnt/scratch/PAG/yjw/tools/uv/uv sync
+tar czf ../.venv.tar.gz .venv
+
+# Stop any running containers first (PID pressure), then build from the repository root.
+cd ..
 podman build -t tcb-workspace:latest /path/to/vibe-typst/
 ```
 
 The `Containerfile` bundles the backend, pre-built frontend, and resolver binary.
+The virtualenv archive must be built on the same Linux distribution and Python version as the
+container; a macOS virtualenv is not portable to Linux. The image build imports PyMuPDF (`fitz`)
+after extracting the archive, so a stale `.venv.tar.gz` now fails the build instead of producing
+a workspace where PDF projects fail at runtime.
+
 Build takes ~20 min on first run (Rust compile). Subsequent builds are incremental.
 
 > **PID pressure:** if the server has a low `pids.max` (e.g. 1200), stop workspace

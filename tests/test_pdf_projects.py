@@ -317,6 +317,127 @@ class PdfProjectCreationApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(consumed, ["prefix", "overflow"])
         self.assertEqual(list(self.root.iterdir()), [])
 
+
+class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
+    """Exercise the complete PDF workflow through the public FastAPI endpoints."""
+
+    async def asyncSetUp(self):
+        import app
+        import httpx
+        import projects
+        import runtime
+
+        self.app = app
+        self.httpx = httpx
+        self.projects = projects
+        self.runtime = runtime
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "projects"
+        self.root.mkdir()
+        self._previous_file = runtime._state.get("file")
+        self._previous_project = app._active_project
+        self._previous_pdf_render_state = dict(app._pdf_render_state)
+        self._configured = patch.object(app.app_config, "is_configured", return_value=True)
+        self._projects_root = patch.object(projects, "_projects_root", return_value=self.root.resolve())
+        self._state_path = patch.object(runtime, "GLOBAL_STATE_PATH", self.root / ".state.json")
+        self._configured.start()
+        self._projects_root.start()
+        self._state_path.start()
+        transport = httpx.ASGITransport(app=app.app)
+        self.client = httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+        self.app.resolver.stop()
+        await self.app.docstore.stop()
+        try:
+            self.app.store.close()
+        except Exception:
+            pass
+        for project in self.root.iterdir():
+            if project.is_dir():
+                for document in project.glob("*.pdf"):
+                    shutil.rmtree(self.runtime.render_dir(document), ignore_errors=True)
+        self.runtime._state["file"] = self._previous_file
+        self.app._active_project = self._previous_project
+        self.app._pdf_render_state.clear()
+        self.app._pdf_render_state.update(self._previous_pdf_render_state)
+        self._state_path.stop()
+        self._projects_root.stop()
+        self._configured.stop()
+        self._tmp.cleanup()
+
+    async def test_pdf_workflow_and_legacy_typst_workflow_share_the_public_api(self):
+        created = await self.client.post(
+            "/api/projects/pdf",
+            data={"name": "Review paper"},
+            files={"file": ("draft.pdf", _pdf_bytes("draft"), "application/pdf")},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        pdf_project = created.json()
+        self.assertEqual(pdf_project["type"], "pdf")
+        self.assertEqual(pdf_project["main_file"], "document.pdf")
+
+        opened = await self.client.post(f"/api/projects/{pdf_project['id']}/open")
+        self.assertEqual(opened.status_code, 200, opened.text)
+        state = (await self.client.get("/api/state")).json()
+        self.assertEqual(state["project_type"], "pdf")
+        self.assertEqual(state["pages"], ["page-1.png"])
+        rendered_page = await self.client.get("/api/render/page-1.png")
+        self.assertEqual(rendered_page.status_code, 200, rendered_page.text)
+        self.assertEqual(rendered_page.headers["content-type"], "image/png")
+
+        transcripts = (await self.client.get("/api/pdf/transcripts")).json()
+        self.assertEqual(transcripts["pages"], {"1": {"text": ""}})
+        updated = await self.client.patch(
+            "/api/pdf/transcripts/1", json={"text": "Opening transcript"}
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["pages"]["1"], {"text": "Opening transcript"})
+
+        project_dir = Path(pdf_project["path"])
+        (project_dir / "replacement.pdf").write_bytes(_pdf_bytes("revision", pages=2))
+        replaced = await self.client.post(
+            "/api/pdf/replace",
+            json={"candidate": "replacement.pdf", "message": "two-page revision"},
+        )
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual(replaced.json()["page_count"], 2)
+        self.assertEqual(replaced.json()["pages"], ["page-1.png", "page-2.png"])
+
+        slide_map = (await self.client.get("/api/slide-map")).json()
+        self.assertEqual(slide_map["total"], 2)
+        self.assertEqual(
+            [(page["page"], page["note"]) for page in slide_map["pages"]],
+            [(1, "Opening transcript"), (2, "")],
+        )
+        versions = (await self.client.get("/api/git/versions")).json()
+        self.assertEqual([version["tag"] for version in versions], ["v2", "v1"])
+        self.assertIn("Before PDF replacement", versions[1]["message"])
+        self.assertIn("Replace PDF", versions[0]["message"])
+
+        typst_created = await self.client.post(
+            "/api/projects", json={"name": "Original Typst flow"}
+        )
+        self.assertEqual(typst_created.status_code, 200, typst_created.text)
+        typst_project = typst_created.json()
+        self.assertEqual(typst_project["type"], "typst")
+        self.assertEqual(typst_project["main_file"], "main.typ")
+        typst_opened = await self.client.post(f"/api/projects/{typst_project['id']}/open")
+        self.assertEqual(typst_opened.status_code, 200, typst_opened.text)
+        typst_state = (await self.client.get("/api/state")).json()
+        self.assertEqual(typst_state["project_type"], "typst")
+        self.assertEqual(typst_state["main"], "main.typ")
+        self.assertIn("Original Typst flow", typst_state["source"])
+
+
+class PdfDeploymentContractTest(unittest.TestCase):
+    def test_container_build_rejects_a_venv_without_pymupdf(self):
+        containerfile = (ROOT / "Containerfile").read_text(encoding="utf-8")
+
+        self.assertIn("-c 'import fitz'", containerfile)
+
+
 class PdfRenderingTest(unittest.TestCase):
     def setUp(self):
         import pdf_service
