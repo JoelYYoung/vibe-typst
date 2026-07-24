@@ -1,11 +1,12 @@
 import json
+import shutil
 import sys
 import tempfile
 import threading
 from contextlib import asynccontextmanager
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -456,12 +457,16 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
                      "type": "pdf", "main_file": "document.pdf"}
         self._previous_file = runtime._state.get("file")
         self._previous_project = app._active_project
+        self._previous_pdf_render_state = dict(app._pdf_render_state)
         self._state_path = patch.object(runtime, "GLOBAL_STATE_PATH", self.project / "state.json")
         self._state_path.start()
 
     async def asyncTearDown(self):
         self.runtime._state["file"] = self._previous_file
         self.app._active_project = self._previous_project
+        self.app._pdf_render_state.clear()
+        self.app._pdf_render_state.update(self._previous_pdf_render_state)
+        shutil.rmtree(self.runtime.render_dir(self.pdf), ignore_errors=True)
         self._state_path.stop()
         self._tmp.cleanup()
 
@@ -469,6 +474,10 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         transport = self.httpx.ASGITransport(app=self.app.app)
         async with self.httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             return await client.request(method, path, json=payload)
+
+    async def _open_pdf(self, info=None):
+        with patch.object(self.app.projects_mod, "get_project", return_value=info or self.info):
+            return await self.app.open_project((info or self.info)["id"])
 
     async def test_pdf_open_renders_safe_pages_and_skips_typst_lifecycle(self):
         self.assertEqual(self.runtime.set_file(str(self.pdf)), str(self.pdf.resolve()))
@@ -624,3 +633,139 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.app._active_project, typ_info)
         resolver_stop.assert_not_called()
         store_close.assert_not_called()
+
+    async def test_pdf_mode_rejects_every_typst_only_endpoint_before_side_effects(self):
+        await self._open_pdf()
+        routes = [
+            ("POST", "/api/setup-workdir", None),
+            ("POST", "/api/preview/start", None),
+            ("POST", "/api/preview/stop", None),
+            ("GET", "/api/preview/status", None),
+            ("POST", "/api/preview/resolve", {"page_no": 1, "x": 1, "y": 1}),
+            ("POST", "/api/preview/locate", {"off": 0}),
+            ("GET", "/api/notes", None),
+            ("PATCH", "/api/notes", {"raw": "", "text": ""}),
+            ("POST", "/api/notes", {"slide_line": 1, "text": ""}),
+            ("GET", "/api/locate?page=1", None),
+            ("GET", "/api/notes/export", None),
+            ("GET", "/api/notes/pdfpc", None),
+            ("POST", "/api/export-pdf", None),
+            ("POST", "/api/preview/page-start", {"page_no": 1}),
+            ("GET", "/api/source", None),
+            ("GET", "/api/document", None),
+            ("POST", "/api/edit", {"op": "insert_text", "at": 0, "text": "bad"}),
+            ("POST", "/api/reset-from-disk", None),
+            ("POST", "/api/compile", None),
+        ]
+        with (
+            patch.object(self.app.resolver, "start") as resolver_start,
+            patch.object(self.app.resolver, "stop") as resolver_stop,
+            patch.object(self.app.docstore, "flush_now", new=AsyncMock()) as flush_now,
+            patch.object(self.app.docstore, "get_text") as get_text,
+            patch.object(self.app.workdir, "setup") as setup_workdir,
+            patch.object(self.app.notes_mod, "list_notes") as list_notes,
+        ):
+            for method, path, payload in routes:
+                self.assertEqual((await self._request(method, path, payload)).status_code, 400, path)
+        resolver_start.assert_not_called()
+        resolver_stop.assert_not_called()
+        flush_now.assert_not_called()
+        get_text.assert_not_called()
+        setup_workdir.assert_not_called()
+        list_notes.assert_not_called()
+
+    async def test_pdf_project_primary_symlink_is_rejected(self):
+        target = self.project / "target.pdf"
+        target.write_bytes(self.pdf.read_bytes())
+        self.pdf.unlink()
+        self.pdf.symlink_to(target.name)
+
+        with patch.object(self.app.projects_mod, "get_project", return_value=self.info):
+            with self.assertRaises(self.app.HTTPException) as exc:
+                await self.app.open_project("pdf-project")
+        self.assertEqual(exc.exception.status_code, 400)
+
+    async def test_symlinked_render_page_is_neither_listed_nor_served(self):
+        await self._open_pdf()
+        page = self.runtime.render_dir() / "page-1.png"
+        outside = self.project / "outside.png"
+        outside.write_bytes(page.read_bytes())
+        page.unlink()
+        page.symlink_to(outside)
+
+        self.assertEqual((await self._request("GET", "/api/state")).json()["pages"], [])
+        self.assertEqual((await self._request("GET", "/api/render/page-1.png")).status_code, 404)
+
+    async def test_identical_pdf_pages_in_distinct_projects_advance_render_version(self):
+        second = Path(self._tmp.name) / "second"
+        second.mkdir()
+        second_pdf = second / "document.pdf"
+        shutil.copy2(self.pdf, second_pdf)
+        second_info = {"id": "second-project", "name": "Second", "path": str(second),
+                       "type": "pdf", "main_file": "document.pdf"}
+        await self._open_pdf()
+        first_version = (await self._request("GET", "/api/render-version")).json()["version"]
+        await self._open_pdf(second_info)
+        second_version = (await self._request("GET", "/api/render-version")).json()["version"]
+
+        self.assertNotEqual(first_version, second_version)
+        shutil.rmtree(self.runtime.render_dir(second_pdf), ignore_errors=True)
+
+    async def test_late_pdf_fingerprint_failure_does_not_publish_or_stop_typst(self):
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        self.runtime.set_file(str(typ))
+        self.app._active_project = typ_info
+        with (
+            patch.object(self.app.projects_mod, "get_project", return_value=self.info),
+            patch.object(self.app, "_record_pdf_render_version", side_effect=RuntimeError("hash failed")),
+            patch.object(self.app.resolver, "stop") as resolver_stop,
+            patch.object(self.app.store, "close") as store_close,
+        ):
+            with self.assertRaises(RuntimeError):
+                await self.app.open_project("pdf-project")
+        self.assertEqual(self.runtime.current_file(), typ.resolve())
+        self.assertEqual(self.app._active_project, typ_info)
+        resolver_stop.assert_not_called()
+        store_close.assert_not_called()
+
+    async def test_failed_typst_switch_restores_previous_pdf_and_stops_typst_service(self):
+        await self._open_pdf()
+        with (
+            patch.object(self.app.projects_mod, "get_project", return_value={
+                "id": "typst-project", "name": "Typst", "path": str(self.project),
+                "type": "typst", "main_file": "main.typ",
+            }),
+            patch.object(self.app.docstore, "ensure_room", new=AsyncMock()),
+            patch.object(self.app.resolver, "start", side_effect=RuntimeError("start failed")),
+            patch.object(self.app.resolver, "stop") as resolver_stop,
+            patch.object(self.app.store, "set_path"),
+            patch.object(self.app.store, "close") as store_close,
+        ):
+            (self.project / "main.typ").write_text("= Typst", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                await self.app.open_project("typst-project")
+        self.assertEqual(self.runtime.document_type(), "pdf")
+        self.assertEqual(self.app._active_project, self.info)
+        resolver_stop.assert_called()
+        store_close.assert_called()
+
+    async def test_pdf_versions_skip_crdt_flush_rotate_and_typst_startup(self):
+        await self._open_pdf()
+        with (
+            patch.object(self.app.docstore, "flush_now", new=AsyncMock()) as flush_now,
+            patch.object(self.app.docstore, "rotate") as rotate,
+            patch.object(self.app.docstore, "ensure_room", new=AsyncMock()) as ensure_room,
+            patch.object(self.app.resolver, "start") as resolver_start,
+            patch.object(self.app.vcs, "save_version", return_value={"ok": True}),
+            patch.object(self.app.vcs, "restore_version", return_value={"ok": True}),
+            patch.object(self.app, "_activate_pdf", return_value={}),
+        ):
+            self.assertEqual((await self._request("POST", "/api/git/commit", {"message": "v1"})).status_code, 200)
+            self.assertEqual((await self._request("POST", "/api/git/restore", {"tag": "v1"})).status_code, 200)
+        flush_now.assert_not_called()
+        rotate.assert_not_called()
+        ensure_room.assert_not_called()
+        resolver_start.assert_not_called()
