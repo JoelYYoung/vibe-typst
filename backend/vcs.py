@@ -300,6 +300,43 @@ def version_exists(project_dir: Path, tag: str) -> bool:
     return rc == 0
 
 
+def version_tracks_path(
+    project_dir: Path,
+    tag: str,
+    relative_path: str,
+) -> tuple[bool, str | None]:
+    """Return whether an exact project path exists in a validated version tree."""
+    if (
+        not isinstance(tag, str)
+        or re.fullmatch(r"v[1-9][0-9]*", tag) is None
+        or not isinstance(relative_path, str)
+    ):
+        return False, "invalid version path"
+    relative = Path(relative_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        return False, "invalid version path"
+    canonical = relative.as_posix()
+    out, err, rc = _run(
+        [
+            "--literal-pathspecs",
+            "ls-tree",
+            "-r",
+            "-z",
+            f"{tag}^{{commit}}",
+            "--",
+            canonical,
+        ],
+        project_dir,
+    )
+    if rc != 0:
+        return False, err or "could not inspect version path"
+    return bool(out), None
+
+
 def _next_tag(project_dir: Path) -> str:
     out, _, _ = _run(["tag", "-l"], project_dir)
     mx = 0
