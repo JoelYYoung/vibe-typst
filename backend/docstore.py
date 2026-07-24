@@ -61,6 +61,7 @@ def rotate(file=None) -> str:
     return room_name(file)
 
 server: WebsocketServer | None = None
+_server_owner: tuple[Path, str] | None = None
 _lifecycle_lock = Lock()
 
 _loop: asyncio.AbstractEventLoop | None = None
@@ -77,32 +78,61 @@ def is_running() -> bool:
     return server is not None
 
 
-async def start() -> WebsocketServer:
-    """Start one fresh server on demand. A stopped WebsocketServer is never reused."""
-    global server
+def _admission_is_current(path: Path, key: str) -> bool:
+    """Whether a caller still owns the active Typst file and its issued room key."""
+    try:
+        return (runtime.document_type() == "typst"
+                and runtime.current_file() == path
+                and room_name(path) == key)
+    except Exception:
+        return False
+
+
+async def start(file: str | Path | None = None, key: str | None = None) -> WebsocketServer | None:
+    """Start/reuse a server only while this exact Typst lineage remains current."""
+    global server, _server_owner
+    path = _resolve(file)
+    key = key or room_name(path)
+    owner = (path, key)
     async with _lifecycle_lock:
+        if not _admission_is_current(*owner):
+            return None
         if server is not None:
+            # A valid active Typst transition can transfer this generic websocket server to
+            # its new current lineage. A stale caller never reaches this point.
+            _server_owner = owner
             return server
         fresh = WebsocketServer(auto_clean_rooms=False, exception_handler=exception_logger)
         try:
             await fresh.__aenter__()
-            set_loop(asyncio.get_running_loop())
         except Exception:
             try:
                 await fresh.__aexit__(None, None, None)
             except Exception:
                 pass
             raise
+        # A PDF or different Typst file can win while __aenter__ yields. Do not publish a
+        # server that the caller no longer owns; the authoritative transition will handle
+        # its own lifecycle teardown after this lock is released.
+        if not _admission_is_current(*owner):
+            try:
+                await fresh.__aexit__(None, None, None)
+            except Exception:
+                pass
+            return None
         server = fresh
+        _server_owner = owner
+        set_loop(asyncio.get_running_loop())
         return fresh
 
 
 async def stop() -> None:
     """Cancel every room/timer and discard the server before a PDF transition or shutdown."""
-    global server, _loop, dirty_since
+    global server, _server_owner, _loop, dirty_since
     async with _lifecycle_lock:
         active = server
         server = None
+        _server_owner = None
         stale = list(_rooms.values())
         # Every lineage retired by a PDF transition needs a new room key on its next Typst
         # activation. A base can have multiple stale generations, but it advances exactly
@@ -186,14 +216,25 @@ def path_for_key(key: str) -> Path | None:
     return current if key == _cur_room(base) else None
 
 
-async def ensure_room(file: str | Path | None = None, key: str | None = None) -> dict:
+async def ensure_room(file: str | Path | None = None, key: str | None = None) -> dict | None:
+    # The websocket server belongs to the active Typst document, but it legitimately hosts
+    # rooms for other project .typ files (MCP/API edits). Keep that lifecycle owner distinct
+    # from the target room being provisioned.
+    owner_path = runtime.current_file()
+    owner_key = room_name()
     path = _resolve(file)
     if key is None:
         key = room_name(file)
+    if not _admission_is_current(owner_path, owner_key):
+        return None
     if key in _rooms:
         return _rooms[key]
-    active = await start()
+    active = await start(owner_path, owner_key)
+    if active is None or not _admission_is_current(owner_path, owner_key):
+        return None
     room = await active.get_room(key)
+    if not _admission_is_current(owner_path, owner_key):
+        return None
     doc = room.ydoc
     text = doc.get(TEXT_KEY, type=Text)
     # Restore the persisted CRDT lineage if we have one; only seed from the .typ the
