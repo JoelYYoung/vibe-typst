@@ -1141,6 +1141,27 @@ class VcsVersioningTest(unittest.TestCase):
         self.assertNotIn(".slide-comments.db", tracked)
         self.assertNotIn("AGENTS.md", tracked)
 
+    def test_restore_keeps_nested_user_agents_file_in_version_history(self):
+        self._tooling()
+        docs = self.d / "docs"
+        docs.mkdir()
+        nested = docs / "AGENTS.md"
+        nested.write_text("user documentation v1\n", encoding="utf-8")
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", "AGENTS.md", "docs/AGENTS.md")
+        self._git("commit", "-m", "legacy version")
+        self._git("tag", "-a", "v1", "-m", "Legacy version")
+        self.vcs.migrate(self.d)
+
+        nested.write_text("user documentation v2\n", encoding="utf-8")
+        self.assertEqual(self.vcs.save_version(self.d, "current")["tag"], "v2")
+        result = self.vcs.restore_version(self.d, "v1")
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(nested.read_text(encoding="utf-8"), "user documentation v1\n")
+        self.assertIn("docs/AGENTS.md", set(self._git("ls-files").stdout.splitlines()))
+
     def test_migrate_untracks_legacy_tooling_and_keeps_current_version(self):
         # An OLD repo that committed the tooling before it was ignored (the real-world case).
         self._tooling()
