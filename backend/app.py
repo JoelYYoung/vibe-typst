@@ -1379,6 +1379,7 @@ async def replace_pdf(request: Request):
                 "before_version": before_version,
                 "after_version": after_version,
                 "cleanup_pending": cleanup_pending,
+                "candidate_recovery_path": transaction.preserved_candidate.name,
             }
     return await asyncio.to_thread(replace_sync)
 
