@@ -7,8 +7,10 @@ tag. The commit graph is storage only — the UI lists tags. Dirty detection is
 git-native (`status --porcelain`), so it picks up uploaded/deleted files reliably
 instead of any hand-rolled heuristic.
 """
+import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 # Things that change constantly and would otherwise keep the repo perpetually
@@ -43,15 +45,19 @@ _IGNORE_PATTERNS = [
 
 _GIT_CONFIG = [("user.email", "vibe@local"), ("user.name", "Vibe Typst")]
 _US = "\x1f"  # unit separator for --format parsing
+_HOUSEKEEPING_MESSAGE = "chore: stop tracking app-managed files"
 
 
-def _run(args, cwd, input=None):
+def _run(args, cwd, input=None, env=None):
     # Degrade gracefully if git can't even be spawned (e.g. BlockingIOError when the host is
     # out of process slots) — return a non-zero result instead of raising, so the API endpoints
     # report "no repo / unavailable" rather than a 500.
     try:
+        proc_env = os.environ.copy()
+        if env:
+            proc_env.update(env)
         r = subprocess.run(["git"] + args, cwd=str(cwd), capture_output=True,
-                           text=True, input=input, timeout=30)
+                           text=True, input=input, timeout=30, env=proc_env)
         return r.stdout.strip(), r.stderr.strip(), r.returncode
     except Exception as e:
         return "", str(e), -1
@@ -77,34 +83,68 @@ def _untrack_ignored(project_dir: Path) -> None:
     committed, crash dumps, a comment DB). Without this those volatile files keep the repo
     permanently 'dirty' and trigger false discard prompts / spurious saves.
 
-    The removal is COMMITTED (so it doesn't linger as a staged 'dirty' deletion), and any
-    version tag pointing at the old HEAD is carried onto the housekeeping commit — the deck
-    content is byte-identical, so the user's 'current version' stays valid across the cleanup.
+    The removal is committed through an isolated temporary index, so pre-existing staged deck
+    edits remain staged instead of leaking into the housekeeping commit. Existing version tags
+    remain immutable; status() recognizes a tag immediately behind housekeeping-only commits as
+    the current deck version.
     """
     out, _, _ = _run(["ls-files", "-i", "-c", "--exclude-standard"], project_dir)
-    for f in [x.strip() for x in out.splitlines() if x.strip()]:
-        _run(["rm", "--cached", "--", f], project_dir)
-    _run(["add", "--", ".gitignore"], project_dir)   # keep the ignore rules themselves versioned
-    if _head_commit(project_dir) is None:
+    ignored = [x.strip() for x in out.splitlines() if x.strip()]
+    old_head = _head_commit(project_dir)
+    if old_head is None:
         return  # no history yet — save_version() will make the first commit
-    if _run(["diff", "--cached", "--quiet"], project_dir)[2] == 0:
-        return  # nothing staged → nothing to clean up
-    pto, _, _ = _run(["tag", "--points-at", "HEAD"], project_dir)
-    tags_here = [t for t in pto.splitlines() if t.strip()]
-    # Capture each tag's ORIGINAL message BEFORE moving it — else re-annotating with `-m t`
-    # clobbers the user's version name to a bare "vNN", which then looks like a spurious extra
-    # version next to their newly-named one.
-    orig_msg = {}
-    for t in tags_here:
-        m, _, _ = _run(["for-each-ref", f"refs/tags/{t}", "--format=%(contents:subject)"], project_dir)
-        orig_msg[t] = m.strip()
-    # Commit ONLY the staged removals/.gitignore (no -a), so real uncommitted deck edits stay
-    # uncommitted (the deck must still read as 'dirty' if the user changed it).
-    if _run(["commit", "-m", "chore: stop tracking app-managed files"], project_dir)[2] != 0:
+    with tempfile.TemporaryDirectory(prefix="vibe-typst-index-") as td:
+        index_path = str(Path(td) / "index")
+        index_env = {"GIT_INDEX_FILE": index_path}
+        if _run(["read-tree", old_head], project_dir, env=index_env)[2] != 0:
+            return
+        for f in ignored:
+            if _run(["rm", "--cached", "--", f], project_dir, env=index_env)[2] != 0:
+                return
+        if _run(["add", "--", ".gitignore"], project_dir, env=index_env)[2] != 0:
+            return
+        if _run(["diff", "--cached", "--quiet"], project_dir, env=index_env)[2] == 0:
+            return
+        tree, _, rc = _run(["write-tree"], project_dir, env=index_env)
+        if rc != 0:
+            return
+        new_head, _, rc = _run(
+            ["commit-tree", tree, "-p", old_head, "-m", _HOUSEKEEPING_MESSAGE],
+            project_dir,
+        )
+        if rc != 0:
+            return
+
+    # Bring only the housekeeping paths in the caller's real index to the new commit state.
+    # Any deck changes already staged there are deliberately untouched.
+    for f in ignored:
+        if _run(["rm", "--cached", "--", f], project_dir)[2] != 0:
+            return
+    if _run(["add", "--", ".gitignore"], project_dir)[2] != 0:
         return
-    new_head = _head_commit(project_dir)
-    for t in tags_here:                          # carry each version tag (name + message) forward
-        _run(["tag", "-f", "-a", t, "-m", orig_msg.get(t) or t, new_head], project_dir)
+    _run(["update-ref", "-m", "vibe-typst housekeeping", "HEAD", new_head, old_head], project_dir)
+
+
+def _current_version_tag(project_dir: Path) -> str | None:
+    """Return the immutable version tag represented by a clean working tree.
+
+    Migration commits change only tracking metadata, not the user's deck. Walk through those
+    known commits to the tagged deck snapshot instead of force-moving the tag.
+    """
+    if _is_dirty(project_dir):
+        return None
+    commit = _head_commit(project_dir)
+    while commit:
+        out, _, _ = _run(["tag", "--points-at", commit], project_dir)
+        tags = [t for t in out.splitlines() if t.strip()]
+        if tags:
+            return tags[-1]
+        subject, _, rc = _run(["show", "-s", "--format=%s", commit], project_dir)
+        if rc != 0 or subject != _HOUSEKEEPING_MESSAGE:
+            return None
+        parent, _, rc = _run(["rev-parse", f"{commit}^"], project_dir)
+        commit = parent if rc == 0 else None
+    return None
 
 
 def migrate(project_dir: Path) -> None:
@@ -145,11 +185,7 @@ def status(project_dir: Path) -> dict:
         return {"initialized": False, "dirty": True, "current": None}
     dirty = _is_dirty(project_dir)
     head = _head_commit(project_dir)
-    current = None
-    if head and not dirty:
-        out, _, _ = _run(["tag", "--points-at", "HEAD"], project_dir)
-        tags = [t for t in out.splitlines() if t.strip()]
-        current = tags[-1] if tags else None
+    current = _current_version_tag(project_dir) if head and not dirty else None
     return {"initialized": True, "dirty": dirty, "current": current}
 
 
@@ -159,6 +195,7 @@ def list_versions(project_dir: Path) -> list[dict]:
         return []
     head = _head_commit(project_dir)
     dirty = _is_dirty(project_dir)
+    current_tag = _current_version_tag(project_dir) if head and not dirty else None
     fmt = _US.join(["%(refname:short)", "%(*objectname)", "%(objectname)",
                     "%(contents:subject)", "%(creatordate:relative)"])
     out, _, rc = _run(["for-each-ref", "--sort=-creatordate", "refs/tags",
@@ -178,7 +215,7 @@ def list_versions(project_dir: Path) -> list[dict]:
             "short": commit[:7],
             "message": subject or tag,
             "date": date.strip(),
-            "is_current": (commit == head and not dirty),
+            "is_current": (tag == current_tag),
         })
     return versions
 
@@ -204,10 +241,9 @@ def save_version(project_dir: Path, message: str = "") -> dict:
         return {"ok": False, "error": err or out}
     # Nothing changed and HEAD is already a version → don't create a duplicate tag.
     if nothing:
-        pto, _, _ = _run(["tag", "--points-at", "HEAD"], project_dir)
-        existing = [t for t in pto.splitlines() if t.strip()]
+        existing = _current_version_tag(project_dir)
         if existing:
-            return {"ok": True, "tag": existing[-1], "skipped": True}
+            return {"ok": True, "tag": existing, "skipped": True}
     tag = _next_tag(project_dir)
     _run(["tag", "-a", tag, "-m", msg or tag], project_dir)
     return {"ok": True, "tag": tag}

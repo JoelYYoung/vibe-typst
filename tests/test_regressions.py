@@ -823,6 +823,23 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(r["ok"], c)
             self.assertEqual(self._doc(), before)        # nothing applied on any refusal
 
+    async def test_invalid_anchor_occurrence_and_side_refuse_without_mutating(self):
+        cases = [
+            {"selector": {"by": "anchor", "text": "unique", "occurrence": 0}, "text": "X"},
+            {"selector": {"by": "anchor", "text": "unique", "occurrence": -1}, "text": "X"},
+            {"selector": {"by": "anchor", "text": "x", "occurrence": 3}, "text": "X"},
+            {"selector": {"by": "anchor", "text": "unique", "occurrence": "bad"}, "text": "X"},
+            {"selector": {"by": "anchor", "text": "unique", "side": "around"}, "text": "X"},
+        ]
+        for edit in cases:
+            with self.subTest(selector=edit["selector"]):
+                self._seed("x x unique\n")
+                before = self._doc()
+                r = await self._edits([edit])
+                self.assertFalse(r["ok"], r)
+                self.assertTrue(r["conflict"], r)
+                self.assertEqual(self._doc(), before)
+
     async def test_comment_anchor_stays_in_bounds_after_delete_then_reinsert(self):
         self._seed("alpha beta gamma\n")
         rel = await self.docstore.make_rel_anchors([[6, 10]], "main.typ")   # "beta"
@@ -930,6 +947,7 @@ class VcsVersioningTest(unittest.TestCase):
         self._git("add", "main.typ", "AGENTS.md", "CLAUDE.md", ".codex/config.toml")
         self._git("commit", "-m", "old")
         self._git("tag", "-a", "v1", "-m", "My named version")   # a real, user-chosen name
+        original_tag_target = self._git("rev-parse", "v1^{}").stdout.strip()
         self.assertIn("AGENTS.md", self._git("ls-files").stdout)
         self.assertEqual(self.vcs.status(self.d)["current"], "v1")
         # migrate (as a project-open would): untrack tooling, keep the deck + the version tag
@@ -944,8 +962,29 @@ class VcsVersioningTest(unittest.TestCase):
         # the tag's NAME/message must survive the move (not be clobbered to a bare "v1")
         subj = self._git("for-each-ref", "refs/tags/v1", "--format=%(contents:subject)").stdout.strip()
         self.assertEqual(subj, "My named version")
+        self.assertEqual(self._git("rev-parse", "v1^{}").stdout.strip(), original_tag_target)
         # exactly one tag exists — the move must not spawn a duplicate
         self.assertEqual([v["tag"] for v in self.vcs.list_versions(self.d)], ["v1"])
+
+    def test_migrate_does_not_commit_pre_staged_deck_edits(self):
+        self._tooling()
+        self._git("init")
+        self._git("config", "user.email", "t@t"); self._git("config", "user.name", "t")
+        self._git("add", "main.typ", "AGENTS.md", "CLAUDE.md", ".codex/config.toml")
+        self._git("commit", "-m", "old")
+        self._git("tag", "-a", "v1", "-m", "First version")
+        original_tag_target = self._git("rev-parse", "v1^{}").stdout.strip()
+
+        edited = "#slide[staged user edit]\n"
+        (self.d / "main.typ").write_text(edited, encoding="utf-8")
+        self._git("add", "main.typ")
+        self.vcs.migrate(self.d)
+
+        self.assertEqual(self._git("show", "HEAD:main.typ").stdout, "#slide[hello]\n")
+        self.assertEqual(self._git("show", ":main.typ").stdout, edited)
+        self.assertEqual(self._git("rev-parse", "v1^{}").stdout.strip(), original_tag_target)
+        self.assertNotIn("AGENTS.md", self._git("ls-files").stdout)
+        self.assertTrue(self.vcs.status(self.d)["dirty"])
 
     def test_migrate_preserves_uncommitted_deck_edits_as_dirty(self):
         self._tooling()
@@ -987,6 +1026,45 @@ class DoneCommentOrderingRegressionTest(unittest.TestCase):
         done = self.store.list_comments("done")
         self.assertEqual([c["id"] for c in done], [newer["id"], older["id"]])
         self.assertEqual([c["seq"] for c in self.store.list_comments()], [1, 2])
+
+
+class DockerEntrypointMigrationRegressionTest(unittest.TestCase):
+    def test_failed_agent_home_copy_preserves_original_directory(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            workspace = root / "workspace"
+            fake_bin = root / "bin"
+            source = home / ".claude"
+            source.mkdir(parents=True)
+            workspace.mkdir()
+            fake_bin.mkdir()
+            (source / "credentials.json").write_text("keep me\n", encoding="utf-8")
+            failing_cp = fake_bin / "cp"
+            failing_cp.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
+            failing_cp.chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "TCB_BROWSE_ROOT": str(workspace),
+                "TCB_STATE_PATH": str(workspace / ".tcb" / "state.json"),
+                "PATH": f"{fake_bin}:{env['PATH']}",
+            })
+
+            result = subprocess.run(
+                ["bash", str(ROOT / "docker-entrypoint.sh")],
+                cwd=str(ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(source.is_symlink())
+            self.assertEqual(
+                (source / "credentials.json").read_text(encoding="utf-8"),
+                "keep me\n",
+            )
 
 
 class ProjectFileOperationsRegressionTest(unittest.TestCase):
