@@ -1,6 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import * as api from './api.js'
-import { pdfTranscriptDirty, shouldSyncPdfTranscriptDraft } from './pdfWorkspace.js'
+import {
+  editPdfTranscriptDraft,
+  finishPdfTranscriptSave,
+  pdfTranscriptDirty,
+  reconcilePdfTranscriptDrafts,
+  startPdfTranscriptSave,
+} from './pdfWorkspace.js'
 import { toast } from './Toaster.jsx'
 
 function transcriptText(slideMap, page) {
@@ -10,53 +16,34 @@ function transcriptText(slideMap, page) {
 
 export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap, orphans, onTranscriptSaved }) {
   const [transcriptsOn, setTranscriptsOn] = useState(true)
-  const [draft, setDraft] = useState('')
-  const [base, setBase] = useState('')
-  const [saving, setSaving] = useState(false)
-  const draftRef = useRef('')
-  const baseRef = useRef('')
-  const pageRef = useRef(0)
-  const savedRef = useRef('')
+  const [drafts, setDrafts] = useState({})
   const total = pages.length
-  const saved = transcriptText(slideMap, page)
   const current = pages[page - 1]
-  const dirty = pdfTranscriptDirty(draft, base)
+  const draftState = drafts[page] || { draft: transcriptText(slideMap, page), base: transcriptText(slideMap, page), saving: false }
+  const dirty = pdfTranscriptDirty(draftState.draft, draftState.base)
 
-  useEffect(() => { draftRef.current = draft }, [draft])
-  useEffect(() => { baseRef.current = base }, [base])
   useEffect(() => {
-    // A page change selects a different authoritative transcript. Render polls on the same page
-    // only replace a draft that still matches its previous saved value. Deliberately depend on
-    // the authoritative page text, not `base`: setting base after a save must not replay an
-    // already-stale slide-map value over the fresh draft.
-    const pageChanged = pageRef.current !== page
-    const savedChanged = savedRef.current !== saved
-    if (shouldSyncPdfTranscriptDraft({
-      pageChanged,
-      savedChanged,
-      dirty: pdfTranscriptDirty(draftRef.current, baseRef.current),
-    })) {
-      pageRef.current = page
-      setBase(saved)
-      setDraft(saved)
-    }
-    savedRef.current = saved
-  }, [page, saved])
+    setDrafts((previous) => reconcilePdfTranscriptDrafts(previous, slideMap, total))
+  }, [slideMap, total])
 
   async function save() {
-    if (!dirty || !page) return
-    setSaving(true)
-    const text = draft
+    if (!dirty || !page || draftState.saving) return
+    const request = { page, text: draftState.draft }
+    setDrafts((previous) => {
+      const started = startPdfTranscriptSave(previous, request)
+      return started.drafts
+    })
     try {
-      const result = await api.savePdfTranscript(page, text)
+      const result = await api.savePdfTranscript(request.page, request.text)
       if (result && result.ok !== false) {
-        setBase(text)
+        setDrafts((previous) => finishPdfTranscriptSave(previous, request, true))
         onTranscriptSaved && onTranscriptSaved()
+      } else {
+        setDrafts((previous) => finishPdfTranscriptSave(previous, request, false))
       }
     } catch (error) {
+      setDrafts((previous) => finishPdfTranscriptSave(previous, request, false))
       toast.error(error.message || 'Could not save transcript')
-    } finally {
-      setSaving(false)
     }
   }
 
@@ -96,12 +83,12 @@ export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap,
       {transcriptsOn && total > 0 && (
         <div className="pdf-transcript">
           <div className="pdf-transcript-label">PAGE {page} TRANSCRIPT</div>
-          <textarea value={draft} placeholder="Write a transcript for this page…"
-            onChange={(event) => setDraft(event.target.value)}
+          <textarea value={draftState.draft} placeholder="Write a transcript for this page…"
+            onChange={(event) => setDrafts((previous) => editPdfTranscriptDraft(previous, page, event.target.value))}
             onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') save() }} />
           <div className="pdf-transcript-actions">
-            <button className="primary" disabled={!dirty || saving} onClick={save}>{saving ? 'Saving…' : 'Save transcript'}</button>
-            {dirty && <button onClick={() => setDraft(base)}>Revert</button>}
+            <button className="primary" disabled={!dirty || draftState.saving} onClick={save}>{draftState.saving ? 'Saving…' : 'Save transcript'}</button>
+            {dirty && <button onClick={() => setDrafts((previous) => editPdfTranscriptDraft(previous, page, draftState.base))}>Revert</button>}
             {dirty && <span>⌘↵ save</span>}
           </div>
         </div>

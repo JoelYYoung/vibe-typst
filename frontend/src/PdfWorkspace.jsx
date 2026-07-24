@@ -3,7 +3,8 @@ import * as api from './api.js'
 import TermPanel from './TermPanel.jsx'
 import Presenter from './Presenter.jsx'
 import PdfPreviewPane from './PdfPreviewPane.jsx'
-import { nextPdfRenderState, pdfVersions } from './pdfWorkspace.js'
+import { createPdfPollController, nextPdfRenderState, pdfVersions } from './pdfWorkspace.js'
+import { toast } from './Toaster.jsx'
 
 function PdfFilesDrawer({ onClose, onRestored }) {
   const [files, setFiles] = useState([])
@@ -26,7 +27,11 @@ function PdfFilesDrawer({ onClose, onRestored }) {
       if (result && result.ok) {
         await reload()
         onRestored && onRestored()
+      } else {
+        toast.error((result && result.error) || 'Could not restore version')
       }
+    } catch (error) {
+      toast.error(error.message || 'Could not restore version')
     } finally {
       setBusy(false)
     }
@@ -59,38 +64,39 @@ export default function PdfWorkspace({ project, onBack }) {
   const presentationStateRef = useRef({ page: 1, pages: [], tokens: {}, pointer: null })
   const pointerRef = useRef(null)
   const lastPongRef = useRef(0)
-
-  const loadSlideMap = useCallback(async () => {
-    try {
-      const result = await api.getSlideMap()
-      setSlideMap(result.pages || [])
-      setOrphans(result.orphans || [])
-    } catch {
-      setSlideMap([])
-      setOrphans([])
-    }
-  }, [])
-
-  const syncRender = useCallback(async (initial = false) => {
-    try {
-      const result = initial ? await api.getState() : await api.renderVersion()
-      if (initial && result.project) setProjectDir(result.project)
-      setRender((previous) => {
-        return nextPdfRenderState(previous, result)
-      })
-      // Transcript edits and PDF replacement can both happen outside this component. Fetch the
-      // authoritative map on each render poll; PdfPreviewPane preserves a genuinely dirty draft.
-      loadSlideMap()
-    } catch {
-      // A replacement can briefly leave the render unavailable; the next poll retries.
-    }
-  }, [loadSlideMap])
+  const initialLoadRef = useRef(true)
+  const pollerRef = useRef(null)
+  if (!pollerRef.current) {
+    pollerRef.current = createPdfPollController({
+      loadRender: async () => {
+        const result = initialLoadRef.current ? await api.getState() : await api.renderVersion()
+        initialLoadRef.current = false
+        if (result.project) setProjectDir(result.project)
+        return result
+      },
+      loadMap: api.getSlideMap,
+      onRender: (result) => setRender((previous) => nextPdfRenderState(previous, result)),
+      onMap: (result) => {
+        setSlideMap(result.pages || [])
+        setOrphans(result.orphans || [])
+      },
+      // Keep the last successful transcript map and render visible during a replacement retry.
+      onError: () => {},
+    })
+  }
+  const poller = pollerRef.current
+  const refreshAfterTranscriptSave = useCallback(() => poller.invalidateMapAfterSave(), [poller])
 
   useEffect(() => {
-    syncRender(true)
-    const timer = setInterval(() => syncRender(false), 1500)
-    return () => clearInterval(timer)
-  }, [syncRender])
+    let cancelled = false
+    let timer = null
+    const tick = async () => {
+      await poller.poll()
+      if (!cancelled) timer = setTimeout(tick, 5000)
+    }
+    tick()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [poller])
 
   useEffect(() => {
     presentationStateRef.current = { page: render.page, pages: render.pages, tokens: render.tokens, pointer: pointerRef.current }
@@ -137,10 +143,10 @@ export default function PdfWorkspace({ project, onBack }) {
       <main className="pdf-workspace-main">
         <section className="pdf-terminal-pane"><div className="pdf-terminal-head">Terminal</div><TermPanel initialCwd={projectDir} /></section>
         <PdfPreviewPane pages={render.pages} tokens={render.tokens} page={render.page} setPage={setPage}
-          slideMap={slideMap} orphans={orphans} onTranscriptSaved={loadSlideMap} />
+          slideMap={slideMap} orphans={orphans} onTranscriptSaved={refreshAfterTranscriptSave} />
       </main>
-      {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={() => syncRender(true)} />}
-      {presenting && <Presenter onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap}
+      {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={() => poller.invalidateMapAfterSave()} />}
+      {presenting && <Presenter onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
         onPointer={sendPointer} page={render.page} setPage={setPage} pages={render.pages} tokens={render.tokens} />}
     </div>
   )
