@@ -16,6 +16,7 @@ import os
 import pty
 import re
 import signal
+import stat
 import struct
 import subprocess
 import tempfile
@@ -28,6 +29,7 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 import app_config
 import context
@@ -83,22 +85,39 @@ def _project_document(info: dict) -> tuple[str, Path]:
 
 def _pdf_pages(path: Path | None = None) -> list[str]:
     directory = runtime.render_dir(path)
-    if not directory.is_dir():
+    if directory.is_symlink() or not directory.is_dir():
         return []
     pages = [path.name for path in directory.iterdir()
              if path.is_file() and not path.is_symlink() and _PDF_PAGE_NAME.fullmatch(path.name)]
     return sorted(pages, key=lambda name: int(_PDF_PAGE_NAME.fullmatch(name).group(1)))
 
 
-def _pdf_render_page(name: str) -> Path | None:
-    """Return one current regular PDF render page, never a symlink or arbitrary file."""
+def _open_pdf_render_page(name: str):
+    """Open a regular PDF page beneath a non-symlink render directory without following links."""
     if _PDF_PAGE_NAME.fullmatch(name) is None:
         return None
-    directory = runtime.render_dir().resolve()
-    candidate = directory / name
-    if candidate.parent != directory or candidate.is_symlink() or not candidate.is_file():
+    directory = runtime.render_dir()
+    if directory.is_symlink() or not directory.is_dir():
         return None
-    return candidate
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if not all(hasattr(os, flag) for flag in required):
+        return None
+    dir_fd = page_fd = None
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        page_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        if not stat.S_ISREG(os.fstat(page_fd).st_mode):
+            os.close(page_fd)
+            page_fd = None
+            return None
+        return os.fdopen(page_fd, "rb", closefd=True)
+    except OSError:
+        if page_fd is not None:
+            os.close(page_fd)
+        return None
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
 
 
 def _pdf_context() -> tuple[Path, int]:
@@ -178,7 +197,7 @@ def _pdf_activation_response(rendered: dict, transcripts: dict | None, version: 
     }
 
 
-def _activate_pdf() -> dict:
+async def _activate_pdf() -> dict:
     """Render a PDF without creating any Typst resolver, CRDT, comment, or workdir state."""
     if _active_project is None:
         pdf_path = runtime.current_file()
@@ -191,6 +210,7 @@ def _activate_pdf() -> dict:
         project_pdf = True
         identity = _pdf_identity(pdf_path)
     rendered, transcripts, version = _prepare_pdf(pdf_path, project_pdf, identity)
+    await docstore.stop()
     resolver.stop()
     try:
         store.close()
@@ -199,7 +219,7 @@ def _activate_pdf() -> dict:
     return _pdf_activation_response(rendered, transcripts, version)
 
 
-def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
+async def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
     """Prepare PDF state before publishing a switch away from a Typst project."""
     global _active_project
     rendered, transcripts, version = _prepare_pdf(
@@ -210,6 +230,7 @@ def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
     try:
         runtime.set_file(str(pdf_path))
         _active_project = info
+        await docstore.stop()
         resolver.stop()
         try:
             store.close()
@@ -233,30 +254,27 @@ def _has_valid_file() -> bool:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _active_project
-    async with docstore.server:
-        docstore.set_loop(asyncio.get_running_loop())
-        # In local mode, there may be no configured project yet → skip resolver startup.
-        # The resolver is started (or restarted) when the user opens a project.
-        if _has_valid_file():
-            if runtime.document_type() == "pdf":
-                # A persisted PDF is usable only when immutable project metadata agrees.
-                # Never reconstruct a CRDT/resolver room for a PDF restart.
-                info = _matching_pdf_project(runtime.current_file())
-                if info is not None:
-                    _active_project = info
-                    try:
-                        _activate_pdf()
-                    except Exception:
-                        _active_project = None
-            else:
-                store.set_path(str(runtime.store_path()))
-                runtime.backup()
-                await docstore.ensure_room()
-                resolver.start()
-        try:
-            yield
-        finally:
-            resolver.stop()
+    # A PDF does not start the CRDT websocket server. Typst initializes it only when needed.
+    if _has_valid_file():
+        if runtime.document_type() == "pdf":
+            info = _matching_pdf_project(runtime.current_file())
+            if info is not None:
+                _active_project = info
+                try:
+                    await _activate_pdf()
+                except Exception:
+                    _active_project = None
+        else:
+            await docstore.start()
+            store.set_path(str(runtime.store_path()))
+            runtime.backup()
+            await docstore.ensure_room()
+            resolver.start()
+    try:
+        yield
+    finally:
+        resolver.stop()
+        await docstore.stop()
 
 
 app = FastAPI(title="Vibe Typst", lifespan=lifespan)
@@ -286,9 +304,10 @@ async def yjs_ws(websocket: WebSocket, room: str):
         await websocket.close(code=1008)
         return
     await websocket.accept()
+    active_server = await docstore.start()
     await docstore.ensure_room_by_key(room)
     try:
-        await docstore.server.serve(docstore.StarletteYChannel(websocket, room))
+        await active_server.serve(docstore.StarletteYChannel(websocket, room))
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -388,9 +407,10 @@ def _setup_workdir_and_migrate() -> dict:
 async def _activate_current() -> dict:
     """Common work after the active file changes: backup, store, working-dir, room, render."""
     if runtime.document_type() == "pdf":
-        return _activate_pdf()
+        return await _activate_pdf()
     runtime.backup()  # snapshot the file before touching it
     store.set_path(str(runtime.store_path()))  # follow the file's directory
+    await docstore.start()
     await docstore.ensure_room()
     await docstore.flush_now()
     resolver.start()  # the Rust resolver follows the new file
@@ -430,7 +450,7 @@ async def open_file(request: Request):
         if info is None:
             raise HTTPException(400, "open PDF files through a matching PDF project")
         try:
-            return _activate_pdf_project(info, requested_path)
+            return await _activate_pdf_project(info, requested_path)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
     previous_file = runtime._state.get("file")
@@ -446,6 +466,7 @@ async def open_file(request: Request):
             resolver.stop()
         except Exception:
             pass
+        await docstore.stop()
         try:
             store.close()
         except Exception:
@@ -1121,10 +1142,14 @@ def serve_render(name: str):
         raise HTTPException(400, "bad name")
     if runtime.document_type() == "pdf":
         _pdf_http_context()
-        p = _pdf_render_page(name)
-        if p is None or name not in _pdf_pages():
+        if name not in _pdf_pages():
             raise HTTPException(404)
-        return FileResponse(p, headers={"Cache-Control": "no-cache"})
+        stream = _open_pdf_render_page(name)
+        if stream is None:
+            raise HTTPException(404)
+        return StreamingResponse(stream, media_type="image/png",
+                                 headers={"Cache-Control": "no-cache"},
+                                 background=BackgroundTask(stream.close))
     p = typst_service.render_path(name)
     if not p.exists():
         raise HTTPException(404)
@@ -1274,7 +1299,7 @@ async def open_project(project_id: str):
         raise HTTPException(400, str(e)) from e
     if project_type == "pdf":
         try:
-            _activate_pdf_project(info, main_path)
+            await _activate_pdf_project(info, main_path)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return {"ok": True, "project": info}
@@ -1285,6 +1310,7 @@ async def open_project(project_id: str):
         _active_project = info
         store.set_path(str(runtime.store_path()))
         runtime.backup()
+        await docstore.start()
         await docstore.ensure_room()
         resolver.start()
     except Exception:
@@ -1292,6 +1318,7 @@ async def open_project(project_id: str):
             resolver.stop()
         except Exception:
             pass
+        await docstore.stop()
         try:
             store.close()
         except Exception:
@@ -1570,7 +1597,7 @@ async def git_restore(request: Request):
         if not result["ok"]:
             raise HTTPException(400, result.get("error", "restore failed"))
         try:
-            _activate_pdf()
+            await _activate_pdf()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"ok": True, "project_type": "pdf"}
@@ -1580,6 +1607,7 @@ async def git_restore(request: Request):
     result = vcs.restore_version(runtime.project_dir(), tag)
     if not result["ok"]:
         raise HTTPException(400, result.get("error", "restore failed"))
+    await docstore.start()
     await docstore.ensure_room()  # reseed the new room from the restored files
     resolver.start()
     return {"ok": True, "room": new_room}

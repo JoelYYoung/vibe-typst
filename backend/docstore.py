@@ -64,7 +64,8 @@ def rotate(file=None) -> str:
     _gen[base] = _gen.get(base, 0) + 1
     return room_name(file)
 
-server = WebsocketServer(auto_clean_rooms=False, exception_handler=exception_logger)
+server: WebsocketServer | None = None
+_lifecycle_lock = Lock()
 
 _loop: asyncio.AbstractEventLoop | None = None
 _rooms: dict[str, dict] = {}   # room_key -> state
@@ -73,6 +74,59 @@ _latest: dict[str, str] = {}   # room_key -> last text snapshot (sync-readable)
 # auto-recompile the slides after edits settle (live preview sync).
 dirty_since: float | None = None
 external_edit_seq: int = 0
+
+
+def is_running() -> bool:
+    """Whether this process currently owns a live CRDT websocket server."""
+    return server is not None
+
+
+async def start() -> WebsocketServer:
+    """Start one fresh server on demand. A stopped WebsocketServer is never reused."""
+    global server
+    async with _lifecycle_lock:
+        if server is not None:
+            return server
+        fresh = WebsocketServer(auto_clean_rooms=False, exception_handler=exception_logger)
+        try:
+            await fresh.__aenter__()
+            set_loop(asyncio.get_running_loop())
+        except Exception:
+            try:
+                await fresh.__aexit__(None, None, None)
+            except Exception:
+                pass
+            raise
+        server = fresh
+        return fresh
+
+
+async def stop() -> None:
+    """Cancel every room/timer and discard the server before a PDF transition or shutdown."""
+    global server, _loop, dirty_since
+    async with _lifecycle_lock:
+        active = server
+        server = None
+        stale = list(_rooms.values())
+        _rooms.clear()
+        _latest.clear()
+        _loop = None
+        dirty_since = None
+        for st in stale:
+            st["closed"] = True
+            timer = st.get("timer")
+            if timer:
+                timer.cancel()
+            try:
+                st["doc"].unobserve(st.get("sub"))
+            except Exception:
+                pass
+        if active is not None:
+            try:
+                await active.__aexit__(None, None, None)
+            except RuntimeError:
+                # A test/deliberate partial lifecycle may provide an unstarted server.
+                pass
 
 
 def _resolve(file: str | Path | None) -> Path:
@@ -136,7 +190,8 @@ async def ensure_room(file: str | Path | None = None, key: str | None = None) ->
         key = room_name(file)
     if key in _rooms:
         return _rooms[key]
-    room = await server.get_room(key)
+    active = await start()
+    room = await active.get_room(key)
     doc = room.ydoc
     text = doc.get(TEXT_KEY, type=Text)
     # Restore the persisted CRDT lineage if we have one; only seed from the .typ the
@@ -176,6 +231,8 @@ async def ensure_room(file: str | Path | None = None, key: str | None = None) ->
 
 
 def _sync(st: dict) -> None:
+    if st.get("closed"):
+        return
     try:
         current = str(st["text"])
     except Exception:
@@ -203,12 +260,16 @@ async def ensure_room_by_key(key: str) -> dict | None:
 
 
 def _schedule(st: dict) -> None:
+    if st.get("closed") or _loop is None:
+        return
     if st["timer"]:
         st["timer"].cancel()
     st["timer"] = _loop.call_later(WRITE_DELAY, _commit, st)
 
 
 def _commit(st: dict) -> None:
+    if st.get("closed"):
+        return
     _flush(st)     # .typ on disk (guarded) — the disk file is the only persisted state now
 
 
@@ -257,6 +318,8 @@ def _cur_room(base: str) -> str:
 def _flush(st: dict) -> None:
     global dirty_since
     try:
+        if st.get("closed"):
+            return
         base = st.get("base")
         if base is not None and st["key"] != _cur_room(base):
             return  # orphaned room (rotated away after a poison) — never touches disk

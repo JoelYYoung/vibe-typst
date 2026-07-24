@@ -462,6 +462,8 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self._state_path.start()
 
     async def asyncTearDown(self):
+        if hasattr(self.app.docstore, "stop"):
+            await self.app.docstore.stop()
         self.runtime._state["file"] = self._previous_file
         self.app._active_project = self._previous_project
         self.app._pdf_render_state.clear()
@@ -749,6 +751,7 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
                 await self.app.open_project("typst-project")
         self.assertEqual(self.runtime.document_type(), "pdf")
         self.assertEqual(self.app._active_project, self.info)
+        self.assertFalse(self.app.docstore.is_running())
         resolver_stop.assert_called()
         store_close.assert_called()
 
@@ -761,7 +764,7 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
             patch.object(self.app.resolver, "start") as resolver_start,
             patch.object(self.app.vcs, "save_version", return_value={"ok": True}),
             patch.object(self.app.vcs, "restore_version", return_value={"ok": True}),
-            patch.object(self.app, "_activate_pdf", return_value={}),
+            patch.object(self.app, "_activate_pdf", new=AsyncMock(return_value={})),
         ):
             self.assertEqual((await self._request("POST", "/api/git/commit", {"message": "v1"})).status_code, 200)
             self.assertEqual((await self._request("POST", "/api/git/restore", {"tag": "v1"})).status_code, 200)
@@ -769,3 +772,73 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         rotate.assert_not_called()
         ensure_room.assert_not_called()
         resolver_start.assert_not_called()
+
+    async def test_persisted_pdf_lifespan_never_enters_crdt_server_or_sets_loop(self):
+        class ProbeServer:
+            entered = False
+
+            async def __aenter__(self):
+                self.entered = True
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        probe = ProbeServer()
+        self.runtime._state["file"] = str(self.pdf.resolve())
+        self.app._active_project = None
+        with (
+            patch.object(self.app.docstore, "server", probe),
+            patch.object(self.app.docstore, "set_loop") as set_loop,
+            patch.object(self.app.app_config, "get_projects_root", return_value=self.project.parent),
+            patch.object(self.app.projects_mod, "get_project", return_value=self.info),
+        ):
+            async with self.app.lifespan(self.app.app):
+                self.assertFalse(probe.entered)
+                set_loop.assert_not_called()
+
+    async def test_crdt_lifecycle_is_lazy_restarts_after_pdf_and_clears_old_rooms(self):
+        await self._open_pdf()
+        self.assertFalse(self.app.docstore.is_running())
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        await self._open_pdf(typ_info)
+        self.assertTrue(self.app.docstore.is_running())
+        self.assertTrue(self.app.docstore._rooms)
+        first_server = self.app.docstore.server
+
+        await self._open_pdf()
+        self.assertFalse(self.app.docstore.is_running())
+        self.assertEqual(self.app.docstore._rooms, {})
+
+        await self._open_pdf(typ_info)
+        self.assertTrue(self.app.docstore.is_running())
+        self.assertTrue(self.app.docstore._rooms)
+        self.assertIsNot(self.app.docstore.server, first_server)
+
+    async def test_pdf_render_directory_symlink_is_not_listed_or_served(self):
+        await self._open_pdf()
+        render_dir = self.runtime.render_dir()
+        external = self.project / "external-render"
+        external.mkdir()
+        (external / "page-1.png").write_bytes((render_dir / "page-1.png").read_bytes())
+        render_dir.rename(self.project / "real-render")
+        render_dir.symlink_to(external, target_is_directory=True)
+
+        self.assertEqual((await self._request("GET", "/api/state")).json()["pages"], [])
+        self.assertEqual((await self._request("GET", "/api/render/page-1.png")).status_code, 404)
+
+    async def test_pdf_render_stream_keeps_opened_inode_after_path_swap(self):
+        await self._open_pdf()
+        page = self.runtime.render_dir() / "page-1.png"
+        original = page.read_bytes()
+        stream = self.app._open_pdf_render_page("page-1.png")
+        self.assertIsNotNone(stream)
+        page.unlink()
+        page.write_bytes(b"replacement")
+        try:
+            self.assertEqual(stream.read(), original)
+        finally:
+            stream.close()
