@@ -59,6 +59,13 @@ def _pdf_bytes(label: str, pages: int = 1) -> bytes:
         document.close()
 
 
+def _same_size_candidate_rewrite(content: bytes) -> bytes:
+    """Change candidate bytes without relying on PyMuPDF output-size determinism."""
+    changed = bytearray(content)
+    changed[10] ^= 1
+    return bytes(changed)
+
+
 def _hold_pdf_project_lock(project: str, entered, release) -> None:
     import pdf_service
 
@@ -803,13 +810,223 @@ class PdfReplacementTest(unittest.TestCase):
         self.assertEqual(recovery.read_bytes(), changed_bytes)
         self.assertNotEqual(self.primary.read_bytes(), recovery.read_bytes())
 
+    def test_before_tag_recovery_preserves_late_preopened_writer_inode(self):
+        import vcs
+
+        self.candidate.write_bytes(self.new_pdf)
+        before = vcs.save_version(self.root, "before replacement")
+        self.assertEqual(before["tag"], "v1")
+        transaction = self.pdf_service.prepare_replacement(
+            self.root,
+            self.candidate,
+            self.primary,
+            self.render_dir,
+            before_tag=before["tag"],
+        )
+        changed_bytes = _pdf_bytes("late rollback writer", pages=2)
+
+        class SimulatedDeath(BaseException):
+            pass
+
+        with self.candidate.open("r+b", buffering=0) as writer:
+            opened = os.fstat(writer.fileno())
+
+            def write_then_die(boundary):
+                if boundary != "candidate_verified":
+                    return
+                writer.seek(0)
+                writer.write(changed_bytes)
+                writer.truncate()
+                os.fsync(writer.fileno())
+                raise SimulatedDeath(boundary)
+
+            transaction.fault_hook = write_then_die
+            with self.assertRaisesRegex(SimulatedDeath, "candidate_verified"):
+                transaction.publish()
+
+            self.assertTrue(transaction.parked_candidate.exists())
+            self.assertTrue(transaction.journal.exists())
+            self.pdf_service.recover_pending(self.root, self.render_dir)
+
+            self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+            self.assertEqual(self.candidate.read_bytes(), self.new_pdf)
+            self.assertEqual(
+                (
+                    transaction.preserved_candidate.stat().st_dev,
+                    transaction.preserved_candidate.stat().st_ino,
+                ),
+                (opened.st_dev, opened.st_ino),
+            )
+            self.assertEqual(
+                transaction.preserved_candidate.read_bytes(),
+                changed_bytes,
+            )
+
+        self.assertFalse(transaction.journal.exists())
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+        self.assertEqual(transaction.preserved_candidate.read_bytes(), changed_bytes)
+
+    def test_before_tag_preservation_crash_with_both_links_recovers_idempotently(self):
+        import vcs
+
+        self.candidate.write_bytes(self.new_pdf)
+        before = vcs.save_version(self.root, "before replacement")
+        transaction = self.pdf_service.prepare_replacement(
+            self.root,
+            self.candidate,
+            self.primary,
+            self.render_dir,
+            before_tag=before["tag"],
+        )
+
+        class SimulatedDeath(BaseException):
+            pass
+
+        def die_after_candidate_verification(boundary):
+            if boundary == "candidate_verified":
+                raise SimulatedDeath(boundary)
+
+        transaction.fault_hook = die_after_candidate_verification
+        with self.assertRaisesRegex(SimulatedDeath, "candidate_verified"):
+            transaction.publish()
+
+        def die_after_rollback_recovery_link(boundary):
+            if boundary == "candidate_preserved_for_rollback":
+                raise SimulatedDeath(boundary)
+
+        transaction.fault_hook = die_after_rollback_recovery_link
+        with self.assertRaisesRegex(
+            SimulatedDeath,
+            "candidate_preserved_for_rollback",
+        ):
+            transaction.rollback_to_before()
+
+        self.assertTrue(transaction.parked_candidate.exists())
+        self.assertTrue(transaction.preserved_candidate.exists())
+        self.assertEqual(
+            (
+                transaction.parked_candidate.stat().st_dev,
+                transaction.parked_candidate.stat().st_ino,
+            ),
+            (
+                transaction.preserved_candidate.stat().st_dev,
+                transaction.preserved_candidate.stat().st_ino,
+            ),
+        )
+
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertFalse(transaction.parked_candidate.exists())
+        self.assertEqual(self.candidate.read_bytes(), self.new_pdf)
+        self.assertEqual(transaction.preserved_candidate.read_bytes(), self.new_pdf)
+        self.assertFalse(transaction.journal.exists())
+
+    def test_before_tag_recovery_keeps_ignored_candidate_path_and_backup(self):
+        import vcs
+
+        (self.root / ".gitignore").write_text(
+            "replacement.pdf\n",
+            encoding="utf-8",
+        )
+        self.candidate.write_bytes(self.new_pdf)
+        before = vcs.save_version(self.root, "before ignored replacement")
+        tracked, _, rc = vcs._run(
+            ["ls-tree", "-r", "--name-only", before["tag"]],
+            self.root,
+        )
+        self.assertEqual(rc, 0)
+        self.assertNotIn("replacement.pdf", tracked.splitlines())
+        transaction = self.pdf_service.prepare_replacement(
+            self.root,
+            self.candidate,
+            self.primary,
+            self.render_dir,
+            before_tag=before["tag"],
+        )
+        changed_bytes = _pdf_bytes("ignored late writer", pages=2)
+
+        class SimulatedDeath(BaseException):
+            pass
+
+        with self.candidate.open("r+b", buffering=0) as writer:
+            opened = os.fstat(writer.fileno())
+
+            def write_then_die(boundary):
+                if boundary != "candidate_verified":
+                    return
+                writer.seek(0)
+                writer.write(changed_bytes)
+                writer.truncate()
+                os.fsync(writer.fileno())
+                raise SimulatedDeath(boundary)
+
+            transaction.fault_hook = write_then_die
+            with self.assertRaisesRegex(SimulatedDeath, "candidate_verified"):
+                transaction.publish()
+
+            self.pdf_service.recover_pending(self.root, self.render_dir)
+
+            self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+            self.assertEqual(self.candidate.read_bytes(), changed_bytes)
+            self.assertEqual(
+                (
+                    transaction.preserved_candidate.stat().st_dev,
+                    transaction.preserved_candidate.stat().st_ino,
+                ),
+                (opened.st_dev, opened.st_ino),
+            )
+            self.assertEqual(
+                (
+                    self.candidate.stat().st_dev,
+                    self.candidate.stat().st_ino,
+                ),
+                (opened.st_dev, opened.st_ino),
+            )
+
+        self.assertFalse(transaction.journal.exists())
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+        self.assertEqual(self.candidate.read_bytes(), changed_bytes)
+        self.assertEqual(transaction.preserved_candidate.read_bytes(), changed_bytes)
+
+    def test_before_tag_recovery_handles_literal_git_pathspec_magic_candidate(self):
+        import vcs
+
+        candidate = self.root / ":(glob)foo.pdf"
+        candidate.write_bytes(self.new_pdf)
+        before = vcs.save_version(self.root, "before literal candidate")
+        transaction = self.pdf_service.prepare_replacement(
+            self.root,
+            candidate,
+            self.primary,
+            self.render_dir,
+            before_tag=before["tag"],
+        )
+
+        class SimulatedDeath(BaseException):
+            pass
+
+        def die_after_candidate_verification(boundary):
+            if boundary == "candidate_verified":
+                raise SimulatedDeath(boundary)
+
+        transaction.fault_hook = die_after_candidate_verification
+        with self.assertRaisesRegex(SimulatedDeath, "candidate_verified"):
+            transaction.publish()
+
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+        self.assertEqual(candidate.read_bytes(), self.new_pdf)
+        self.assertEqual(transaction.preserved_candidate.read_bytes(), self.new_pdf)
+        self.assertFalse(transaction.journal.exists())
+
     def test_same_inode_rewrite_after_prepare_is_rejected_without_consuming_candidate(self):
         self.candidate.write_bytes(self.new_pdf)
         transaction = self.pdf_service.prepare_replacement(
             self.root, self.candidate, self.primary, self.render_dir
         )
         prepared_stat = self.candidate.stat()
-        rewritten_pdf = _pdf_bytes("hot")
+        rewritten_pdf = _same_size_candidate_rewrite(self.new_pdf)
         self.assertEqual(len(rewritten_pdf), len(self.new_pdf))
         self.candidate.write_bytes(rewritten_pdf)
         os.utime(
@@ -841,7 +1058,7 @@ class PdfReplacementTest(unittest.TestCase):
         transaction = self.pdf_service.prepare_replacement(
             self.root, self.candidate, self.primary, self.render_dir
         )
-        rewritten_pdf = _pdf_bytes("hot")
+        rewritten_pdf = _same_size_candidate_rewrite(self.new_pdf)
         self.assertEqual(len(rewritten_pdf), len(self.new_pdf))
         original_stat = self.candidate.stat()
         real_replace = self.pdf_service.os.replace
@@ -1537,10 +1754,19 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["current"], "v1")
         self.assertFalse(status["dirty"])
         self.assertFalse((self.project / ".pdf-replacement-journal.json").exists())
-        self.assertEqual([
-            path.name for path in self.project.iterdir()
-            if path.name.startswith(".pdf-") and not path.name.endswith(".lock")
-        ], [])
+        preserved = list(
+            self.project.glob(".pdf-replacement-preserved-*.backup")
+        )
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_bytes(), before["candidate_bytes"])
+        self.assertEqual(
+            {
+                path.name
+                for path in self.project.iterdir()
+                if path.name.startswith(".pdf-") and not path.name.endswith(".lock")
+            },
+            {preserved[0].name},
+        )
 
     async def test_interruption_after_transcript_reconcile_restores_v1_transcript_and_git(self):
         before = await self._prepare_shrinking_replacement()
@@ -1559,6 +1785,68 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
                 })
 
         await self._assert_pre_v2_replacement_recovered(before)
+
+    async def test_post_publish_failure_preserves_late_preopened_candidate_inode(self):
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 2)
+        candidate_before = candidate.read_bytes()
+        primary_before = self.pdf.read_bytes()
+        await self._open_pdf()
+        changed_bytes = _pdf_bytes("late app writer", pages=3)
+        real_fault = self.app.pdf_service.ReplacementTransaction._fault
+        write_fired = False
+
+        with candidate.open("r+b", buffering=0) as writer:
+            opened = os.fstat(writer.fileno())
+
+            def write_after_verification(transaction, boundary):
+                nonlocal write_fired
+                if boundary == "candidate_verified":
+                    write_fired = True
+                    writer.seek(0)
+                    writer.write(changed_bytes)
+                    writer.truncate()
+                    os.fsync(writer.fileno())
+                return real_fault(transaction, boundary)
+
+            with (
+                patch.object(
+                    self.app.pdf_service.ReplacementTransaction,
+                    "_fault",
+                    autospec=True,
+                    side_effect=write_after_verification,
+                ),
+                patch.object(
+                    self.app.pdf_transcript,
+                    "load",
+                    side_effect=RuntimeError("post-publish fault"),
+                ),
+            ):
+                response = await self._request("POST", "/api/pdf/replace", {
+                    "candidate": candidate.name,
+                    "message": "exercise rollback preservation",
+                })
+
+            self.assertEqual(response.status_code, 500, response.text)
+            self.assertTrue(write_fired)
+            preserved = list(
+                self.project.glob(".pdf-replacement-preserved-*.backup")
+            )
+            self.assertEqual(len(preserved), 1)
+            self.assertEqual(
+                (preserved[0].stat().st_dev, preserved[0].stat().st_ino),
+                (opened.st_dev, opened.st_ino),
+            )
+            self.assertEqual(preserved[0].read_bytes(), changed_bytes)
+
+        self.assertEqual(self.pdf.read_bytes(), primary_before)
+        self.assertEqual(candidate.read_bytes(), candidate_before)
+        self.assertFalse(
+            (self.project / ".pdf-replacement-journal.json").exists()
+        )
+        status = self.app.vcs.status(self.project)
+        self.assertEqual(status["current"], "v1")
+        self.assertFalse(status["dirty"])
 
     async def test_interruption_after_commit_intent_without_v2_restores_complete_v1(self):
         before = await self._prepare_shrinking_replacement()

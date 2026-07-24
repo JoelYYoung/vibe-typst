@@ -688,9 +688,26 @@ class ReplacementTransaction:
 
     def rollback_to_before(self) -> None:
         """Restore the complete v1 generation before deleting the resumable WAL."""
+        # Git restoration may overwrite the tracked candidate path.  Retain the consumed inode
+        # before restoring that path, while leaving the parked link available to the normal
+        # generation rollback below.
+        if self.before_tag is not None and self._link_preserved_candidate():
+            self._fault("candidate_preserved_for_rollback")
         self._rollback_generation()
         if self.before_tag is not None:
             import vcs
+            candidate_tracked, tracking_error = vcs.version_tracks_path(
+                self.root,
+                self.before_tag,
+                self.candidate_relative,
+            )
+            if tracking_error is not None:
+                raise ValueError(
+                    "could not inspect pre-replacement candidate: "
+                    + tracking_error
+                )
+            if candidate_tracked:
+                self._detach_candidate_alias_for_version_restore()
             restored = vcs.restore_version(self.root, self.before_tag)
             if not restored.get("ok"):
                 raise ValueError(
@@ -699,8 +716,8 @@ class ReplacementTransaction:
                 )
         self._cleanup()
 
-    def _preserve_candidate(self) -> None:
-        """Durably retain the consumed candidate inode under its protected recovery name."""
+    def _link_preserved_candidate(self) -> bool:
+        """Durably add the protected recovery link without consuming the parked link."""
         parked_exists = self.parked_candidate.exists() or self.parked_candidate.is_symlink()
         preserved_exists = (
             self.preserved_candidate.exists() or self.preserved_candidate.is_symlink()
@@ -708,7 +725,7 @@ class ReplacementTransaction:
         if not parked_exists:
             if preserved_exists:
                 _require_regular(self.preserved_candidate, "preserved candidate")
-            return
+            return False
 
         _require_regular(self.parked_candidate, "parked candidate")
         if preserved_exists:
@@ -730,6 +747,49 @@ class ReplacementTransaction:
                 follow_symlinks=False,
             )
             _fsync_dir(self.root)
+        return True
+
+    def _detach_candidate_alias_for_version_restore(self) -> None:
+        """Remove only a candidate path that aliases the protected recovery inode."""
+        if not (
+            self.preserved_candidate.exists()
+            or self.preserved_candidate.is_symlink()
+        ):
+            return
+        _require_regular(self.preserved_candidate, "preserved candidate")
+        preserved_stat = self.preserved_candidate.stat()
+        root_fd = parent_fd = None
+        try:
+            root_fd, parent_fd, name = _open_child(self.root, self.candidate)
+            try:
+                candidate_stat = os.stat(
+                    name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                return
+            if (
+                candidate_stat.st_dev,
+                candidate_stat.st_ino,
+            ) != (
+                preserved_stat.st_dev,
+                preserved_stat.st_ino,
+            ):
+                return
+            os.unlink(name, dir_fd=parent_fd)
+            _fsync_fd(parent_fd)
+            _fsync_dir(self.root)
+        finally:
+            if parent_fd is not None and parent_fd != root_fd:
+                os.close(parent_fd)
+            if root_fd is not None:
+                os.close(root_fd)
+
+    def _preserve_candidate(self) -> None:
+        """Durably retain the consumed candidate inode and remove its transaction link."""
+        if not self._link_preserved_candidate():
+            return
         self._fault("candidate_preserved")
         self.parked_candidate.unlink()
         _fsync_dir(self.root)
