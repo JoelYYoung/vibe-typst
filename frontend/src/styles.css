@@ -495,6 +495,9 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 
 @media (max-width: 760px) {
   .pdf-workspace-main { grid-template-columns: 1fr; grid-template-rows: minmax(180px, .45fr) minmax(300px, .55fr); }
+  .pdf-workspace .bar { height: auto; min-height: 48px; flex-wrap: wrap; padding: 8px 10px; }
+  .pdf-workspace .project-name-chip { max-width: calc(100vw - 178px); }
+  .pdf-workspace .bar .openbtn { padding: 0 8px; }
 }
 
 /* ── file manager overlay ───────────────────────────────────────────────── */

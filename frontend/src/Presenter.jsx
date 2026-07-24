@@ -115,15 +115,21 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
     if (!info || !(pdfTranscript || info.slide_line || info.note_raw)) return
     const savedDraft = draft
     // Typst uses an anchored source note; PDFs use their authoritative page-number sidecar.
-    const r = pdfTranscript ? await api.savePdfTranscript(info.page, savedDraft) : await api.saveNote(info, savedDraft)
-    if ((pdfTranscript && r) || (!pdfTranscript && r && r.ok)) {
-      // Optimistic: update local map so the save button hides immediately
-      setMap(prev => { const next = [...prev]; next[page-1] = {...next[page-1], note: savedDraft}; return next })
-      api.getSlideMap().then((res) => setMap(res.pages || [])).catch(() => {})
-      if (r.warning) toast.info(r.warning, 6000)
-      onSaved && onSaved()  // tell the App to refresh the editor's inline notes too
-    } else if (r && r.error) {
-      toast.error(r.error)
+    try {
+      const r = pdfTranscript ? await api.savePdfTranscript(info.page, savedDraft) : await api.saveNote(info, savedDraft)
+      if ((pdfTranscript && r) || (!pdfTranscript && r && r.ok)) {
+        // Optimistic: update local map so the save button hides immediately
+        setMap(prev => { const next = [...prev]; next[page-1] = {...next[page-1], note: savedDraft}; return next })
+        api.getSlideMap().then((res) => setMap(res.pages || [])).catch(() => {})
+        if (r.warning) toast.info(r.warning, 6000)
+        onSaved && onSaved()  // tell the App to refresh the editor's inline notes too
+      } else if (r && r.error) {
+        toast.error(r.error)
+      } else {
+        toast.error('Could not save transcript')
+      }
+    } catch (error) {
+      toast.error(error.message || 'Could not save transcript')
     }
   }
 

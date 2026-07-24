@@ -56,7 +56,7 @@ HERE = Path(__file__).resolve().parent
 
 # ── active project (in-memory; cleared on restart unless runtime state persists the file) ──
 _active_project: dict | None = None
-_pdf_render_state = {"fingerprint": None, "version": 0}
+_pdf_render_state = {"fingerprint": None, "identity": None, "version": 0, "page_count": 0}
 _PDF_PAGE_NAME = re.compile(r"page-([1-9][0-9]*)\.png$")
 MAX_PDF_UPLOAD_BYTES = projects_mod.MAX_PDF_UPLOAD_BYTES
 _PDF_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -297,15 +297,16 @@ def _record_pdf_render_version(pages: list[str], path: Path | None = None,
     if _pdf_render_state["fingerprint"] != fingerprint:
         _pdf_render_state["fingerprint"] = fingerprint
         _pdf_render_state["version"] += 1
+    _pdf_render_state["identity"] = identity or _pdf_identity(target)
+    _pdf_render_state["page_count"] = len(pages)
     return _pdf_render_state["version"]
 
 
 def _pdf_render_version(path: Path | None = None, identity: str | None = None) -> int:
-    pages = _pdf_pages(path)
-    if not pages:
-        return _pdf_render_state["version"]
-    target = path or runtime.current_file()
-    return _record_pdf_render_version(pages, target, identity)
+    # Activation, replacement, and restore call _record_pdf_render_version while publishing a
+    # fully validated render generation. Polls observe that recorded generation; they never hash
+    # every PNG again just to answer a version request.
+    return _pdf_render_state["version"]
 
 
 def _prepare_pdf(pdf_path: Path, project_pdf: bool, identity: str) -> tuple[dict, dict | None, int]:
@@ -517,7 +518,7 @@ def state():
                     "tokens": {},
                     "version": _pdf_render_version(expected.pdf, expected.identity),
                 }
-            return _locked_pdf_observation(observe, expected)
+            return _locked_pdf_observation(observe, expected, recorded_render=True)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
     return {
@@ -553,6 +554,7 @@ def render_version():
                     "error": None,
                 },
                 expected,
+                recorded_render=True,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -1047,11 +1049,14 @@ async def slide_map():
                           "note": (page_notes.get(str(page), {}) or {}).get("text", "")}
                          for page in range(1, page_count + 1)]
                 orphans = [
-                    {"page": int(page), "text": (entry or {}).get("text", "")}
-                    for page, entry in sorted(transcripts.get("orphans", {}).items(), key=lambda item: int(item[0]))
+                    {"page": page, "text": (entry or {}).get("text", "")}
+                    for page, entry in sorted(
+                        transcripts.get("orphans", {}).items(),
+                        key=lambda item: (int(item[0].split("#", 1)[0]), item[0]),
+                    )
                 ]
                 return {"pages": pages, "total": page_count, "orphans": orphans}
-            return await asyncio.to_thread(_locked_pdf_observation, observe, expected)
+            return await asyncio.to_thread(_locked_pdf_observation, observe, expected, True)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
     await docstore.flush_now()  # so the pdfpc query sees the latest content
@@ -1121,13 +1126,19 @@ async def slide_map():
     return {"pages": out, "total": total, "orphans": orphans}
 
 
-def _locked_pdf_observation(operation, expected: _PdfIdentity | None = None):
+def _locked_pdf_observation(operation, expected: _PdfIdentity | None = None,
+                            recorded_render: bool = False):
     """Observe an active PDF generation while the publish pair is locked and recovered."""
     expected = expected or _capture_pdf_identity()
     with pdf_service.project_write_lock(expected.project):
         pdf_service.recover_pending(expected.project, expected.render)
         _revalidate_pdf_identity(expected)
-        page_count = pdf_service.inspect_pdf(expected.pdf)["page_count"]
+        if recorded_render and _pdf_render_state.get("identity") == expected.identity:
+            # The active generation was validated and rendered before its version was recorded.
+            # Its recorded count avoids reopening the PDF or scanning render files for map polls.
+            page_count = _pdf_render_state["page_count"]
+        else:
+            page_count = pdf_service.inspect_pdf(expected.pdf)["page_count"]
         return operation(expected.pdf, page_count)
 
 

@@ -1676,7 +1676,35 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
             slide_map = (await self._request("GET", "/api/slide-map")).json()
         self.assertEqual(slide_map["pages"], [{"page": 1, "slide_no": 1, "slide_total": 1,
                                                  "project_type": "pdf", "note": "Narration"}])
-        self.assertEqual(slide_map["orphans"], [{"page": 2, "text": "Removed page"}])
+        self.assertEqual(slide_map["orphans"], [{"page": "2", "text": "Removed page"}])
+
+    async def test_pdf_slide_map_preserves_collision_orphan_selectors(self):
+        await self._open_pdf()
+        with patch.object(self.app.pdf_transcript, "load", return_value={
+            "pages": {"1": {"text": "Narration"}},
+            "orphans": {"3": {"text": "Third"}, "3#2": {"text": "Third duplicate"}},
+        }):
+            response = await self._request("GET", "/api/slide-map")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["orphans"], [
+            {"page": "3", "text": "Third"},
+            {"page": "3#2", "text": "Third duplicate"},
+        ])
+
+    async def test_pdf_render_version_uses_recorded_generation_without_reading_png_bytes(self):
+        await self._open_pdf()
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("render poll read PNG bytes")):
+            response = await self._request("GET", "/api/render-version")
+        self.assertEqual(response.status_code, 200, response.text)
+
+    async def test_pdf_slide_map_uses_recorded_page_count_without_reinspecting_pdf(self):
+        await self._open_pdf()
+        with (patch.object(self.app.pdf_service, "inspect_pdf",
+                           side_effect=AssertionError("slide-map poll re-inspected PDF")),
+              patch.object(self.app, "_pdf_pages",
+                           side_effect=AssertionError("slide-map poll rescanned render files"))):
+            response = await self._request("GET", "/api/slide-map")
+        self.assertEqual(response.status_code, 200, response.text)
 
     async def test_pdf_transcripts_and_embedded_text_validate_all_input(self):
         with patch.object(self.app.projects_mod, "get_project", return_value=self.info):

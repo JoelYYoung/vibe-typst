@@ -2,12 +2,11 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { pdfTerminalCdCommand } from './pdfWorkspace.js'
 
 // A real shell over the backend PTY (WebSocket). Server-hosted, so it works the same
 // locally and from a remote browser. Starts in HOME; the parent can `runCommand('cd …')`
 // to move it to the deck's directory on demand.
-const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`
-
 const TermPanel = forwardRef(function TermPanel({ initialCwd }, ref) {
   const hostRef = useRef(null)
   const wsRef = useRef(null)
@@ -20,7 +19,7 @@ const TermPanel = forwardRef(function TermPanel({ initialCwd }, ref) {
     initialCwdRef.current = initialCwd || null
     const ws = wsRef.current
     if (initialCwd && ws && ws.readyState === 1 && appliedCwdRef.current !== initialCwd) {
-      ws.send(JSON.stringify({ t: 'i', d: `cd -- ${shellQuote(initialCwd)}\n` }))
+      ws.send(JSON.stringify({ t: 'i', d: pdfTerminalCdCommand(initialCwd) }))
       appliedCwdRef.current = initialCwd
     }
   }, [initialCwd])
@@ -113,7 +112,7 @@ const TermPanel = forwardRef(function TermPanel({ initialCwd }, ref) {
         resize()
         const cwd = initialCwdRef.current
         if (cwd) {
-          ws.send(JSON.stringify({ t: 'i', d: `cd -- ${shellQuote(cwd)}\n` }))
+          ws.send(JSON.stringify({ t: 'i', d: pdfTerminalCdCommand(cwd) }))
           appliedCwdRef.current = cwd
         }
         setTimeout(() => { if (alive && wsRef.current === ws) resize() }, 150)
