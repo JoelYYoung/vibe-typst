@@ -1,3 +1,4 @@
+import asyncio
 import json
 import shutil
 import sys
@@ -899,9 +900,9 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
 
         real_start = self.app.docstore.start
 
-        async def switch_to_pdf_then_start():
+        async def switch_to_pdf_then_start(*args, **kwargs):
             await self._open_pdf()
-            return await real_start()
+            return await real_start(*args, **kwargs)
 
         socket = RaceWebSocket()
         with patch.object(self.app.docstore, "start", new=switch_to_pdf_then_start):
@@ -954,6 +955,137 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(socket.received)
         self.assertFalse(self.app.docstore.is_running())
         self.assertEqual(self.app.docstore._rooms, {})
+
+    async def test_start_discards_fresh_server_when_pdf_wins_during_enter(self):
+        typ = self.project / "main.typ"
+        typ.write_text("= Typst", encoding="utf-8")
+        typ_info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                    "type": "typst", "main_file": "main.typ"}
+        await self._open_pdf(typ_info)
+        await self.app.docstore.stop()
+        entered = asyncio.Event()
+        release_enter = asyncio.Event()
+
+        class GatedServer:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                entered.set()
+                await release_enter.wait()
+                return self
+
+            async def __aexit__(self, *_args):
+                return False
+
+        with patch.object(self.app.docstore, "WebsocketServer", GatedServer):
+            start_task = asyncio.create_task(self.app.docstore.start())
+            await entered.wait()
+            pdf_task = asyncio.create_task(self._open_pdf())
+            while self.runtime.document_type() != "pdf":
+                await asyncio.sleep(0)
+            release_enter.set()
+            started = await start_task
+            await pdf_task
+
+        self.assertIsNone(started)
+        self.assertFalse(self.app.docstore.is_running())
+        self.assertEqual(self.app.docstore._rooms, {})
+
+    async def test_delayed_stale_a_cleanup_cannot_stop_active_typst_b(self):
+        typ_a = self.project / "a.typ"
+        typ_b = self.project / "b.typ"
+        typ_a.write_text("= A", encoding="utf-8")
+        typ_b.write_text("= B", encoding="utf-8")
+        info_a = {"id": "typst-a", "name": "A", "path": str(self.project),
+                  "type": "typst", "main_file": "a.typ"}
+        info_b = {"id": "typst-b", "name": "B", "path": str(self.project),
+                  "type": "typst", "main_file": "b.typ"}
+        await self._open_pdf(info_a)
+        key_a = self.app.docstore.room_name()
+        start_entered = asyncio.Event()
+        release_start = asyncio.Event()
+        stale_stop_entered = asyncio.Event()
+        release_stale_stop = asyncio.Event()
+        real_start = self.app.docstore.start
+        real_stop = self.app.docstore.stop
+        stale_task = None
+
+        class RaceWebSocket:
+            accepted = False
+            closed = None
+            received = False
+
+            async def accept(self):
+                self.accepted = True
+
+            async def close(self, code):
+                self.closed = code
+
+            async def receive_bytes(self):
+                self.received = True
+                return b"stale update"
+
+        async def gate_start(*args, **kwargs):
+            if asyncio.current_task() is stale_task:
+                start_entered.set()
+                await release_start.wait()
+            return await real_start(*args, **kwargs)
+
+        async def gate_stale_stop():
+            if asyncio.current_task() is stale_task:
+                stale_stop_entered.set()
+                await release_stale_stop.wait()
+            await real_stop()
+
+        stale_socket = RaceWebSocket()
+        with (
+            patch.object(self.app.docstore, "start", new=gate_start),
+            patch.object(self.app.docstore, "stop", new=gate_stale_stop),
+        ):
+            stale_task = asyncio.create_task(self.app.yjs_ws(stale_socket, key_a))
+            await start_entered.wait()
+            await self._open_pdf()
+            release_start.set()
+            while not stale_task.done() and not stale_stop_entered.is_set():
+                await asyncio.sleep(0)
+            await self._open_pdf(info_b)
+            key_b = self.app.docstore.room_name()
+            self.assertTrue(self.app.docstore.is_running())
+            self.assertIn(key_b, self.app.docstore._rooms)
+            release_stale_stop.set()
+            await stale_task
+
+        self.assertEqual(stale_socket.closed, 1008)
+        self.assertFalse(stale_socket.accepted)
+        self.assertFalse(stale_socket.received)
+        self.assertEqual(self.runtime.current_file(), typ_b.resolve())
+        self.assertTrue(self.app.docstore.is_running())
+        self.assertIn(key_b, self.app.docstore._rooms)
+
+        b_socket = RaceWebSocket()
+        with patch.object(self.app.docstore.server, "serve", new=AsyncMock()):
+            await self.app.yjs_ws(b_socket, key_b)
+        self.assertTrue(b_socket.accepted)
+        self.assertFalse(b_socket.received)
+
+    async def test_active_typst_lifecycle_serves_non_active_file_rooms(self):
+        main = self.project / "main.typ"
+        other = self.project / "appendix.typ"
+        main.write_text("= Main", encoding="utf-8")
+        other.write_text("= Appendix", encoding="utf-8")
+        info = {"id": "typst-project", "name": "Typst", "path": str(self.project),
+                "type": "typst", "main_file": "main.typ"}
+        await self._open_pdf(info)
+
+        room = await self.app.docstore.ensure_room(other)
+        self.assertIsNotNone(room)
+        self.assertEqual(room["key"], self.app.docstore.room_name(other))
+        edited = await self.app.docstore.apply_edits([
+            {"selector": {"by": "anchor", "text": "Appendix"}, "text": "Appendix A"},
+        ], other)
+        self.assertTrue(edited["ok"], edited)
+        self.assertEqual(other.read_text(encoding="utf-8"), "= Appendix A")
 
     async def test_pdf_render_directory_symlink_is_not_listed_or_served(self):
         await self._open_pdf()

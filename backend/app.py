@@ -307,9 +307,7 @@ def _yjs_admission_is_current(expected_path: Path, room: str) -> bool:
 
 
 async def _reject_stale_yjs(websocket: WebSocket) -> None:
-    """Close a stale websocket; PDF mode must not retain a CRDT lifecycle."""
-    if runtime.document_type() == "pdf":
-        await docstore.stop()
+    """A stale websocket owns only its own close, never the shared CRDT lifecycle."""
     await websocket.close(code=1008)
 
 
@@ -323,7 +321,10 @@ async def yjs_ws(websocket: WebSocket, room: str):
     if not _yjs_admission_is_current(expected_path, room):
         await _reject_stale_yjs(websocket)
         return
-    active_server = await docstore.start()
+    active_server = await docstore.start(expected_path, room)
+    if active_server is None:
+        await _reject_stale_yjs(websocket)
+        return
     if not _yjs_admission_is_current(expected_path, room):
         await _reject_stale_yjs(websocket)
         return
