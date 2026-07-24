@@ -22,6 +22,20 @@ import app_config
 from pdf_service import inspect_pdf
 
 _META_FILE = ".vibe-typst.json"
+_PDF_MANAGED_ROOT_NAMES = {"document.pdf", "transcript.json", _META_FILE}
+_PDF_PRIVATE_NAMES = {
+    ".pdf-replacement-journal.json",
+    ".pdf-project-write.lock",
+    ".pdf-transcript.lock",
+}
+_PDF_PRIVATE_PREFIXES = (
+    ".pdf-txn-",
+    ".pdf-journal-",
+    ".pdf-replacement-",
+    ".pdf-restore-",
+    ".pdf-render-",
+    ".transcript-",
+)
 MAX_PDF_UPLOAD_BYTES = 100 * 1024 * 1024
 _PDF_COPY_CHUNK_BYTES = 1024 * 1024
 
@@ -313,27 +327,37 @@ def _pdf_primary(project_dir: Path) -> Path | None:
     return root / "document.pdf"
 
 
-def _reject_pdf_primary_mutation(project_dir: Path, target: Path, operation: str) -> None:
-    primary = _pdf_primary(project_dir)
-    if primary is None:
+def _is_pdf_managed_path(project_root: Path, target: Path) -> bool:
+    try:
+        relative = target.relative_to(project_root)
+    except ValueError:
+        return False
+    if len(relative.parts) == 1 and relative.name in _PDF_MANAGED_ROOT_NAMES:
+        return True
+    return any(
+        part in _PDF_PRIVATE_NAMES
+        or any(part.startswith(prefix) for prefix in _PDF_PRIVATE_PREFIXES)
+        for part in relative.parts
+    )
+
+
+def reject_pdf_managed_mutation(project_dir: Path, target: Path, operation: str) -> None:
+    """Keep generic file operations away from a PDF project's owned state."""
+    if _pdf_primary(project_dir) is None:
         return
+    root = Path(project_dir).resolve()
     target = Path(target)
-    if target == primary or (target.is_dir() and primary.is_relative_to(target)):
-        raise ValueError(f"cannot {operation} document.pdf in a PDF project")
+    if _is_pdf_managed_path(root, target):
+        raise ValueError(f"cannot {operation} PDF managed state")
+    if target.is_dir() and any(
+        _is_pdf_managed_path(root, child) for child in target.rglob("*")
+    ):
+        raise ValueError(f"cannot {operation} PDF managed state")
 
 
 def _reject_pdf_addition(project_dir: Path, name: str) -> None:
     if _pdf_primary(project_dir) is not None and Path(name).suffix.lower() == ".pdf":
         raise ValueError("PDF projects may not contain additional PDF files")
-
-
-def _reject_pdf_private(project_dir: Path, path: Path | str) -> None:
-    if _pdf_primary(project_dir) is None:
-        return
-    parts = Path(path).parts
-    if any(part == ".pdf-replacement-journal.json" or part.startswith(".pdf-txn-")
-           or part == ".pdf-project-write.lock" for part in parts):
-        raise ValueError("PDF transaction paths are private")
 
 
 def _reject_pdf_tree_move(project_dir: Path, target: Path) -> None:
@@ -372,11 +396,11 @@ def list_project_items(project_dir: Path) -> list[dict]:
 def create_file(project_dir: Path, name: str) -> dict:
     """Create a new empty .typ file inside the project (path may include subdirs)."""
     name = re.sub(r'[\\:*?"<>|]', "", name.strip())
-    _reject_pdf_private(project_dir, name)
     _reject_pdf_addition(project_dir, name)
     if not name.endswith(".typ"):
         name += ".typ"
     target = _resolve_project_path(project_dir, name)
+    reject_pdf_managed_mutation(project_dir, target, "create")
     if target.exists():
         raise FileExistsError(f"{name!r} already exists")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -388,8 +412,7 @@ def create_file(project_dir: Path, name: str) -> dict:
 
 def delete_file(project_dir: Path, rel_path: str) -> None:
     target = _resolve_project_path(project_dir, rel_path)
-    _reject_pdf_private(project_dir, rel_path)
-    _reject_pdf_primary_mutation(project_dir, target, "delete")
+    reject_pdf_managed_mutation(project_dir, target, "delete")
     if not target.is_file():
         raise FileNotFoundError(f"{rel_path!r} not found")
     target.unlink()
@@ -399,7 +422,7 @@ def mkdir(project_dir: Path, rel_path: str) -> dict:
     """Create a directory (including parents) inside the project."""
     rel_path = rel_path.strip("/")
     target = _resolve_project_path(project_dir, rel_path)
-    _reject_pdf_private(project_dir, rel_path)
+    reject_pdf_managed_mutation(project_dir, target, "create")
     if target.exists():
         raise FileExistsError(f"{rel_path!r} already exists")
     target.mkdir(parents=True)
@@ -409,7 +432,7 @@ def mkdir(project_dir: Path, rel_path: str) -> dict:
 def rmdir(project_dir: Path, rel_path: str) -> None:
     """Delete a directory (recursively) inside the project."""
     target = _resolve_project_path(project_dir, rel_path)
-    _reject_pdf_primary_mutation(project_dir, target, "delete")
+    reject_pdf_managed_mutation(project_dir, target, "delete")
     if not target.is_dir():
         raise FileNotFoundError(f"{rel_path!r} is not a directory")
     shutil.rmtree(target)
@@ -439,7 +462,7 @@ def store_upload(project_dir: Path, filename: str, content: bytes,
     name = re.sub(r'[\\/:*?"<>|]', "_", (filename or "upload").strip())
     if name in {"", ".", ".."}:
         name = "upload"
-    _reject_pdf_private(project_dir, name)
+    reject_pdf_managed_mutation(project_dir, dest_dir / name, "upload")
     _reject_pdf_addition(project_dir, name)
     target, collision_renamed = _available_target(dest_dir / name)
     target.write_bytes(content)
@@ -452,17 +475,18 @@ def move_item(project_dir: Path, old_rel: str, dest_dir_rel: str) -> dict:
     """Move a file or directory into another directory within the project (drag-to-move).
     `dest_dir_rel` is the target directory relative to the project root ("" = root)."""
     old_target = _resolve_project_path(project_dir, old_rel)
-    _reject_pdf_private(project_dir, old_rel)
+    reject_pdf_managed_mutation(project_dir, old_target, "move")
     if not old_target.exists():
         raise FileNotFoundError(f"{old_rel!r} not found")
-    _reject_pdf_primary_mutation(project_dir, old_target, "move")
     _reject_pdf_tree_move(project_dir, old_target)
     dest_dir = project_dir if not dest_dir_rel else _resolve_project_path(project_dir, dest_dir_rel)
+    reject_pdf_managed_mutation(project_dir, dest_dir, "move into")
     if not dest_dir.is_dir():
         raise ValueError("destination is not a folder")
     if old_target.is_dir() and (dest_dir == old_target or str(dest_dir).startswith(str(old_target) + "/")):
         raise ValueError("cannot move a folder into itself")
     new_target = dest_dir / old_target.name
+    reject_pdf_managed_mutation(project_dir, new_target, "move into")
     if new_target == old_target:
         return {"path": old_rel, "name": old_target.name}  # no-op (already there)
     new_target, collision_renamed = _available_target(new_target, is_dir=old_target.is_dir())
@@ -476,17 +500,16 @@ def move_item(project_dir: Path, old_rel: str, dest_dir_rel: str) -> dict:
 def rename_item(project_dir: Path, old_rel: str, new_name: str) -> dict:
     """Rename a file or directory (new_name is just the basename, same parent dir)."""
     old_target = _resolve_project_path(project_dir, old_rel)
-    _reject_pdf_private(project_dir, old_rel)
+    reject_pdf_managed_mutation(project_dir, old_target, "rename")
     if not old_target.exists():
         raise FileNotFoundError(f"{old_rel!r} not found")
-    _reject_pdf_primary_mutation(project_dir, old_target, "rename")
     new_name_clean = re.sub(r'[\\/:*?"<>|]', "", new_name.strip())
-    _reject_pdf_private(project_dir, new_name_clean)
     if not new_name_clean:
         raise ValueError("Name cannot be empty")
     _reject_pdf_addition(project_dir, new_name_clean)
     new_target = old_target.parent / new_name_clean
     _resolve_project_path(project_dir, str(new_target.relative_to(project_dir)))
+    reject_pdf_managed_mutation(project_dir, new_target, "rename to")
     if new_target.exists() and new_target != old_target:
         raise FileExistsError(f"{new_name_clean!r} already exists")
     old_target.rename(new_target)

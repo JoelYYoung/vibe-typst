@@ -1,5 +1,6 @@
 """PDF validation, rendering, and atomic primary-document replacement helpers."""
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -218,13 +219,14 @@ def _copy_candidate_no_follow(
     candidate: Path,
     destination: Path | None = None,
     fault_hook=None,
-) -> tuple[Path, os.stat_result]:
+) -> tuple[Path, os.stat_result, str]:
     """Freeze the candidate inode into a durable same-directory temporary file."""
     _assert_no_symlink_path(root, candidate, "candidate")
     source_fd = temporary_fd = root_fd = parent_fd = None
     temporary = destination
     completed = False
     cleanup_on_error = False
+    content_digest = hashlib.sha256()
     try:
         root_fd, parent_fd, name = _open_child(root, candidate)
         source_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
@@ -248,6 +250,7 @@ def _copy_candidate_no_follow(
             chunk = os.read(source_fd, 1024 * 1024)
             if not chunk:
                 break
+            content_digest.update(chunk)
             view = memoryview(chunk)
             while view:
                 written = os.write(temporary_fd, view)
@@ -257,7 +260,7 @@ def _copy_candidate_no_follow(
         temporary_fd = None
         _fsync_dir(root)
         completed = True
-        return temporary, source_stat
+        return temporary, source_stat, content_digest.hexdigest()
     except OSError as exc:
         cleanup_on_error = True
         raise ValueError(f"could not safely read candidate: {exc}") from exc
@@ -469,6 +472,7 @@ class ReplacementTransaction:
         before_tag: str | None = None,
         info: dict | None = None,
         candidate_stat: os.stat_result | None = None,
+        candidate_digest: str | None = None,
         fault_hook=None,
     ):
         self.root = root
@@ -481,6 +485,7 @@ class ReplacementTransaction:
         self.before_tag = before_tag
         self.info = info or {}
         self.candidate_stat = candidate_stat
+        self.candidate_digest = candidate_digest
         self.fault_hook = fault_hook
         self.phase = "preparing"
         self.expected_tag = None
@@ -529,16 +534,32 @@ class ReplacementTransaction:
         os.link(self.primary, self.primary_backup, follow_symlinks=False)
         _fsync_dir(self.root)
         self._fault("primary_backup_created")
-        root_fd = parent_fd = None
+        root_fd = parent_fd = candidate_fd = None
         try:
-            root_fd, parent_fd, name = _open_child(self.root, self.candidate)
-            now = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-            if (self.candidate_stat is None
-                    or (now.st_dev, now.st_ino)
-                    != (self.candidate_stat.st_dev, self.candidate_stat.st_ino)):
-                raise ValueError("candidate changed during replacement")
             self._write_journal("candidate_park_intent")
             self._fault("candidate_park_intent")
+            root_fd, parent_fd, name = _open_child(self.root, self.candidate)
+            candidate_fd = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+            now = os.fstat(candidate_fd)
+            digest = hashlib.sha256()
+            while True:
+                chunk = os.read(candidate_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+            path_now = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (self.candidate_stat is None
+                    or (now.st_dev, now.st_ino)
+                    != (self.candidate_stat.st_dev, self.candidate_stat.st_ino)
+                    or (path_now.st_dev, path_now.st_ino)
+                    != (now.st_dev, now.st_ino)
+                    or self.candidate_digest is None
+                    or digest.hexdigest() != self.candidate_digest):
+                raise ValueError("candidate changed during replacement")
             os.replace(name, self.parked_candidate.name, src_dir_fd=parent_fd, dst_dir_fd=root_fd)
             _fsync_fd(parent_fd)
             _fsync_dir(self.root)
@@ -569,6 +590,8 @@ class ReplacementTransaction:
             self.rollback_to_before()
             raise
         finally:
+            if candidate_fd is not None:
+                os.close(candidate_fd)
             if parent_fd is not None and parent_fd != root_fd:
                 os.close(parent_fd)
             if root_fd is not None:
@@ -714,7 +737,7 @@ def prepare_replacement(
     )
     transaction._write_journal("preparing")
     try:
-        stable, candidate_stat = _copy_candidate_no_follow(
+        stable, candidate_stat, candidate_digest = _copy_candidate_no_follow(
             root,
             candidate_path,
             transaction.stable,
@@ -730,6 +753,7 @@ def prepare_replacement(
         transaction.staging = staging
         transaction.info = info
         transaction.candidate_stat = candidate_stat
+        transaction.candidate_digest = candidate_digest
         transaction._write_journal("prepared")
         return transaction
     except Exception:

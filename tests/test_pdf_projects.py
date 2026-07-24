@@ -435,6 +435,145 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typst_state["main"], "main.typ")
         self.assertIn("Original Typst flow", typst_state["source"])
 
+    async def test_generic_file_mutations_cannot_touch_pdf_managed_state(self):
+        info = self.projects.create_pdf_project("Managed PDF", "paper.pdf", ONE_PAGE_PDF)
+        project = Path(info["path"])
+        opened = await self.client.post(f"/api/projects/{info['id']}/open")
+        self.assertEqual(opened.status_code, 200, opened.text)
+
+        nested = project / "nested"
+        nested.mkdir()
+        managed_contents = {
+            "document.pdf": (project / "document.pdf").read_bytes(),
+            "transcript.json": (project / "transcript.json").read_bytes(),
+            ".vibe-typst.json": (project / ".vibe-typst.json").read_bytes(),
+            ".pdf-replacement-journal.json": b"journal",
+            ".pdf-project-write.lock": (project / ".pdf-project-write.lock").read_bytes(),
+            ".pdf-transcript.lock": (project / ".pdf-transcript.lock").read_bytes(),
+            "nested/.pdf-journal-deadbeef": b"journal temporary",
+            "nested/.transcript-deadbeef.json": b"transcript temporary",
+            ".pdf-txn-" + "a" * 32 + "-stable.pdf": b"transaction temporary",
+        }
+        synthetic = {
+            ".pdf-replacement-journal.json",
+            "nested/.pdf-journal-deadbeef",
+            "nested/.transcript-deadbeef.json",
+            ".pdf-txn-" + "a" * 32 + "-stable.pdf",
+        }
+        for relative, contents in managed_contents.items():
+            path = project / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(contents)
+
+        try:
+            for relative, original in managed_contents.items():
+                with self.subTest(operation="write", path=relative):
+                    target = project / relative
+                    response = await self.client.post(
+                        "/api/project/files/write",
+                        json={"path": relative, "content": "generic overwrite"},
+                    )
+                    unchanged = target.is_file() and target.read_bytes() == original
+                    target.write_bytes(original)
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertTrue(unchanged)
+
+                with self.subTest(operation="delete", path=relative):
+                    target = project / relative
+                    response = await self.client.request(
+                        "DELETE", "/api/project/files", json={"path": relative}
+                    )
+                    unchanged = target.is_file() and target.read_bytes() == original
+                    target.write_bytes(original)
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertTrue(unchanged)
+
+                with self.subTest(operation="rename", path=relative):
+                    target = project / relative
+                    renamed = target.with_name("generic-renamed-" + target.name.lstrip("."))
+                    renamed.unlink(missing_ok=True)
+                    response = await self.client.patch(
+                        "/api/project/files/rename",
+                        json={"from": relative, "to": renamed.name},
+                    )
+                    unchanged = target.is_file() and target.read_bytes() == original
+                    if not target.exists() and renamed.exists():
+                        renamed.rename(target)
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertTrue(unchanged)
+                    self.assertEqual(target.read_bytes(), original)
+
+                with self.subTest(operation="move", path=relative):
+                    target = project / relative
+                    holding = project / "holding"
+                    holding.mkdir(exist_ok=True)
+                    moved = holding / target.name
+                    moved.unlink(missing_ok=True)
+                    response = await self.client.post(
+                        "/api/project/files/move",
+                        json={"from": relative, "dest": "holding"},
+                    )
+                    unchanged = target.is_file() and target.read_bytes() == original
+                    if not target.exists() and moved.exists():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        moved.rename(target)
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertTrue(unchanged)
+                    self.assertEqual(target.read_bytes(), original)
+
+            destination_source = project / "rename-source.txt"
+            destination_source.write_text("source", encoding="utf-8")
+            response = await self.client.patch(
+                "/api/project/files/rename",
+                json={"from": destination_source.name,
+                      "to": ".pdf-txn-" + "b" * 32 + "-candidate"},
+            )
+            renamed_destination = project / (
+                ".pdf-txn-" + "b" * 32 + "-candidate"
+            )
+            source_unchanged = destination_source.is_file()
+            if not destination_source.exists() and renamed_destination.exists():
+                renamed_destination.rename(destination_source)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertTrue(source_unchanged)
+
+            nested_transcript = nested / "transcript.json"
+            nested_transcript.write_text("nested transcript", encoding="utf-8")
+            response = await self.client.post(
+                "/api/project/files/move",
+                json={"from": "nested/transcript.json", "dest": ""},
+            )
+            moved_transcript = project / "transcript_1.json"
+            source_unchanged = nested_transcript.is_file()
+            if not nested_transcript.exists() and moved_transcript.exists():
+                moved_transcript.rename(nested_transcript)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertTrue(source_unchanged)
+
+            private_destination = project / (
+                ".pdf-txn-" + "c" * 32 + "-render-staging"
+            )
+            private_destination.mkdir()
+            move_source = project / "move-source.txt"
+            move_source.write_text("source", encoding="utf-8")
+            response = await self.client.post(
+                "/api/project/files/move",
+                json={"from": move_source.name, "dest": private_destination.name},
+            )
+            moved_source = private_destination / move_source.name
+            source_unchanged = move_source.is_file()
+            if not move_source.exists() and moved_source.exists():
+                moved_source.rename(move_source)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertTrue(source_unchanged)
+        finally:
+            for relative in synthetic:
+                path = project / relative
+                if path.is_dir():
+                    shutil.rmtree(path, ignore_errors=True)
+                else:
+                    path.unlink(missing_ok=True)
+
 
 class PdfEndToEndFixtureIsolationTest(unittest.IsolatedAsyncioTestCase):
     async def test_fixture_restores_store_override_and_docstore_generations(self):
@@ -593,6 +732,39 @@ class PdfReplacementTest(unittest.TestCase):
         self.assertEqual([p.name for p in self.render_dir.iterdir()], ["page-1.png"])
         self.assertEqual([p.name for p in self.root.iterdir()
                           if p.name.startswith(".") and "write.lock" not in p.name], [])
+
+    def test_same_inode_rewrite_after_prepare_is_rejected_without_consuming_candidate(self):
+        self.candidate.write_bytes(self.new_pdf)
+        transaction = self.pdf_service.prepare_replacement(
+            self.root, self.candidate, self.primary, self.render_dir
+        )
+        prepared_stat = self.candidate.stat()
+        rewritten_pdf = _pdf_bytes("hot")
+        self.assertEqual(len(rewritten_pdf), len(self.new_pdf))
+        self.candidate.write_bytes(rewritten_pdf)
+        os.utime(
+            self.candidate,
+            ns=(prepared_stat.st_atime_ns, prepared_stat.st_mtime_ns),
+        )
+        rewritten_stat = self.candidate.stat()
+        self.assertEqual(
+            (rewritten_stat.st_dev, rewritten_stat.st_ino),
+            (prepared_stat.st_dev, prepared_stat.st_ino),
+        )
+        render_before = {
+            path.name: path.read_bytes() for path in self.render_dir.iterdir()
+        }
+
+        with self.assertRaisesRegex(ValueError, "candidate changed during replacement"):
+            transaction.publish()
+
+        self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+        self.assertEqual(self.candidate.read_bytes(), rewritten_pdf)
+        self.assertEqual(
+            {path.name: path.read_bytes() for path in self.render_dir.iterdir()},
+            render_before,
+        )
+        self.assertFalse((self.root / ".pdf-replacement-journal.json").exists())
 
     def test_direct_helper_cleanup_failure_keeps_committed_new_generation(self):
         self.candidate.write_bytes(self.new_pdf)
@@ -1437,6 +1609,70 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(observed.status_code, 200, observed.text)
         self.assertEqual(observed.json()["pages"], ["page-1.png", "page-2.png"])
 
+    async def test_late_replacement_record_for_prior_project_cannot_leak_into_active_project(self):
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 2)
+        await self._open_pdf()
+        second = Path(self._tmp.name) / "second-render-state"
+        second.mkdir()
+        second_pdf = second / "document.pdf"
+        self._write_pdf(second_pdf, 1)
+        second_info = {
+            "id": "second-render-state-project",
+            "name": "Second render state",
+            "path": str(second),
+            "type": "pdf",
+            "main_file": "document.pdf",
+        }
+        prior_record_waiting = threading.Event()
+        release_prior_record = threading.Event()
+        real_record = self.app._record_pdf_render_version
+
+        def gated_record(pages, path=None, identity=None):
+            target = Path(path or self.runtime.current_file()).resolve()
+            if target == self.pdf.resolve() and len(pages) == 2:
+                prior_record_waiting.set()
+                self.assertTrue(release_prior_record.wait(5))
+            return real_record(pages, path, identity)
+
+        replacement = None
+        try:
+            with patch.object(
+                self.app,
+                "_record_pdf_render_version",
+                side_effect=gated_record,
+            ):
+                replacement = asyncio.create_task(self._request(
+                    "POST",
+                    "/api/pdf/replace",
+                    {"candidate": candidate.name, "message": "late A replacement"},
+                ))
+                self.assertTrue(
+                    await asyncio.to_thread(prior_record_waiting.wait, 3)
+                )
+                await self._open_pdf(second_info)
+                before = (
+                    await self._request("GET", "/api/render-version")
+                ).json()
+                release_prior_record.set()
+                replaced = await asyncio.wait_for(replacement, 5)
+        finally:
+            release_prior_record.set()
+            if replacement is not None and not replacement.done():
+                await asyncio.wait_for(replacement, 5)
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        state = (await self._request("GET", "/api/state")).json()
+        render = (await self._request("GET", "/api/render-version")).json()
+        slide_map = (await self._request("GET", "/api/slide-map")).json()
+        self.assertEqual(self.runtime.current_file(), second_pdf.resolve())
+        self.assertEqual(state["generation"], before["generation"])
+        self.assertEqual(render["generation"], before["generation"])
+        self.assertEqual(slide_map["generation"], before["generation"])
+        self.assertEqual(state["version"], before["version"])
+        self.assertEqual(render["version"], before["version"])
+        shutil.rmtree(self.runtime.render_dir(second_pdf), ignore_errors=True)
+
     async def test_pdf_download_and_view_wait_for_replacement_and_stream_new_inode(self):
         candidate = self.project / "replacement.pdf"
         self._write_pdf(candidate, 2)
@@ -1863,8 +2099,7 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["generation"], slide_map["generation"])
 
         self.app._pdf_render_state.clear()
-        self.app._pdf_render_state.update({"fingerprint": None, "identity": None,
-                                           "version": 0, "page_count": 0})
+        self.app._pdf_render_state.update({"next_version": 0, "records": {}})
         await self._open_pdf()
         restarted = (await self._request("GET", "/api/render-version")).json()
         self.assertEqual(restarted["version"], 1)

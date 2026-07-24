@@ -21,6 +21,7 @@ import struct
 import subprocess
 import tempfile
 import termios
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,7 +57,8 @@ HERE = Path(__file__).resolve().parent
 
 # ── active project (in-memory; cleared on restart unless runtime state persists the file) ──
 _active_project: dict | None = None
-_pdf_render_state = {"fingerprint": None, "identity": None, "version": 0, "page_count": 0}
+_pdf_render_state = {"next_version": 0, "records": {}}
+_pdf_render_state_lock = threading.Lock()
 _PDF_PAGE_NAME = re.compile(r"page-([1-9][0-9]*)\.png$")
 MAX_PDF_UPLOAD_BYTES = projects_mod.MAX_PDF_UPLOAD_BYTES
 _PDF_UPLOAD_CHUNK_BYTES = 1024 * 1024
@@ -288,30 +290,52 @@ def _record_pdf_render_version(pages: list[str], path: Path | None = None,
                                identity: str | None = None) -> int:
     digest = hashlib.sha1()
     target = path or runtime.current_file()
-    digest.update((identity or _pdf_identity(target)).encode("utf-8"))
+    render_identity = identity or _pdf_identity(target)
+    digest.update(render_identity.encode("utf-8"))
     for name in pages:
         page = runtime.render_dir(path) / name
         digest.update(name.encode("utf-8"))
         digest.update(page.read_bytes())
     fingerprint = digest.hexdigest()
-    if _pdf_render_state["fingerprint"] != fingerprint:
-        _pdf_render_state["fingerprint"] = fingerprint
-        _pdf_render_state["version"] += 1
-    _pdf_render_state["identity"] = identity or _pdf_identity(target)
-    _pdf_render_state["page_count"] = len(pages)
-    return _pdf_render_state["version"]
+    with _pdf_render_state_lock:
+        records = dict(_pdf_render_state.get("records", {}))
+        recorded = records.get(render_identity)
+        if recorded is None or recorded["fingerprint"] != fingerprint:
+            version = int(_pdf_render_state.get("next_version", 0)) + 1
+            _pdf_render_state["next_version"] = version
+        else:
+            version = recorded["version"]
+        records[render_identity] = {
+            "fingerprint": fingerprint,
+            "version": version,
+            "page_count": len(pages),
+        }
+        _pdf_render_state["records"] = records
+        return version
+
+
+def _pdf_render_record(path: Path | None = None,
+                       identity: str | None = None) -> dict | None:
+    target = path or runtime.current_file()
+    render_identity = identity or _pdf_identity(target)
+    with _pdf_render_state_lock:
+        recorded = _pdf_render_state.get("records", {}).get(render_identity)
+        return dict(recorded) if recorded is not None else None
 
 
 def _pdf_render_version(path: Path | None = None, identity: str | None = None) -> int:
     # Activation, replacement, and restore call _record_pdf_render_version while publishing a
     # fully validated render generation. Polls observe that recorded generation; they never hash
     # every PNG again just to answer a version request.
-    return _pdf_render_state["version"]
+    recorded = _pdf_render_record(path, identity)
+    return recorded["version"] if recorded is not None else 0
 
 
-def _pdf_render_generation() -> str:
+def _pdf_render_generation(path: Path | None = None,
+                           identity: str | None = None) -> str | None:
     """The restart-stable opaque identity of the recorded PDF render generation."""
-    return _pdf_render_state["fingerprint"]
+    recorded = _pdf_render_record(path, identity)
+    return recorded["fingerprint"] if recorded is not None else None
 
 
 def _prepare_pdf(pdf_path: Path, project_pdf: bool, identity: str) -> tuple[dict, dict | None, int]:
@@ -335,7 +359,9 @@ def _pdf_activation_response(
         "project_name": target.project_name, "mode": app_config.APP_MODE,
         "project_type": "pdf", "main": target.pdf.name,
         "selected_file": target.pdf.name, "source": "", "pages": rendered["pages"],
-        "tokens": {}, "version": version, "generation": _pdf_render_generation(), "transcripts": transcripts,
+        "tokens": {}, "version": version,
+        "generation": _pdf_render_generation(target.pdf, target.identity),
+        "transcripts": transcripts,
     }
 
 
@@ -522,7 +548,9 @@ def state():
                     "pages": pages,
                     "tokens": {},
                     "version": _pdf_render_version(expected.pdf, expected.identity),
-                    "generation": _pdf_render_generation(),
+                    "generation": _pdf_render_generation(
+                        expected.pdf, expected.identity
+                    ),
                 }
             return _locked_pdf_observation(observe, expected, recorded_render=True)
         except ValueError as exc:
@@ -554,7 +582,9 @@ def render_version():
             return _locked_pdf_observation(
                 lambda _pdf_path, _page_count: {
                     "version": _pdf_render_version(expected.pdf, expected.identity),
-                    "generation": _pdf_render_generation(),
+                    "generation": _pdf_render_generation(
+                        expected.pdf, expected.identity
+                    ),
                     "pages": _pdf_pages(expected.pdf),
                     "tokens": {},
                     "project_type": "pdf",
@@ -1063,7 +1093,9 @@ async def slide_map():
                     )
                 ]
                 return {"pages": pages, "total": page_count, "orphans": orphans,
-                        "generation": _pdf_render_generation()}
+                        "generation": _pdf_render_generation(
+                            expected.pdf, expected.identity
+                        )}
             return await asyncio.to_thread(_locked_pdf_observation, observe, expected, True)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
@@ -1141,10 +1173,11 @@ def _locked_pdf_observation(operation, expected: _PdfIdentity | None = None,
     with pdf_service.project_write_lock(expected.project):
         pdf_service.recover_pending(expected.project, expected.render)
         _revalidate_pdf_identity(expected)
-        if recorded_render and _pdf_render_state.get("identity") == expected.identity:
+        recorded = _pdf_render_record(expected.pdf, expected.identity)
+        if recorded_render and recorded is not None:
             # The active generation was validated and rendered before its version was recorded.
             # Its recorded count avoids reopening the PDF or scanning render files for map polls.
-            page_count = _pdf_render_state["page_count"]
+            page_count = recorded["page_count"]
         else:
             page_count = pdf_service.inspect_pdf(expected.pdf)["page_count"]
         return operation(expected.pdf, page_count)
@@ -1928,6 +1961,12 @@ async def write_project_file(request: Request):
         target = projects_mod._resolve_project_path(runtime.project_dir(), path)
     except PermissionError:
         raise HTTPException(403, "path not allowed")
+    try:
+        projects_mod.reject_pdf_managed_mutation(
+            runtime.project_dir(), target, "write"
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if not target.exists():
         raise HTTPException(404, "file not found")
     if _active_project is not None and _active_project.get("type") == "pdf":
@@ -2160,7 +2199,9 @@ async def git_restore(request: Request):
                 prior_head = vcs._head_commit(expected.project)
                 if prior_head is None or re.fullmatch(r"[0-9a-f]{40,64}", prior_head) is None:
                     return {"ok": False, "error": "could not capture current version"}, None, True
-                prior_render_state = dict(_pdf_render_state)
+                prior_render_record = _pdf_render_record(
+                    expected.pdf, expected.identity
+                )
                 retained_render = pdf_service.park_render_for_restore(expected.render)
                 try:
                     result = vcs.restore_version(expected.project, tag)
@@ -2183,8 +2224,13 @@ async def git_restore(request: Request):
                         )
                     except Exception as render_exc:
                         rollback_errors.append(f"render rollback failed: {render_exc}")
-                    _pdf_render_state.clear()
-                    _pdf_render_state.update(prior_render_state)
+                    with _pdf_render_state_lock:
+                        records = dict(_pdf_render_state.get("records", {}))
+                        if prior_render_record is None:
+                            records.pop(expected.identity, None)
+                        else:
+                            records[expected.identity] = prior_render_record
+                        _pdf_render_state["records"] = records
                     detail = str(exc)
                     if rollback_errors:
                         detail += "; " + "; ".join(rollback_errors)
