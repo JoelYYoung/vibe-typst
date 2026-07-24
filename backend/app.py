@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 import termios
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -53,6 +54,17 @@ HERE = Path(__file__).resolve().parent
 _active_project: dict | None = None
 _pdf_render_state = {"fingerprint": None, "version": 0}
 _PDF_PAGE_NAME = re.compile(r"page-([1-9][0-9]*)\.png$")
+
+
+@dataclass(frozen=True)
+class _PdfIdentity:
+    project: Path
+    pdf: Path
+    render: Path
+    identity: str
+    project_id: str | None
+    project_name: str
+    project_pdf: bool
 
 
 def _project_document(info: dict) -> tuple[str, Path]:
@@ -92,11 +104,11 @@ def _pdf_pages(path: Path | None = None) -> list[str]:
     return sorted(pages, key=lambda name: int(_PDF_PAGE_NAME.fullmatch(name).group(1)))
 
 
-def _open_pdf_render_page(name: str):
+def _open_pdf_render_page(name: str, pdf_path: Path | None = None):
     """Open a regular PDF page beneath a non-symlink render directory without following links."""
     if _PDF_PAGE_NAME.fullmatch(name) is None:
         return None
-    directory = runtime.render_dir()
+    directory = runtime.render_dir(pdf_path)
     if directory.is_symlink() or not directory.is_dir():
         return None
     required = ("O_DIRECTORY", "O_NOFOLLOW")
@@ -118,18 +130,6 @@ def _open_pdf_render_page(name: str):
     finally:
         if dir_fd is not None:
             os.close(dir_fd)
-
-
-def _pdf_context() -> tuple[Path, int]:
-    """Return the active immutable PDF primary document and its actual page count."""
-    if not _active_project or _active_project.get("type") != "pdf":
-        raise ValueError("no active PDF project")
-    project_type, pdf_path = _project_document(_active_project)
-    if project_type != "pdf" or runtime.document_type() != "pdf":
-        raise ValueError("active document is not the project PDF")
-    if runtime.current_file().resolve() != pdf_path:
-        raise ValueError("active document does not match the project PDF")
-    return pdf_path, pdf_service.inspect_pdf(pdf_path)["page_count"]
 
 
 def _matching_pdf_project(pdf_path: Path) -> dict | None:
@@ -155,6 +155,64 @@ def _pdf_identity(path: Path, project: dict | None = None) -> str:
     return f"{project_id}:{path.resolve()}"
 
 
+def _capture_pdf_identity() -> _PdfIdentity:
+    """Capture the active PDF target before waiting on its cross-process lock."""
+    current = runtime.current_file().resolve()
+    if runtime.document_type() != "pdf" or not current.is_file():
+        raise ValueError("no active PDF document")
+    if _active_project is None:
+        return _PdfIdentity(
+            project=current.parent,
+            pdf=current,
+            render=runtime.render_dir(current),
+            identity=_pdf_identity(current, None),
+            project_id=None,
+            project_name="",
+            project_pdf=False,
+        )
+    project_type, pdf_path = _project_document(_active_project)
+    if project_type != "pdf" or current != pdf_path:
+        raise ValueError("active document does not match the project PDF")
+    return _PdfIdentity(
+        project=pdf_path.parent,
+        pdf=pdf_path,
+        render=runtime.render_dir(pdf_path),
+        identity=_pdf_identity(pdf_path, _active_project),
+        project_id=_active_project.get("id"),
+        project_name=_active_project.get("name", ""),
+        project_pdf=True,
+    )
+
+
+def _target_pdf_identity(info: dict, pdf_path: Path) -> _PdfIdentity:
+    return _PdfIdentity(
+        project=pdf_path.parent,
+        pdf=pdf_path,
+        render=runtime.render_dir(pdf_path),
+        identity=_pdf_identity(pdf_path, info),
+        project_id=info.get("id"),
+        project_name=info.get("name", ""),
+        project_pdf=True,
+    )
+
+
+def _revalidate_pdf_identity(expected: _PdfIdentity) -> None:
+    """Fail instead of redirecting a lock waiter to a newly active project."""
+    if runtime.document_type() != "pdf" or runtime.current_file().resolve() != expected.pdf:
+        raise ValueError("active PDF changed while waiting")
+    if expected.project_id is None:
+        if _active_project is not None:
+            raise ValueError("active PDF project changed while waiting")
+        return
+    if (_active_project is None
+            or _active_project.get("type") != "pdf"
+            or _active_project.get("id") != expected.project_id):
+        raise ValueError("active PDF project changed while waiting")
+    _, active_pdf = _project_document(_active_project)
+    if active_pdf != expected.pdf:
+        raise ValueError("active PDF changed while waiting")
+
+
 def _record_pdf_render_version(pages: list[str], path: Path | None = None,
                                identity: str | None = None) -> int:
     digest = hashlib.sha1()
@@ -171,11 +229,12 @@ def _record_pdf_render_version(pages: list[str], path: Path | None = None,
     return _pdf_render_state["version"]
 
 
-def _pdf_render_version() -> int:
-    pages = _pdf_pages()
+def _pdf_render_version(path: Path | None = None, identity: str | None = None) -> int:
+    pages = _pdf_pages(path)
     if not pages:
         return _pdf_render_state["version"]
-    return _record_pdf_render_version(pages, runtime.current_file())
+    target = path or runtime.current_file()
+    return _record_pdf_render_version(pages, target, identity)
 
 
 def _prepare_pdf(pdf_path: Path, project_pdf: bool, identity: str) -> tuple[dict, dict | None, int]:
@@ -187,56 +246,71 @@ def _prepare_pdf(pdf_path: Path, project_pdf: bool, identity: str) -> tuple[dict
     return rendered, transcripts, version
 
 
-def _pdf_activation_response(rendered: dict, transcripts: dict | None, version: int) -> dict:
+def _pdf_activation_response(
+    rendered: dict,
+    transcripts: dict | None,
+    version: int,
+    expected: _PdfIdentity | None = None,
+) -> dict:
+    target = expected or _capture_pdf_identity()
     return {
-        "file": str(runtime.current_file()), "project": str(runtime.project_dir()),
-        "project_name": (_active_project or {}).get("name", ""), "mode": app_config.APP_MODE,
-        "project_type": "pdf", "main": runtime.current_main(),
-        "selected_file": runtime.current_main(), "source": "", "pages": rendered["pages"],
+        "file": str(target.pdf), "project": str(target.project),
+        "project_name": target.project_name, "mode": app_config.APP_MODE,
+        "project_type": "pdf", "main": target.pdf.name,
+        "selected_file": target.pdf.name, "source": "", "pages": rendered["pages"],
         "tokens": {}, "version": version, "transcripts": transcripts,
     }
 
 
-async def _activate_pdf() -> dict:
-    """Render a PDF without creating any Typst resolver, CRDT, comment, or workdir state."""
-    if _active_project is None:
-        pdf_path = runtime.current_file()
-        if runtime.document_type() != "pdf" or not pdf_path.is_file():
-            raise ValueError("no active PDF document")
-        project_pdf = False
-        identity = _pdf_identity(pdf_path, None)
-    else:
-        pdf_path, _ = _pdf_context()
-        project_pdf = True
-        identity = _pdf_identity(pdf_path)
-    rendered, transcripts, version = _prepare_pdf(pdf_path, project_pdf, identity)
-    await docstore.stop()
+def _prepare_locked_pdf(expected: _PdfIdentity, *, require_active: bool) -> tuple[dict, dict | None, int]:
+    with pdf_service.project_write_lock(expected.project):
+        pdf_service.recover_pending(expected.project, expected.render)
+        if require_active:
+            _revalidate_pdf_identity(expected)
+        rendered, transcripts, version = _prepare_pdf(
+            expected.pdf, expected.project_pdf, expected.identity
+        )
+        return rendered, transcripts, version
+
+
+def _stop_typst_services_for_pdf() -> None:
     resolver.stop()
     try:
         store.close()
     except Exception:
         pass
-    return _pdf_activation_response(rendered, transcripts, version)
+
+
+async def _retire_typst_for_pdf() -> None:
+    await docstore.stop()
+    await asyncio.to_thread(_stop_typst_services_for_pdf)
+
+
+async def _activate_pdf() -> dict:
+    """Render a PDF without creating any Typst resolver, CRDT, comment, or workdir state."""
+    expected = _capture_pdf_identity()
+    rendered, transcripts, version = await asyncio.to_thread(
+        _prepare_locked_pdf, expected, require_active=True
+    )
+    _revalidate_pdf_identity(expected)
+    await _retire_typst_for_pdf()
+    return _pdf_activation_response(rendered, transcripts, version, expected)
 
 
 async def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
     """Prepare PDF state before publishing a switch away from a Typst project."""
     global _active_project
-    rendered, transcripts, version = _prepare_pdf(
-        pdf_path, project_pdf=True, identity=_pdf_identity(pdf_path, info)
+    expected = _target_pdf_identity(info, pdf_path)
+    rendered, transcripts, version = await asyncio.to_thread(
+        _prepare_locked_pdf, expected, require_active=False
     )
     previous_file = runtime._state.get("file")
     previous_project = _active_project
     try:
         runtime.set_file(str(pdf_path))
         _active_project = info
-        await docstore.stop()
-        resolver.stop()
-        try:
-            store.close()
-        except Exception:
-            pass
-        return _pdf_activation_response(rendered, transcripts, version)
+        await _retire_typst_for_pdf()
+        return _pdf_activation_response(rendered, transcripts, version, expected)
     except Exception:
         _active_project = previous_project
         runtime.restore_file(previous_file)
@@ -354,21 +428,27 @@ async def yjs_ws(websocket: WebSocket, room: str):
 @app.get("/api/state")
 def state():
     if runtime.document_type() == "pdf":
-        pages = _pdf_pages()
-        return {
-            "project": str(runtime.project_dir()),
-            "project_name": (_active_project or {}).get("name", ""),
-            "project_type": "pdf",
-            "mode": app_config.APP_MODE,
-            "file": str(runtime.current_file()),
-            "main": runtime.current_main(),
-            "selected_file": runtime.current_main(),
-            "ppi": PPI,
-            "source": "",
-            "pages": pages,
-            "tokens": {},
-            "version": _pdf_render_version(),
-        }
+        try:
+            expected = _capture_pdf_identity()
+            def observe(_pdf_path, _page_count):
+                pages = _pdf_pages(expected.pdf)
+                return {
+                    "project": str(expected.project),
+                    "project_name": expected.project_name,
+                    "project_type": "pdf",
+                    "mode": app_config.APP_MODE,
+                    "file": str(expected.pdf),
+                    "main": expected.pdf.name,
+                    "selected_file": expected.pdf.name,
+                    "ppi": PPI,
+                    "source": "",
+                    "pages": pages,
+                    "tokens": {},
+                    "version": _pdf_render_version(expected.pdf, expected.identity),
+                }
+            return _locked_pdf_observation(observe, expected)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return {
         "project": str(runtime.project_dir()),
         "project_name": (_active_project or {}).get("name", ""),
@@ -391,8 +471,20 @@ def state():
 @app.get("/api/render-version")
 def render_version():
     if runtime.document_type() == "pdf":
-        return {"version": _pdf_render_version(), "pages": _pdf_pages(), "tokens": {},
-                "project_type": "pdf", "error": None}
+        try:
+            expected = _capture_pdf_identity()
+            return _locked_pdf_observation(
+                lambda _pdf_path, _page_count: {
+                    "version": _pdf_render_version(expected.pdf, expected.identity),
+                    "pages": _pdf_pages(expected.pdf),
+                    "tokens": {},
+                    "project_type": "pdf",
+                    "error": None,
+                },
+                expected,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     st = resolver.status()
     return {"version": st["version"], "pages": typst_service.list_pages(),
             "tokens": typst_service.page_tokens(),
@@ -483,7 +575,12 @@ async def open_file(request: Request):
         raise HTTPException(400, "invalid file path") from e
     if _active_project is not None and _active_project.get("type") == "pdf":
         try:
-            active_pdf, _ = _pdf_context()
+            expected = _capture_pdf_identity()
+            active_pdf = await asyncio.to_thread(
+                _locked_pdf_observation,
+                lambda pdf_path, _page_count: pdf_path,
+                expected,
+            )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         if requested_path != active_pdf:
@@ -871,12 +968,14 @@ async def slide_map():
     page (authoritative, from touying's pdfpc mapping). Used by the inline notes + presenter."""
     if runtime.document_type() == "pdf":
         try:
-            _, page_count = _pdf_context()
+            expected = _capture_pdf_identity()
+            def observe(_pdf_path, page_count):
+                pages = [{"page": page, "slide_no": page, "slide_total": page_count,
+                          "project_type": "pdf"} for page in range(1, page_count + 1)]
+                return {"pages": pages, "total": page_count, "orphans": []}
+            return await asyncio.to_thread(_locked_pdf_observation, observe, expected)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        pages = [{"page": page, "slide_no": page, "slide_total": page_count,
-                  "project_type": "pdf"} for page in range(1, page_count + 1)]
-        return {"pages": pages, "total": page_count, "orphans": []}
     await docstore.flush_now()  # so the pdfpc query sees the latest content
     loop = asyncio.get_running_loop()
     # per-page notes (pdfpc) + source notes (for the editable raw anchor), in parallel-ish
@@ -944,20 +1043,14 @@ async def slide_map():
     return {"pages": out, "total": total, "orphans": orphans}
 
 
-def _pdf_http_context() -> tuple[Path, int]:
-    try:
-        return _pdf_context()
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-
-
-def _locked_pdf_observation(operation):
+def _locked_pdf_observation(operation, expected: _PdfIdentity | None = None):
     """Observe an active PDF generation while the publish pair is locked and recovered."""
-    project = runtime.project_dir()
-    with pdf_service.project_write_lock(project):
-        pdf_service.recover_pending(project, runtime.render_dir())
-        pdf_path, page_count = _pdf_context()
-        return operation(pdf_path, page_count)
+    expected = expected or _capture_pdf_identity()
+    with pdf_service.project_write_lock(expected.project):
+        pdf_service.recover_pending(expected.project, expected.render)
+        _revalidate_pdf_identity(expected)
+        page_count = pdf_service.inspect_pdf(expected.pdf)["page_count"]
+        return operation(expected.pdf, page_count)
 
 
 async def _json_object(request: Request) -> dict:
@@ -973,10 +1066,13 @@ async def _json_object(request: Request) -> dict:
 @app.get("/api/pdf/transcripts")
 def get_pdf_transcripts():
     try:
-        with pdf_service.project_write_lock(runtime.project_dir()):
-            pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
-            _, page_count = _pdf_context()
-            return pdf_transcript.load(runtime.project_dir(), "document.pdf", page_count)
+        expected = _capture_pdf_identity()
+        return _locked_pdf_observation(
+            lambda _pdf_path, page_count: pdf_transcript.load(
+                expected.project, "document.pdf", page_count
+            ),
+            expected,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -990,12 +1086,14 @@ async def patch_pdf_transcript(page: str, request: Request):
         page_no = int(page)
         if str(page_no) != page:
             raise ValueError("page must be a positive integer")
+        expected = _capture_pdf_identity()
         def patch_sync():
-            with pdf_service.project_write_lock(runtime.project_dir()):
-                pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
-                _, page_count = _pdf_context()
-                return pdf_transcript.set_page(runtime.project_dir(), "document.pdf", page_count,
-                                               page_no, body["text"])
+            return _locked_pdf_observation(
+                lambda _pdf_path, page_count: pdf_transcript.set_page(
+                    expected.project, "document.pdf", page_count, page_no, body["text"]
+                ),
+                expected,
+            )
         return await asyncio.to_thread(patch_sync)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1007,12 +1105,14 @@ async def patch_pdf_transcripts(request: Request):
     if set(body) != {"updates"}:
         raise HTTPException(400, "body must contain only updates")
     try:
+        expected = _capture_pdf_identity()
         def patch_sync():
-            with pdf_service.project_write_lock(runtime.project_dir()):
-                pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
-                _, page_count = _pdf_context()
-                return pdf_transcript.set_pages(runtime.project_dir(), "document.pdf", page_count,
-                                                body["updates"])
+            return _locked_pdf_observation(
+                lambda _pdf_path, page_count: pdf_transcript.set_pages(
+                    expected.project, "document.pdf", page_count, body["updates"]
+                ),
+                expected,
+            )
         return await asyncio.to_thread(patch_sync)
     except (KeyError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1033,61 +1133,91 @@ async def replace_pdf(request: Request):
     if Path(candidate).suffix.lower() != ".pdf":
         raise HTTPException(400, "candidate must be a PDF")
     try:
-        pdf_path, _ = _pdf_context()
+        expected = _capture_pdf_identity()
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    project_dir = runtime.project_dir()
     before_message = f"Before PDF replacement: {message.strip() or 'save current PDF'}"
     after_message = f"Replace PDF: {message.strip() or 'install replacement PDF'}"
-    try:
-        pdf_service.validate_replacement_candidate(project_dir, candidate, pdf_path)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+
     def replace_sync():
-      with pdf_service.project_write_lock(project_dir):
-        pdf_service.recover_pending(project_dir, runtime.render_dir())
-        # Revalidate after acquiring the cross-process lock: another replacement may have won.
-        try:
-            pdf_path, _ = _pdf_context()
-            pdf_service.validate_replacement_candidate(project_dir, candidate, pdf_path)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        before_version = vcs.save_version(project_dir, before_message)
-        if not before_version.get("ok"):
-            raise HTTPException(500, before_version.get("error", "could not save pre-replacement version"))
-        transaction = None
-        try:
-            transaction = pdf_service.prepare_replacement(project_dir, candidate, pdf_path,
-                                                          runtime.render_dir(pdf_path))
-            rendered = transaction.publish()
-            transcripts = pdf_transcript.load(project_dir, "document.pdf", rendered["page_count"])
-            expected_tag = vcs._next_tag(project_dir)
-            transaction.commit_intent(expected_tag)
-            after_version = vcs.save_version(project_dir, after_message)
-            if not after_version.get("ok"):
-                raise RuntimeError(after_version.get("error", "could not save replacement version"))
-            transaction.mark_versioned(after_version.get("tag", expected_tag))
-            transaction.finalize()
-        except Exception as exc:
-            # v1 is a complete pre-swap snapshot (primary, candidate, and sidecar). Restoring it
-            # plus its render makes a failed post-swap transaction externally coherent.
-            if transaction is not None:
-                transaction.rollback()
-            recovery = vcs.restore_version(project_dir, before_version["tag"])
-            if recovery.get("ok"):
+        with pdf_service.project_write_lock(expected.project):
+            pdf_service.recover_pending(expected.project, expected.render)
+            # Revalidate after acquiring the cross-process lock: another replacement may have won.
+            try:
+                _revalidate_pdf_identity(expected)
+                pdf_service.validate_replacement_candidate(
+                    expected.project, candidate, expected.pdf
+                )
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            before_version = vcs.save_version(expected.project, before_message)
+            if not before_version.get("ok"):
+                detail = before_version.get("error", "could not save pre-replacement version")
+                raise HTTPException(500, detail)
+            transaction = None
+            committed = False
+            cleanup_pending = False
+            try:
+                transaction = pdf_service.prepare_replacement(
+                    expected.project, candidate, expected.pdf, expected.render
+                )
+                rendered = transaction.publish()
+                transcripts = pdf_transcript.load(
+                    expected.project, "document.pdf", rendered["page_count"]
+                )
+                version = _record_pdf_render_version(
+                    rendered["pages"], expected.pdf, expected.identity
+                )
+                expected_tag = vcs._next_tag(expected.project)
+                transaction.commit_intent(expected_tag)
+                after_version = vcs.save_version(expected.project, after_message)
+                if not after_version.get("ok"):
+                    detail = after_version.get("error", "could not save replacement version")
+                    raise RuntimeError(detail)
+                if after_version.get("tag") != expected_tag:
+                    raise RuntimeError("replacement version tag did not match commit intent")
+                committed = True
                 try:
-                    restored = pdf_service.render_pdf(pdf_path, runtime.render_dir(pdf_path))
-                    _record_pdf_render_version(restored["pages"], pdf_path, _pdf_identity(pdf_path))
+                    transaction.mark_versioned(expected_tag)
+                    transaction.finalize()
                 except Exception:
-                    recovery = {"ok": False, "error": "could not restore PDF render"}
-            detail = str(exc)
-            if not recovery.get("ok"):
-                detail += "; recovery failed: " + recovery.get("error", "unknown error")
-            raise HTTPException(500, detail) from exc
-        version = _record_pdf_render_version(rendered["pages"], pdf_path, _pdf_identity(pdf_path))
-        return {"ok": True, "page_count": rendered["page_count"], "pages": rendered["pages"],
-                "transcripts": transcripts, "version": version,
-                "before_version": before_version, "after_version": after_version}
+                    # v2 already names the new primary/render/transcript generation.  Cleanup is
+                    # recoverable from commit_intent/versioned and must never restore v1.
+                    cleanup_pending = True
+            except Exception as exc:
+                if committed:
+                    cleanup_pending = True
+                else:
+                    # v1 is a complete pre-swap snapshot (primary, candidate, and sidecar).
+                    # Restoring it plus the transaction's old render keeps every externally
+                    # visible part on v1.
+                    if transaction is not None:
+                        transaction.rollback()
+                    recovery = vcs.restore_version(expected.project, before_version["tag"])
+                    if recovery.get("ok"):
+                        try:
+                            restored = pdf_service.render_pdf(expected.pdf, expected.render)
+                            _record_pdf_render_version(
+                                restored["pages"], expected.pdf, expected.identity
+                            )
+                        except Exception:
+                            recovery = {"ok": False, "error": "could not restore PDF render"}
+                    detail = str(exc)
+                    if not recovery.get("ok"):
+                        detail += "; recovery failed: " + recovery.get(
+                            "error", "unknown error"
+                        )
+                    raise HTTPException(500, detail) from exc
+            return {
+                "ok": True,
+                "page_count": rendered["page_count"],
+                "pages": rendered["pages"],
+                "transcripts": transcripts,
+                "version": version,
+                "before_version": before_version,
+                "after_version": after_version,
+                "cleanup_pending": cleanup_pending,
+            }
     return await asyncio.to_thread(replace_sync)
 
 
@@ -1277,10 +1407,15 @@ def serve_render(name: str):
     if "/" in name or ".." in name:
         raise HTTPException(400, "bad name")
     if runtime.document_type() == "pdf":
-        _pdf_http_context()
-        if name not in _pdf_pages():
-            raise HTTPException(404)
-        stream = _open_pdf_render_page(name)
+        try:
+            expected = _capture_pdf_identity()
+            def open_page(_pdf_path, _page_count):
+                if name not in _pdf_pages(expected.pdf):
+                    return None
+                return _open_pdf_render_page(name, expected.pdf)
+            stream = _locked_pdf_observation(open_page, expected)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         if stream is None:
             raise HTTPException(404)
         return StreamingResponse(stream, media_type="image/png",
@@ -1706,6 +1841,14 @@ async def delete_project_file(request: Request):
 def git_status():
     if not _has_valid_file():
         return {"initialized": False, "dirty": False, "current": None}
+    if runtime.document_type() == "pdf":
+        try:
+            expected = _capture_pdf_identity()
+            return _locked_pdf_observation(
+                lambda _pdf_path, _page_count: vcs.status(expected.project), expected
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return vcs.status(runtime.project_dir())
 
 
@@ -1713,6 +1856,14 @@ def git_status():
 def git_versions():
     if not _has_valid_file():
         return []
+    if runtime.document_type() == "pdf":
+        try:
+            expected = _capture_pdf_identity()
+            return _locked_pdf_observation(
+                lambda _pdf_path, _page_count: vcs.list_versions(expected.project), expected
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     return vcs.list_versions(runtime.project_dir())
 
 
@@ -1726,10 +1877,14 @@ async def git_commit(request: Request):
     if runtime.document_type() == "typst":
         await docstore.flush_now()  # persist in-memory edits before snapshotting
         return vcs.save_version(runtime.project_dir(), message)
+    try:
+        expected = _capture_pdf_identity()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     def save_pdf():
-        with pdf_service.project_write_lock(runtime.project_dir()):
-            pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
-            return vcs.save_version(runtime.project_dir(), message)
+        return _locked_pdf_observation(
+            lambda _pdf_path, _page_count: vcs.save_version(expected.project, message), expected
+        )
     return await asyncio.to_thread(save_pdf)
 
 
@@ -1743,17 +1898,26 @@ async def git_restore(request: Request):
     if not tag:
         raise HTTPException(400, "tag is required")
     if runtime.document_type() == "pdf":
-        def restore_pdf():
-            with pdf_service.project_write_lock(runtime.project_dir()):
-                pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
-                return vcs.restore_version(runtime.project_dir(), tag)
-        result = await asyncio.to_thread(restore_pdf)
-        if not result["ok"]:
-            raise HTTPException(400, result.get("error", "restore failed"))
         try:
-            await _activate_pdf()
+            expected = _capture_pdf_identity()
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        def restore_pdf():
+            with pdf_service.project_write_lock(expected.project):
+                pdf_service.recover_pending(expected.project, expected.render)
+                _revalidate_pdf_identity(expected)
+                result = vcs.restore_version(expected.project, tag)
+                if not result["ok"]:
+                    return result, None
+                rendered, transcripts, version = _prepare_pdf(
+                    expected.pdf, expected.project_pdf, expected.identity
+                )
+                return result, (rendered, transcripts, version)
+        result, activated = await asyncio.to_thread(restore_pdf)
+        if not result["ok"]:
+            raise HTTPException(400, result.get("error", "restore failed"))
+        _revalidate_pdf_identity(expected)
+        await _retire_typst_for_pdf()
         return {"ok": True, "project_type": "pdf"}
     # Rotate the CRDT room FIRST so the soon-to-be-orphaned room can't write its
     # stale in-memory content back over the files we're about to restore.
@@ -1775,7 +1939,18 @@ async def git_delete(request: Request):
     tag = (body.get("tag") or "").strip()
     if not tag:
         raise HTTPException(400, "tag is required")
-    result = vcs.delete_version(runtime.project_dir(), tag)
+    if runtime.document_type() == "pdf":
+        try:
+            expected = _capture_pdf_identity()
+            result = await asyncio.to_thread(
+                _locked_pdf_observation,
+                lambda _pdf_path, _page_count: vcs.delete_version(expected.project, tag),
+                expected,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    else:
+        result = vcs.delete_version(runtime.project_dir(), tag)
     if not result["ok"]:
         raise HTTPException(400, result.get("error", "delete failed"))
     return {"ok": True}

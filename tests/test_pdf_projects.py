@@ -1,10 +1,13 @@
 import asyncio
 import json
+import multiprocessing
+import os
 import shutil
 import sys
 import tempfile
 import threading
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, contextmanager
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -40,6 +43,46 @@ def _one_page_pdf() -> bytes:
 
 
 ONE_PAGE_PDF = _one_page_pdf()
+
+
+def _pdf_bytes(label: str, pages: int = 1) -> bytes:
+    """Build a distinct, genuine PDF fixture with visible embedded text."""
+    import fitz
+
+    document = fitz.open()
+    for number in range(1, pages + 1):
+        page = document.new_page()
+        page.insert_text((72, 72), f"{label} page {number}")
+    try:
+        return document.tobytes()
+    finally:
+        document.close()
+
+
+def _hold_pdf_project_lock(project: str, entered, release) -> None:
+    import pdf_service
+
+    with pdf_service.project_write_lock(Path(project)):
+        entered.set()
+        release.wait(5)
+
+
+def _set_transcript_in_process(project: str, page: int, text: str, ready, start) -> None:
+    import pdf_transcript
+
+    ready.set()
+    start.wait(5)
+    pdf_transcript.set_page(Path(project), "document.pdf", 2, page, text)
+
+
+def _raise_while_holding_pdf_lock(project: str, released) -> None:
+    import pdf_service
+
+    try:
+        with pdf_service.project_write_lock(Path(project)):
+            raise RuntimeError("forced lock body failure")
+    except RuntimeError:
+        released.set()
 
 
 class _FakePixmap:
@@ -241,7 +284,9 @@ class PdfReplacementTest(unittest.TestCase):
         self.root = Path(self._tmp.name) / "project"
         self.root.mkdir()
         self.primary = self.root / "document.pdf"
-        self.primary.write_bytes(ONE_PAGE_PDF)
+        self.old_pdf = _pdf_bytes("old")
+        self.new_pdf = _pdf_bytes("new")
+        self.primary.write_bytes(self.old_pdf)
         self.candidate = self.root / "replacement.pdf"
         self.render_dir = Path(self._tmp.name) / "render"
         self.render_dir.mkdir()
@@ -267,40 +312,201 @@ class PdfReplacementTest(unittest.TestCase):
                           if p.name.startswith(".") and "write.lock" not in p.name], [])
 
     def test_success_consumes_candidate_and_replaces_every_render_page(self):
-        self.candidate.write_bytes(ONE_PAGE_PDF)
+        self.candidate.write_bytes(self.new_pdf)
 
         result = self.pdf_service.replace_primary(self.root, self.candidate, self.primary,
                                                   self.render_dir)
 
         self.assertEqual(result["page_count"], 1)
         self.assertFalse(self.candidate.exists())
+        self.assertEqual(self.primary.read_bytes(), self.new_pdf)
         self.assertEqual([p.name for p in self.render_dir.iterdir()], ["page-1.png"])
         self.assertEqual([p.name for p in self.root.iterdir()
                           if p.name.startswith(".") and "write.lock" not in p.name], [])
 
-    def test_backup_cleanup_failure_rolls_back_primary_render_and_candidate(self):
-        self.candidate.write_bytes(ONE_PAGE_PDF)
+    def test_preparing_journal_is_durable_before_candidate_copy(self):
+        self.candidate.write_bytes(self.new_pdf)
+        observed = {}
+
+        def fail_copy(*_args, **_kwargs):
+            journal = self.root / ".pdf-replacement-journal.json"
+            observed["journal"] = json.loads(journal.read_text(encoding="utf-8"))
+            raise RuntimeError("copy fault fired")
+
+        with patch.object(self.pdf_service, "_copy_candidate_no_follow", side_effect=fail_copy):
+            with self.assertRaisesRegex(RuntimeError, "copy fault fired"):
+                self.pdf_service.prepare_replacement(
+                    self.root, self.candidate, self.primary, self.render_dir
+                )
+
+        self.assertEqual(observed["journal"]["phase"], "preparing")
+        self.assertEqual(observed["journal"]["candidate"], "replacement.pdf")
+        self.assertEqual(type(observed["journal"]["had_render"]), bool)
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+        self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+        self.assertEqual(self.candidate.read_bytes(), self.new_pdf)
+
+    def test_every_prepare_and_publish_crash_boundary_recovers_old_generation(self):
+        boundaries = {
+            "stable_created", "render_staging_created", "render_prepared",
+            "primary_backup_intent", "primary_backup_created",
+            "candidate_park_intent", "candidate_parked",
+            "primary_publish_intent", "primary_published",
+            "render_backup_intent", "render_backed_up",
+            "render_publish_intent", "render_published",
+        }
+        fired = set()
+
+        for boundary in sorted(boundaries):
+            with self.subTest(boundary=boundary):
+                self.primary.write_bytes(self.old_pdf)
+                self.candidate.write_bytes(self.new_pdf)
+                shutil.rmtree(self.render_dir, ignore_errors=True)
+                self.render_dir.mkdir()
+                (self.render_dir / "page-1.png").write_bytes(b"old render")
+
+                class SimulatedDeath(BaseException):
+                    pass
+
+                def crash(point):
+                    if point == boundary:
+                        fired.add(point)
+                        raise SimulatedDeath(point)
+
+                with self.assertRaises(SimulatedDeath):
+                    transaction = self.pdf_service.prepare_replacement(
+                        self.root, self.candidate, self.primary, self.render_dir,
+                        fault_hook=crash,
+                    )
+                    transaction.publish()
+
+                self.pdf_service.recover_pending(self.root, self.render_dir)
+                self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+                self.assertEqual(self.candidate.read_bytes(), self.new_pdf)
+                self.assertEqual((self.render_dir / "page-1.png").read_bytes(), b"old render")
+                self.assertFalse((self.root / ".pdf-replacement-journal.json").exists())
+
+        self.assertEqual(fired, boundaries)
+
+    def test_interrupted_replacement_with_no_prior_render_removes_new_render(self):
+        self.candidate.write_bytes(self.new_pdf)
+        shutil.rmtree(self.render_dir)
+        transaction = self.pdf_service.prepare_replacement(
+            self.root, self.candidate, self.primary, self.render_dir
+        )
+        transaction.publish()
+
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertFalse(self.render_dir.exists())
+        self.assertEqual(self.primary.read_bytes(), self.old_pdf)
+        self.assertEqual(self.candidate.read_bytes(), self.new_pdf)
+
+    def test_corrupt_or_forged_journal_fails_closed_without_touching_external_path(self):
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_bytes(b"outside")
+        journal = self.root / ".pdf-replacement-journal.json"
+        journal.write_text(json.dumps({
+            "schema_version": 1,
+            "txid": "a" * 32,
+            "phase": "preparing",
+            "candidate": "replacement.pdf",
+            "had_render": True,
+            "cleanup": str(sentinel),
+        }), encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertEqual(sentinel.read_bytes(), b"outside")
+        self.assertTrue(journal.exists())
+
+    def test_partial_and_noncanonical_journals_fail_closed(self):
+        journal = self.root / ".pdf-replacement-journal.json"
+        invalid = [
+            "{",
+            json.dumps({
+                "schema_version": 1, "txid": "b" * 32, "phase": "preparing",
+                "candidate": "replacement.pdf",
+            }),
+            json.dumps({
+                "schema_version": 1, "txid": "b" * 32, "phase": "preparing",
+                "candidate": "nested/../replacement.pdf", "had_render": True,
+            }),
+            json.dumps({
+                "schema_version": 1, "txid": "b" * 32, "phase": "published",
+                "candidate": "replacement.pdf", "had_render": True,
+                "expected_tag": "v2",
+            }),
+        ]
         primary_before = self.primary.read_bytes()
-        render_before = {p.name: p.read_bytes() for p in self.render_dir.iterdir()}
-        candidate_before = self.candidate.read_bytes()
-        original_unlink = self.pdf_service.os.unlink
+        render_before = (self.render_dir / "page-1.png").read_bytes()
 
-        def fail_primary_backup(path, *args, **kwargs):
-            if Path(path).name.startswith(".pdf-primary-backup-"):
-                raise OSError("forced backup cleanup failure")
-            return original_unlink(path, *args, **kwargs)
+        for contents in invalid:
+            with self.subTest(contents=contents):
+                journal.write_text(contents, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    self.pdf_service.recover_pending(self.root, self.render_dir)
+                self.assertEqual(self.primary.read_bytes(), primary_before)
+                self.assertEqual((self.render_dir / "page-1.png").read_bytes(), render_before)
+                self.assertEqual(journal.read_text(encoding="utf-8"), contents)
 
-        with patch.object(self.pdf_service.os, "unlink", side_effect=fail_primary_backup):
-            result = self.pdf_service.replace_primary(self.root, self.candidate, self.primary,
-                                                      self.render_dir)
+    def test_symlinked_candidate_component_cannot_redirect_recovery_outside_project(self):
+        nested = self.root / "nested"
+        nested.mkdir()
+        candidate = nested / "replacement.pdf"
+        candidate.write_bytes(self.new_pdf)
+        transaction = self.pdf_service.prepare_replacement(
+            self.root, candidate, self.primary, self.render_dir
+        )
+        transaction.publish()
+        outside = Path(self._tmp.name) / "outside"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_bytes(b"outside")
+        nested.rmdir()
+        nested.symlink_to(outside, target_is_directory=True)
 
-        self.assertEqual(result["page_count"], 1)
-        self.assertFalse(self.candidate.exists())
-        self.assertEqual(self.primary.read_bytes(), primary_before)
-        self.assertNotEqual({p.name: p.read_bytes() for p in self.render_dir.iterdir()}, render_before)
+        with self.assertRaises(ValueError):
+            self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertEqual(sentinel.read_bytes(), b"outside")
+        self.assertFalse((outside / "replacement.pdf").exists())
+        self.assertTrue((self.root / ".pdf-replacement-journal.json").exists())
+
+    def test_replacement_lock_reentrancy_is_scoped_to_each_project(self):
+        second = Path(self._tmp.name) / "second-project"
+        second.mkdir()
+        entered = multiprocessing.Event()
+        release = multiprocessing.Event()
+
+        process = multiprocessing.Process(
+            target=_hold_pdf_project_lock, args=(str(second), entered, release)
+        )
+        process.start()
+        self.assertTrue(entered.wait(3))
+        acquired = threading.Event()
+
+        def nested_lock():
+            with self.pdf_service.project_write_lock(self.root):
+                with self.pdf_service.project_write_lock(second):
+                    acquired.set()
+
+        thread = threading.Thread(target=nested_lock)
+        thread.start()
+        time.sleep(0.2)
+        self.assertFalse(acquired.is_set())
+        release.set()
+        thread.join(3)
+        process.join(3)
+        self.assertTrue(acquired.is_set())
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(process.exitcode, 0)
 
     def test_interrupted_published_transaction_recovers_old_pair_and_candidate(self):
-        self.candidate.write_bytes(ONE_PAGE_PDF)
+        self.candidate.write_bytes(self.new_pdf)
         old_render = {p.name: p.read_bytes() for p in self.render_dir.iterdir()}
 
         with self.pdf_service.project_write_lock(self.root):
@@ -312,6 +518,7 @@ class PdfReplacementTest(unittest.TestCase):
             self.pdf_service.recover_pending(self.root, self.render_dir)
 
         self.assertTrue(self.candidate.exists())
+        self.assertEqual(self.primary.read_bytes(), self.old_pdf)
         self.assertEqual({p.name: p.read_bytes() for p in self.render_dir.iterdir()}, old_render)
         self.assertFalse((self.root / ".pdf-replacement-journal.json").exists())
 
@@ -539,6 +746,55 @@ class PdfTranscriptTest(unittest.TestCase):
             "1": {"text": "one"}, "2": {"text": "two"},
         })
 
+    def test_separate_process_updates_share_the_project_and_transcript_locks(self):
+        self.transcript.load(self.root, "document.pdf", 2)
+        start = multiprocessing.Event()
+        first_ready = multiprocessing.Event()
+        second_ready = multiprocessing.Event()
+        first = multiprocessing.Process(
+            target=_set_transcript_in_process,
+            args=(str(self.root), 1, "one", first_ready, start),
+        )
+        second = multiprocessing.Process(
+            target=_set_transcript_in_process,
+            args=(str(self.root), 2, "two", second_ready, start),
+        )
+        first.start()
+        second.start()
+        self.assertTrue(first_ready.wait(3))
+        self.assertTrue(second_ready.wait(3))
+        start.set()
+        first.join(5)
+        second.join(5)
+
+        self.assertEqual(first.exitcode, 0)
+        self.assertEqual(second.exitcode, 0)
+        self.assertEqual(self.transcript.load(self.root, "document.pdf", 2)["pages"], {
+            "1": {"text": "one"}, "2": {"text": "two"},
+        })
+
+    def test_project_lock_is_released_after_body_exception(self):
+        released = multiprocessing.Event()
+        failed = multiprocessing.Process(
+            target=_raise_while_holding_pdf_lock, args=(str(self.root), released)
+        )
+        failed.start()
+        self.assertTrue(released.wait(3))
+        failed.join(3)
+        self.assertEqual(failed.exitcode, 0)
+
+        acquired = multiprocessing.Event()
+        allow_exit = multiprocessing.Event()
+        follower = multiprocessing.Process(
+            target=_hold_pdf_project_lock,
+            args=(str(self.root), acquired, allow_exit),
+        )
+        follower.start()
+        self.assertTrue(acquired.wait(3))
+        allow_exit.set()
+        follower.join(3)
+        self.assertEqual(follower.exitcode, 0)
+
 
 class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
     """PDF projects deliberately bypass Typst's CRDT/resolver/comment lifecycle."""
@@ -624,6 +880,283 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["transcripts"]["orphans"]["2"], {"text": "page two"})
         self.assertFalse(candidate.exists())
         self.assertEqual([entry["tag"] for entry in self.app.vcs.list_versions(self.project)], ["v2", "v1"])
+        tree, _, rc = self.app.vcs._run(
+            ["ls-tree", "-r", "--name-only", "v2"], self.project
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(any(name.startswith(".pdf-") for name in tree.splitlines()), tree)
+        self.assertFalse(self.app.vcs.status(self.project)["dirty"])
+
+    async def test_mark_versioned_failure_after_v2_keeps_committed_new_generation(self):
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 2)
+        await self._open_pdf()
+
+        with patch.object(
+            self.app.pdf_service.ReplacementTransaction,
+            "mark_versioned",
+            side_effect=OSError("mark fault fired"),
+        ) as mark_versioned:
+            replaced = await self._request("POST", "/api/pdf/replace", {
+                "candidate": "replacement.pdf", "message": "two pages"
+            })
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        mark_versioned.assert_called_once_with("v2")
+        self.assertEqual(self.app.pdf_service.inspect_pdf(self.pdf)["page_count"], 2)
+        self.assertEqual(sorted(p.name for p in self.runtime.render_dir().iterdir()), [
+            "page-1.png", "page-2.png",
+        ])
+        self.assertFalse(candidate.exists())
+        self.assertEqual([v["tag"] for v in self.app.vcs.list_versions(self.project)], ["v2", "v1"])
+        # A later locked observation recognizes commit_intent + v2 and finishes cleanup.
+        status = await self._request("GET", "/api/git/status")
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertFalse(status.json()["dirty"])
+        self.assertFalse((self.project / ".pdf-replacement-journal.json").exists())
+
+    async def test_finalize_failure_after_v2_returns_committed_success_and_recovers_cleanup(self):
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 2)
+        await self._open_pdf()
+        real_finalize = self.app.pdf_service.ReplacementTransaction.finalize
+        calls = 0
+
+        def fail_once(transaction):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("finalize fault fired")
+            return real_finalize(transaction)
+
+        with patch.object(
+            self.app.pdf_service.ReplacementTransaction,
+            "finalize",
+            autospec=True,
+            side_effect=fail_once,
+        ):
+            replaced = await self._request("POST", "/api/pdf/replace", {
+                "candidate": "replacement.pdf", "message": "two pages"
+            })
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual(calls, 1)
+        self.assertEqual(self.app.pdf_service.inspect_pdf(self.pdf)["page_count"], 2)
+        self.assertEqual([v["tag"] for v in self.app.vcs.list_versions(self.project)], ["v2", "v1"])
+        self.assertTrue((self.project / ".pdf-replacement-journal.json").exists())
+        self.assertEqual((await self._request("GET", "/api/state")).status_code, 200)
+        self.assertFalse((self.project / ".pdf-replacement-journal.json").exists())
+
+    async def test_all_pdf_observation_and_version_routes_take_the_common_lock(self):
+        await self._open_pdf()
+        saved = await self._request("POST", "/api/git/commit", {"message": "first"})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        calls = []
+        real_lock = self.app.pdf_service.project_write_lock
+
+        @contextmanager
+        def observed_lock(project):
+            calls.append(Path(project).resolve())
+            with real_lock(project):
+                yield
+
+        routes = [
+            ("GET", "/api/state", None),
+            ("GET", "/api/render-version", None),
+            ("GET", "/api/slide-map", None),
+            ("GET", "/api/pdf/text?page=1", None),
+            ("GET", "/api/render/page-1.png", None),
+            ("GET", "/api/pdf/transcripts", None),
+            ("GET", "/api/git/status", None),
+            ("GET", "/api/git/versions", None),
+            ("POST", "/api/git/delete", {"tag": "v1"}),
+        ]
+        with patch.object(self.app.pdf_service, "project_write_lock", new=observed_lock):
+            for method, route, payload in routes:
+                before = len(calls)
+                response = await self._request(method, route, payload)
+                self.assertEqual(response.status_code, 200, (route, response.text))
+                self.assertGreater(len(calls), before, route)
+                self.assertTrue(all(path == self.project.resolve() for path in calls[before:]))
+
+    async def test_reader_waits_for_replacement_pair_and_observes_new_generation(self):
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 2)
+        await self._open_pdf()
+        primary_published = threading.Event()
+        release_publish = threading.Event()
+        original_fault = self.app.pdf_service.ReplacementTransaction._fault
+
+        def gate_publish(transaction, boundary):
+            original_fault(transaction, boundary)
+            if boundary == "primary_published":
+                primary_published.set()
+                self.assertTrue(release_publish.wait(5))
+
+        with patch.object(
+            self.app.pdf_service.ReplacementTransaction,
+            "_fault",
+            autospec=True,
+            side_effect=gate_publish,
+        ):
+            replace_task = asyncio.create_task(self._request("POST", "/api/pdf/replace", {
+                "candidate": "replacement.pdf", "message": "two pages"
+            }))
+            self.assertTrue(await asyncio.to_thread(primary_published.wait, 3))
+            reader_task = asyncio.create_task(self._request("GET", "/api/state"))
+            await asyncio.sleep(0.1)
+            self.assertFalse(reader_task.done())
+            release_publish.set()
+            replaced, observed = await asyncio.gather(replace_task, reader_task)
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual(observed.status_code, 200, observed.text)
+        self.assertEqual(observed.json()["pages"], ["page-1.png", "page-2.png"])
+
+    async def test_stale_page_patch_revalidates_after_shrink_without_blocking_event_loop(self):
+        self.pdf.unlink()
+        self._write_pdf(self.pdf, 2)
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 1)
+        await self._open_pdf()
+        self.assertEqual((await self._request("PATCH", "/api/pdf/transcripts/2", {
+            "text": "page two"
+        })).status_code, 200)
+        primary_published = threading.Event()
+        release_publish = threading.Event()
+        original_fault = self.app.pdf_service.ReplacementTransaction._fault
+
+        def gate_publish(transaction, boundary):
+            original_fault(transaction, boundary)
+            if boundary == "primary_published":
+                primary_published.set()
+                self.assertTrue(release_publish.wait(5))
+
+        with patch.object(
+            self.app.pdf_service.ReplacementTransaction,
+            "_fault",
+            autospec=True,
+            side_effect=gate_publish,
+        ):
+            replacement = asyncio.create_task(self._request("POST", "/api/pdf/replace", {
+                "candidate": "replacement.pdf", "message": "shrink"
+            }))
+            self.assertTrue(await asyncio.to_thread(primary_published.wait, 3))
+            stale_patch = asyncio.create_task(self._request(
+                "PATCH", "/api/pdf/transcripts/2", {"text": "stale update"}
+            ))
+            heartbeat = asyncio.create_task(asyncio.sleep(0.05, result="alive"))
+            self.assertEqual(await asyncio.wait_for(heartbeat, 1), "alive")
+            self.assertFalse(stale_patch.done())
+            release_publish.set()
+            replaced, patched = await asyncio.gather(replacement, stale_patch)
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual(patched.status_code, 400, patched.text)
+        transcripts = (await self._request("GET", "/api/pdf/transcripts")).json()
+        self.assertNotIn("2", transcripts["pages"])
+        self.assertEqual(transcripts["orphans"]["2"], {"text": "page two"})
+
+    async def test_pdf_restore_holds_lock_through_git_render_and_reconcile_in_worker(self):
+        candidate = self.project / "replacement.pdf"
+        self._write_pdf(candidate, 2)
+        await self._open_pdf()
+        replaced = await self._request("POST", "/api/pdf/replace", {
+            "candidate": "replacement.pdf", "message": "two pages"
+        })
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        render_entered = threading.Event()
+        release_render = threading.Event()
+        real_render = self.app.pdf_service.render_pdf
+
+        def gated_render(path, destination):
+            render_entered.set()
+            self.assertTrue(release_render.wait(5))
+            return real_render(path, destination)
+
+        with patch.object(self.app.pdf_service, "render_pdf", side_effect=gated_render):
+            restore = asyncio.create_task(self._request(
+                "POST", "/api/git/restore", {"tag": "v1"}
+            ))
+            self.assertTrue(await asyncio.to_thread(render_entered.wait, 3))
+            reader = asyncio.create_task(self._request("GET", "/api/state"))
+            heartbeat = asyncio.create_task(asyncio.sleep(0.05, result="alive"))
+            self.assertEqual(await asyncio.wait_for(heartbeat, 1), "alive")
+            await asyncio.sleep(0.05)
+            self.assertFalse(reader.done())
+            release_render.set()
+            restored, observed = await asyncio.gather(restore, reader)
+
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(observed.status_code, 200, observed.text)
+        self.assertEqual(observed.json()["pages"], ["page-1.png"])
+        self.assertEqual(
+            (await self._request("GET", "/api/pdf/transcripts")).json()["pages"],
+            {"1": {"text": ""}},
+        )
+
+    async def test_contended_pdf_open_uses_worker_and_common_lock(self):
+        entered = multiprocessing.Event()
+        release = multiprocessing.Event()
+        holder = multiprocessing.Process(
+            target=_hold_pdf_project_lock,
+            args=(str(self.project), entered, release),
+        )
+        holder.start()
+        self.assertTrue(entered.wait(3))
+
+        opening = asyncio.create_task(self._open_pdf())
+        heartbeat = asyncio.create_task(asyncio.sleep(0.05, result="alive"))
+        self.assertEqual(await asyncio.wait_for(heartbeat, 1), "alive")
+        self.assertFalse(opening.done())
+        release.set()
+        opened = await asyncio.wait_for(opening, 5)
+        holder.join(3)
+
+        self.assertTrue(opened["ok"])
+        self.assertEqual(holder.exitcode, 0)
+
+    async def test_lock_waiter_revalidates_identity_instead_of_redirecting_to_new_project(self):
+        await self._open_pdf()
+        second = Path(self._tmp.name) / "second"
+        second.mkdir()
+        second_pdf = second / "document.pdf"
+        self._write_pdf(second_pdf, 2)
+        second_info = {
+            "id": "second-project", "name": "Second", "path": str(second),
+            "type": "pdf", "main_file": "document.pdf",
+        }
+        entered = multiprocessing.Event()
+        release = multiprocessing.Event()
+        holder = multiprocessing.Process(
+            target=_hold_pdf_project_lock,
+            args=(str(self.project), entered, release),
+        )
+        holder.start()
+        self.assertTrue(entered.wait(3))
+        attempted = threading.Event()
+        real_lock = self.app.pdf_service.project_write_lock
+
+        @contextmanager
+        def observed_lock(project):
+            if Path(project).resolve() == self.project.resolve():
+                attempted.set()
+            with real_lock(project):
+                yield
+
+        with patch.object(self.app.pdf_service, "project_write_lock", new=observed_lock):
+            stale_state = asyncio.create_task(self._request("GET", "/api/state"))
+            self.assertTrue(await asyncio.to_thread(attempted.wait, 3))
+            await self._open_pdf(second_info)
+            release.set()
+            response = await asyncio.wait_for(stale_state, 5)
+        holder.join(3)
+
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("changed while waiting", response.text)
+        self.assertEqual(self.runtime.current_file(), second_pdf.resolve())
+        self.assertEqual(holder.exitcode, 0)
+        shutil.rmtree(self.runtime.render_dir(second_pdf), ignore_errors=True)
 
     async def test_pdf_open_renders_safe_pages_and_skips_typst_lifecycle(self):
         self.assertEqual(self.runtime.set_file(str(self.pdf)), str(self.pdf.resolve()))

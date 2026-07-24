@@ -29,10 +29,13 @@ _IGNORE_PATTERNS = [
     "/.pdf-replace.lock",    # legacy cross-process PDF replacement lock
     "/.pdf-project-write.lock",
     "/.pdf-replacement-journal.json",
+    "/.pdf-journal-*",
     "/.pdf-txn-*",
+    "/.pdf-render-*",
     "/.pdf-replacement-*",
     "/.pdf-primary-txn-*",
     "/.pdf-candidate-txn-*",
+    "/.transcript-*",
     ".DS_Store",
     "Thumbs.db",
     # App-managed agent tooling — regenerated on EVERY project open (workdir.setup), so
@@ -286,6 +289,14 @@ def list_versions(project_dir: Path) -> list[dict]:
             "is_current": (tag == current_tag),
         })
     return versions
+
+
+def version_exists(project_dir: Path, tag: str) -> bool:
+    """Return whether an exact, validated version tag resolves to a commit."""
+    if not isinstance(tag, str) or re.fullmatch(r"v[1-9][0-9]*", tag) is None:
+        return False
+    _, _, rc = _run(["rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"], project_dir)
+    return rc == 0
 
 
 def _next_tag(project_dir: Path) -> str:
