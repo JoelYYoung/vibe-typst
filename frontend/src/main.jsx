@@ -7,7 +7,7 @@ import ProjectsPage from './ProjectsPage.jsx'
 import AdminPage from './AdminPage.jsx'
 import PdfWorkspace from './PdfWorkspace.jsx'
 import Toaster from './Toaster.jsx'
-import { workspaceComponentFor } from './projectTypes.js'
+import { workspaceViewFor } from './projectRouting.js'
 import './styles.css'
 
 function Root() {
@@ -41,15 +41,16 @@ function Root() {
   function goToAdmin() { setView('admin') }
 
   if (view === 'loading') return <div className="app-loading">✦</div>
+  const workspaceView = workspaceViewFor(activeProject)
   return (
     <>
       {view === 'onboarding' && <OnboardingPage onDone={() => setView('projects')} />}
       {view === 'projects' && <ProjectsPage onOpen={goToEditor} onOpenAdmin={goToAdmin} />}
       {view === 'admin' && <AdminPage onBack={goToProjects} />}
-      {view === 'editor' && workspaceComponentFor(activeProject) === 'typst' && (
+      {view === 'editor' && workspaceView === 'App' && (
         <App project={activeProject} onBack={goToProjects} onBackToProjects={goToProjects} />
       )}
-      {view === 'editor' && workspaceComponentFor(activeProject) === 'pdf' && (
+      {view === 'editor' && workspaceView === 'PdfWorkspace' && (
         <PdfWorkspace project={activeProject} onBack={goToProjects} />
       )}
       <Toaster />
