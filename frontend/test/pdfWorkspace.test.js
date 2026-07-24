@@ -49,6 +49,47 @@ test('PDF render polling uses an opaque generation for tokens and accepts a rest
   assert.deepEqual(restarted.tokens, { 'page-1.png': 'pdf-generation-B-page-1.png' })
 })
 
+test('PDF replacement updates Presenter pages and transcript rows from the matched parent map', async () => {
+  let presenterState = {}
+  const replacements = [
+    {
+      render: { version: 7, generation: 'generation-A', pages: ['old-page.png'] },
+      map: { generation: 'generation-A', pages: [{ page: 1, note: 'old transcript' }], orphans: [] },
+    },
+    {
+      render: { version: 1, generation: 'generation-B', pages: ['new-page-1.png', 'new-page-2.png'] },
+      map: {
+        generation: 'generation-B',
+        pages: [{ page: 1, note: 'new first' }, { page: 2, note: 'new second' }],
+        orphans: [{ page: 3, note: 'removed third' }],
+      },
+    },
+  ]
+  const controller = createPdfPollController({
+    loadRender: () => replacements[0].render,
+    loadMap: () => replacements.shift().map,
+    onPair: (render, map) => {
+      presenterState = nextPdfRenderState(presenterState, render, map)
+    },
+  })
+
+  await controller.poll()
+  await controller.poll()
+
+  assert.deepEqual({
+    generation: presenterState.generation,
+    pages: presenterState.pages,
+    transcriptRows: presenterState.slideMap,
+  }, {
+    generation: 'generation-B',
+    pages: ['new-page-1.png', 'new-page-2.png'],
+    transcriptRows: [{ page: 1, note: 'new first' }, { page: 2, note: 'new second' }],
+  })
+  const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
+  assert.match(workspace, /<Presenter[\s\S]*slideMap=\{render\.slideMap\}/)
+  assert.match(workspace, /<Presenter[\s\S]*generation=\{render\.generation\}/)
+})
+
 test('PDF terminal cd command works with the deployed one-argument wrapper and quoted paths', () => {
   const command = pdfTerminalCdCommand("/workspace/Paper's draft")
   assert.equal(command.includes('cd --'), false)
