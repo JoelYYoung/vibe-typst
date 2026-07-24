@@ -453,6 +453,7 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
             "nested/.pdf-journal-deadbeef": b"journal temporary",
             "nested/.transcript-deadbeef.json": b"transcript temporary",
             ".pdf-txn-" + "a" * 32 + "-stable.pdf": b"transaction temporary",
+            ".pdf-replacement-preserved-" + "d" * 32 + ".backup": b"recovery copy",
         }
         synthetic = {
             ".pdf-replacement-journal.json",
@@ -745,8 +746,62 @@ class PdfReplacementTest(unittest.TestCase):
         self.assertFalse(self.candidate.exists())
         self.assertEqual(self.primary.read_bytes(), self.new_pdf)
         self.assertEqual([p.name for p in self.render_dir.iterdir()], ["page-1.png"])
-        self.assertEqual([p.name for p in self.root.iterdir()
-                          if p.name.startswith(".") and "write.lock" not in p.name], [])
+        recovery = self.root / result["candidate_recovery_path"]
+        self.assertEqual(recovery.read_bytes(), self.new_pdf)
+        self.assertRegex(
+            recovery.name,
+            r"^\.pdf-replacement-preserved-[0-9a-f]{32}\.backup$",
+        )
+        self.assertEqual(
+            [
+                p.name
+                for p in self.root.iterdir()
+                if p.name.startswith(".")
+                and "write.lock" not in p.name
+                and p != recovery
+            ],
+            [],
+        )
+
+    def test_preopened_writer_after_verification_is_retained_away_from_primary(self):
+        self.candidate.write_bytes(self.new_pdf)
+        transaction = self.pdf_service.prepare_replacement(
+            self.root, self.candidate, self.primary, self.render_dir
+        )
+        prepared_snapshot = self.candidate.read_bytes()
+        changed_bytes = _pdf_bytes("late writer", pages=2)
+        write_fired = False
+
+        with self.candidate.open("r+b", buffering=0) as writer:
+            opened = os.fstat(writer.fileno())
+
+            def write_after_parked_digest(boundary):
+                nonlocal write_fired
+                if boundary != "candidate_verified":
+                    return
+                write_fired = True
+                writer.seek(0)
+                writer.write(changed_bytes)
+                writer.truncate()
+                os.fsync(writer.fileno())
+
+            transaction.fault_hook = write_after_parked_digest
+            result = transaction.publish()
+            transaction.mark_committed()
+            transaction.finalize()
+
+            recovery = self.root / result["candidate_recovery_path"]
+            preserved = recovery.stat()
+            self.assertEqual(
+                (preserved.st_dev, preserved.st_ino),
+                (opened.st_dev, opened.st_ino),
+            )
+
+        self.assertTrue(write_fired)
+        self.assertFalse(self.candidate.exists())
+        self.assertEqual(self.primary.read_bytes(), prepared_snapshot)
+        self.assertEqual(recovery.read_bytes(), changed_bytes)
+        self.assertNotEqual(self.primary.read_bytes(), recovery.read_bytes())
 
     def test_same_inode_rewrite_after_prepare_is_rejected_without_consuming_candidate(self):
         self.candidate.write_bytes(self.new_pdf)
@@ -868,7 +923,49 @@ class PdfReplacementTest(unittest.TestCase):
         self.assertEqual([
             path.name for path in self.root.iterdir()
             if path.name.startswith(".pdf-") and not path.name.endswith(".lock")
-        ], [])
+        ], [result["candidate_recovery_path"]])
+
+    def test_interrupted_candidate_preservation_is_idempotent_during_recovery(self):
+        self.candidate.write_bytes(self.new_pdf)
+        transaction = self.pdf_service.prepare_replacement(
+            self.root, self.candidate, self.primary, self.render_dir
+        )
+        transaction.publish()
+        transaction.mark_committed()
+
+        class SimulatedDeath(BaseException):
+            pass
+
+        def crash_after_recovery_link(boundary):
+            if boundary == "candidate_preserved":
+                raise SimulatedDeath(boundary)
+
+        transaction.fault_hook = crash_after_recovery_link
+        with self.assertRaisesRegex(SimulatedDeath, "candidate_preserved"):
+            transaction.finalize()
+
+        self.assertTrue(transaction.parked_candidate.exists())
+        self.assertTrue(transaction.preserved_candidate.exists())
+        self.assertEqual(
+            (
+                transaction.parked_candidate.stat().st_dev,
+                transaction.parked_candidate.stat().st_ino,
+            ),
+            (
+                transaction.preserved_candidate.stat().st_dev,
+                transaction.preserved_candidate.stat().st_ino,
+            ),
+        )
+        self.assertTrue(transaction.journal.exists())
+
+        self.pdf_service.recover_pending(self.root, self.render_dir)
+
+        self.assertFalse(transaction.parked_candidate.exists())
+        self.assertEqual(
+            transaction.preserved_candidate.read_bytes(),
+            self.new_pdf,
+        )
+        self.assertFalse(transaction.journal.exists())
 
     def test_preparing_journal_is_durable_before_candidate_copy(self):
         self.candidate.write_bytes(self.new_pdf)
@@ -897,7 +994,7 @@ class PdfReplacementTest(unittest.TestCase):
             "stable_created", "render_staging_created", "render_prepared",
             "primary_backup_intent", "primary_backup_created",
             "candidate_park_intent", "candidate_parked",
-            "primary_publish_intent", "primary_published",
+            "primary_publish_intent", "candidate_verified", "primary_published",
             "render_backup_intent", "render_backed_up",
             "render_publish_intent", "render_published",
         }
@@ -1523,6 +1620,7 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self._write_pdf(self.pdf, 2)
         candidate = self.project / "replacement.pdf"
         self._write_pdf(candidate, 1)
+        candidate_before = candidate.read_bytes()
         await self._open_pdf()
         self.assertEqual((await self._request("PATCH", "/api/pdf/transcripts/2", {
             "text": "page two"
@@ -1539,6 +1637,14 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["page_count"], 1)
         self.assertEqual(result["transcripts"]["orphans"]["2"], {"text": "page two"})
         self.assertFalse(candidate.exists())
+        recovery = self.project / result["candidate_recovery_path"]
+        self.assertTrue(recovery.is_file())
+        self.assertEqual(recovery.read_bytes(), candidate_before)
+        items = (await self._request("GET", "/api/project/files")).json()["items"]
+        self.assertNotIn(
+            result["candidate_recovery_path"],
+            {item["path"] for item in items},
+        )
         self.assertEqual([entry["tag"] for entry in self.app.vcs.list_versions(self.project)], ["v2", "v1"])
         tree, _, rc = self.app.vcs._run(
             ["ls-tree", "-r", "--name-only", "v2"], self.project

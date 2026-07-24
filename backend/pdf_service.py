@@ -492,6 +492,11 @@ class ReplacementTransaction:
         self.stable = root / f".pdf-txn-{self.txid}-stable.pdf"
         self.primary_backup = root / f".pdf-txn-{self.txid}-old-primary"
         self.parked_candidate = root / f".pdf-txn-{self.txid}-candidate"
+        # The candidate's original inode is retained after commit so writes through a file
+        # descriptor opened before parking can never be lost or enter the active primary.
+        self.preserved_candidate = (
+            root / f".pdf-replacement-preserved-{self.txid}.backup"
+        )
         self.staging = render_path.with_name(f".pdf-txn-{self.txid}-render-staging")
         self.render_backup = render_path.with_name(f".pdf-txn-{self.txid}-old-render")
         self.failed_render = render_path.with_name(f".pdf-txn-{self.txid}-failed-render")
@@ -574,6 +579,10 @@ class ReplacementTransaction:
                     != (now.st_dev, now.st_ino)
                     or digest.hexdigest() != self.candidate_digest):
                 raise ValueError("candidate changed during replacement")
+            # After this boundary an uncooperative writer may still change the parked inode
+            # through a descriptor opened before the rename.  The stable copy remains the
+            # publish source, and committed cleanup retains that original inode for recovery.
+            self._fault("candidate_verified")
             _require_regular(self.stable, "stable candidate")
             os.replace(self.stable, self.primary)
             _fsync_dir(self.root)
@@ -593,7 +602,10 @@ class ReplacementTransaction:
             self._fault("render_published")
             self.published = True
             self._write_journal("published")
-            return self.info
+            return {
+                **self.info,
+                "candidate_recovery_path": self.preserved_candidate.name,
+            }
         except Exception:
             self.rollback_to_before()
             raise
@@ -687,16 +699,51 @@ class ReplacementTransaction:
                 )
         self._cleanup()
 
+    def _preserve_candidate(self) -> None:
+        """Durably retain the consumed candidate inode under its protected recovery name."""
+        parked_exists = self.parked_candidate.exists() or self.parked_candidate.is_symlink()
+        preserved_exists = (
+            self.preserved_candidate.exists() or self.preserved_candidate.is_symlink()
+        )
+        if not parked_exists:
+            if preserved_exists:
+                _require_regular(self.preserved_candidate, "preserved candidate")
+            return
+
+        _require_regular(self.parked_candidate, "parked candidate")
+        if preserved_exists:
+            _require_regular(self.preserved_candidate, "preserved candidate")
+            parked_stat = self.parked_candidate.stat()
+            preserved_stat = self.preserved_candidate.stat()
+            if (
+                parked_stat.st_dev,
+                parked_stat.st_ino,
+            ) != (
+                preserved_stat.st_dev,
+                preserved_stat.st_ino,
+            ):
+                raise ValueError("candidate recovery path is occupied")
+        else:
+            os.link(
+                self.parked_candidate,
+                self.preserved_candidate,
+                follow_symlinks=False,
+            )
+            _fsync_dir(self.root)
+        self._fault("candidate_preserved")
+        self.parked_candidate.unlink()
+        _fsync_dir(self.root)
+
     def _cleanup(self) -> None:
         # The journal is deliberately removed last.  Any cleanup failure leaves a recoverable
         # record whose phase says whether to rollback or finish the committed generation.
+        self._preserve_candidate()
         for path in (
             self.stable,
             self.staging,
             self.primary_backup,
             self.render_backup,
             self.failed_render,
-            self.parked_candidate,
         ):
             _remove_path(path)
         _fsync_dir(self.root)
