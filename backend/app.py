@@ -132,6 +132,36 @@ def _open_pdf_render_page(name: str, pdf_path: Path | None = None):
             os.close(dir_fd)
 
 
+def _open_pdf_document(pdf_path: Path):
+    """Open the active primary as a pinned regular inode without following links."""
+    required = ("O_DIRECTORY", "O_NOFOLLOW")
+    if not all(hasattr(os, flag) for flag in required):
+        return None
+    dir_fd = pdf_fd = None
+    try:
+        dir_fd = os.open(
+            pdf_path.parent,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        pdf_fd = os.open(
+            pdf_path.name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=dir_fd,
+        )
+        if not stat.S_ISREG(os.fstat(pdf_fd).st_mode):
+            os.close(pdf_fd)
+            pdf_fd = None
+            return None
+        return os.fdopen(pdf_fd, "rb", closefd=True)
+    except OSError:
+        if pdf_fd is not None:
+            os.close(pdf_fd)
+        return None
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+
+
 def _matching_pdf_project(pdf_path: Path) -> dict | None:
     """Return immutable metadata only when ``pdf_path`` is a project's document.pdf."""
     root = app_config.get_projects_root()
@@ -1159,7 +1189,11 @@ async def replace_pdf(request: Request):
             cleanup_pending = False
             try:
                 transaction = pdf_service.prepare_replacement(
-                    expected.project, candidate, expected.pdf, expected.render
+                    expected.project,
+                    candidate,
+                    expected.pdf,
+                    expected.render,
+                    before_tag=before_version["tag"],
                 )
                 rendered = transaction.publish()
                 transcripts = pdf_transcript.load(
@@ -1189,12 +1223,17 @@ async def replace_pdf(request: Request):
                     cleanup_pending = True
                 else:
                     # v1 is a complete pre-swap snapshot (primary, candidate, and sidecar).
-                    # Restoring it plus the transaction's old render keeps every externally
-                    # visible part on v1.
-                    if transaction is not None:
-                        transaction.rollback()
-                    recovery = vcs.restore_version(expected.project, before_version["tag"])
-                    if recovery.get("ok"):
+                    # The WAL is removed only after both its generation and that snapshot are
+                    # restored, so a second recovery can resume an interrupted rollback.
+                    recovery = {"ok": True}
+                    try:
+                        if transaction is not None:
+                            transaction.rollback_to_before()
+                        else:
+                            pdf_service.recover_pending(expected.project, expected.render)
+                    except Exception as recovery_exc:
+                        recovery = {"ok": False, "error": str(recovery_exc)}
+                    if recovery["ok"]:
                         try:
                             restored = pdf_service.render_pdf(expected.pdf, expected.render)
                             _record_pdf_render_version(
@@ -1753,6 +1792,30 @@ def download_file(path: str):
     """Download a file from the active project directory."""
     if not _has_valid_file():
         raise HTTPException(400, "no active project")
+    if runtime.document_type() == "pdf":
+        try:
+            expected = _capture_pdf_identity()
+            requested = projects_mod._resolve_project_path(expected.project, path)
+            if requested == expected.pdf:
+                stream = _locked_pdf_observation(
+                    lambda pdf_path, _page_count: _open_pdf_document(pdf_path),
+                    expected,
+                )
+                if stream is None:
+                    raise HTTPException(404, "file not found")
+                return StreamingResponse(
+                    stream,
+                    media_type="application/pdf",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Content-Disposition": f'attachment; filename="{expected.pdf.name}"',
+                    },
+                    background=BackgroundTask(stream.close),
+                )
+        except PermissionError:
+            raise HTTPException(403, "path not allowed")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     project_dir = runtime.project_dir()
     try:
         target = projects_mod._resolve_project_path(project_dir, path)
@@ -1780,6 +1843,30 @@ def view_file(path: str):
     """Serve a file inline (for in-app preview of images and PDFs)."""
     if not _has_valid_file():
         raise HTTPException(400, "no active project")
+    if runtime.document_type() == "pdf":
+        try:
+            expected = _capture_pdf_identity()
+            requested = projects_mod._resolve_project_path(expected.project, path)
+            if requested == expected.pdf:
+                stream = _locked_pdf_observation(
+                    lambda pdf_path, _page_count: _open_pdf_document(pdf_path),
+                    expected,
+                )
+                if stream is None:
+                    raise HTTPException(404, "file not found")
+                return StreamingResponse(
+                    stream,
+                    media_type="application/pdf",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Content-Disposition": "inline",
+                    },
+                    background=BackgroundTask(stream.close),
+                )
+        except PermissionError:
+            raise HTTPException(403, "path not allowed")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     project_dir = runtime.project_dir()
     try:
         target = projects_mod._resolve_project_path(project_dir, path)
@@ -1906,16 +1993,46 @@ async def git_restore(request: Request):
             with pdf_service.project_write_lock(expected.project):
                 pdf_service.recover_pending(expected.project, expected.render)
                 _revalidate_pdf_identity(expected)
-                result = vcs.restore_version(expected.project, tag)
-                if not result["ok"]:
-                    return result, None
-                rendered, transcripts, version = _prepare_pdf(
-                    expected.pdf, expected.project_pdf, expected.identity
-                )
-                return result, (rendered, transcripts, version)
-        result, activated = await asyncio.to_thread(restore_pdf)
+                prior_head = vcs._head_commit(expected.project)
+                if prior_head is None or re.fullmatch(r"[0-9a-f]{40,64}", prior_head) is None:
+                    return {"ok": False, "error": "could not capture current version"}, None, True
+                prior_render_state = dict(_pdf_render_state)
+                retained_render = pdf_service.park_render_for_restore(expected.render)
+                try:
+                    result = vcs.restore_version(expected.project, tag)
+                    if not result["ok"]:
+                        raise ValueError(result.get("error", "restore failed"))
+                    rendered, transcripts, version = _prepare_pdf(
+                        expected.pdf, expected.project_pdf, expected.identity
+                    )
+                except Exception as exc:
+                    rollback_errors = []
+                    restored_prior = vcs.restore_version(expected.project, prior_head)
+                    if not restored_prior.get("ok"):
+                        rollback_errors.append(
+                            "Git rollback failed: "
+                            + restored_prior.get("error", "unknown error")
+                        )
+                    try:
+                        pdf_service.rollback_parked_render(
+                            expected.render, retained_render
+                        )
+                    except Exception as render_exc:
+                        rollback_errors.append(f"render rollback failed: {render_exc}")
+                    _pdf_render_state.clear()
+                    _pdf_render_state.update(prior_render_state)
+                    detail = str(exc)
+                    if rollback_errors:
+                        detail += "; " + "; ".join(rollback_errors)
+                    return {"ok": False, "error": detail}, None, not isinstance(exc, ValueError)
+                pdf_service.discard_parked_render(expected.render, retained_render)
+                return result, (rendered, transcripts, version), False
+        result, activated, server_error = await asyncio.to_thread(restore_pdf)
         if not result["ok"]:
-            raise HTTPException(400, result.get("error", "restore failed"))
+            raise HTTPException(
+                500 if server_error else 400,
+                result.get("error", "restore failed"),
+            )
         _revalidate_pdf_identity(expected)
         await _retire_typst_for_pdf()
         return {"ok": True, "project_type": "pdf"}

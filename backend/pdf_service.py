@@ -27,6 +27,7 @@ _PHASES = {
     "render_backup_intent",
     "render_publish_intent",
     "published",
+    "committed",
     "commit_intent",
     "versioned",
 }
@@ -385,6 +386,37 @@ def _remove_path(path: Path) -> None:
         path.unlink()
 
 
+def park_render_for_restore(render_dir: Path | str) -> Path | None:
+    """Temporarily retain the current render so a failed Git restore can roll back."""
+    destination = Path(render_dir).absolute()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        return None
+    _require_directory(destination, "current PDF render")
+    backup = destination.with_name(f".pdf-restore-{uuid.uuid4().hex}-old-render")
+    os.replace(destination, backup)
+    _fsync_dir(destination.parent)
+    return backup
+
+
+def rollback_parked_render(render_dir: Path | str, backup: Path | None) -> None:
+    """Remove any newly rendered target and atomically restore the retained render."""
+    destination = Path(render_dir).absolute()
+    if destination.exists() or destination.is_symlink():
+        _remove_path(destination)
+    if backup is not None:
+        _require_directory(backup, "retained PDF render")
+        os.replace(backup, destination)
+    _fsync_dir(destination.parent)
+
+
+def discard_parked_render(render_dir: Path | str, backup: Path | None) -> None:
+    """Discard a retained render after a successful restore."""
+    if backup is not None:
+        _remove_path(backup)
+    _fsync_dir(Path(render_dir).absolute().parent)
+
+
 def _require_regular(path: Path, label: str) -> None:
     try:
         mode = path.lstat().st_mode
@@ -434,6 +466,7 @@ class ReplacementTransaction:
         render_path: Path,
         txid: str,
         had_render: bool,
+        before_tag: str | None = None,
         info: dict | None = None,
         candidate_stat: os.stat_result | None = None,
         fault_hook=None,
@@ -445,6 +478,7 @@ class ReplacementTransaction:
         self.render_path = render_path
         self.txid = txid
         self.had_render = had_render
+        self.before_tag = before_tag
         self.info = info or {}
         self.candidate_stat = candidate_stat
         self.fault_hook = fault_hook
@@ -471,6 +505,8 @@ class ReplacementTransaction:
             raise ValueError("invalid replacement phase")
         if expected_tag is not None and _VERSION_TAG.fullmatch(expected_tag) is None:
             raise ValueError("invalid expected version tag")
+        if self.before_tag is not None and _VERSION_TAG.fullmatch(self.before_tag) is None:
+            raise ValueError("invalid pre-replacement version tag")
         # No cleanup path is trusted from disk: recovery derives all paths from txid + trusted roots.
         data = {
             "schema_version": 1,
@@ -481,6 +517,8 @@ class ReplacementTransaction:
         }
         if expected_tag is not None:
             data["expected_tag"] = expected_tag
+        if self.before_tag is not None:
+            data["before_tag"] = self.before_tag
         _atomic_json(self.journal, data)
         self.phase = phase
         self.expected_tag = expected_tag
@@ -528,7 +566,7 @@ class ReplacementTransaction:
             self._write_journal("published")
             return self.info
         except Exception:
-            self.rollback()
+            self.rollback_to_before()
             raise
         finally:
             if parent_fd is not None and parent_fd != root_fd:
@@ -541,6 +579,10 @@ class ReplacementTransaction:
 
     def commit_intent(self, tag: str) -> None:
         self._write_journal("commit_intent", tag)
+
+    def mark_committed(self) -> None:
+        """Durably commit a direct-helper replacement before fallible cleanup."""
+        self._write_journal("committed")
 
     def mark_versioned(self, tag: str) -> None:
         self._write_journal("versioned", tag)
@@ -575,7 +617,7 @@ class ReplacementTransaction:
             if root_fd is not None:
                 os.close(root_fd)
 
-    def rollback(self) -> None:
+    def _rollback_generation(self) -> None:
         # Validate and restore the nested candidate path first.  If an untrusted component was
         # replaced by a symlink, fail closed before changing either live generation.
         if self.parked_candidate.exists() or self.parked_candidate.is_symlink():
@@ -596,6 +638,22 @@ class ReplacementTransaction:
             os.replace(self.primary_backup, self.primary)
         _fsync_dir(self.root)
         self._fsync_render_parent()
+
+    def rollback(self) -> None:
+        self._rollback_generation()
+        self._cleanup()
+
+    def rollback_to_before(self) -> None:
+        """Restore the complete v1 generation before deleting the resumable WAL."""
+        self._rollback_generation()
+        if self.before_tag is not None:
+            import vcs
+            restored = vcs.restore_version(self.root, self.before_tag)
+            if not restored.get("ok"):
+                raise ValueError(
+                    "could not restore pre-replacement version: "
+                    + restored.get("error", "unknown error")
+                )
         self._cleanup()
 
     def _cleanup(self) -> None:
@@ -625,6 +683,7 @@ def prepare_replacement(
     primary: Path | str,
     render_dir: Path | str,
     *,
+    before_tag: str | None = None,
     fault_hook=None,
 ) -> ReplacementTransaction:
     root = Path(project_dir).absolute()
@@ -650,6 +709,7 @@ def prepare_replacement(
         render_path,
         txid,
         had_render,
+        before_tag=before_tag,
         fault_hook=fault_hook,
     )
     transaction._write_journal("preparing")
@@ -673,7 +733,7 @@ def prepare_replacement(
         transaction._write_journal("prepared")
         return transaction
     except Exception:
-        transaction.rollback()
+        transaction.rollback_to_before()
         raise
 
 
@@ -685,7 +745,7 @@ def recover_pending(project_dir: Path, render_dir: Path | str | None = None) -> 
     try:
         data = json.loads(journal.read_text(encoding="utf-8"))
         required = {"schema_version", "txid", "phase", "candidate", "had_render"}
-        optional = {"expected_tag"}
+        optional = {"expected_tag", "before_tag"}
         if (not isinstance(data, dict)
                 or not required.issubset(data)
                 or not set(data).issubset(required | optional)):
@@ -713,6 +773,10 @@ def recover_pending(project_dir: Path, render_dir: Path | str | None = None) -> 
                 raise ValueError("invalid journal expected tag")
         elif "expected_tag" in data:
             raise ValueError("unexpected journal version tag")
+        before_tag = data.get("before_tag")
+        if before_tag is not None:
+            if not isinstance(before_tag, str) or _VERSION_TAG.fullmatch(before_tag) is None:
+                raise ValueError("invalid journal pre-replacement tag")
         tx = ReplacementTransaction(
             root,
             candidate,
@@ -721,6 +785,7 @@ def recover_pending(project_dir: Path, render_dir: Path | str | None = None) -> 
             render,
             data["txid"],
             data["had_render"],
+            before_tag=before_tag,
         )
         tx.phase = phase
         tx.expected_tag = expected_tag
@@ -729,7 +794,10 @@ def recover_pending(project_dir: Path, render_dir: Path | str | None = None) -> 
             if vcs.version_exists(root, expected_tag):
                 tx.finalize()
                 return
-        tx.rollback()
+        elif phase == "committed":
+            tx.finalize()
+            return
+        tx.rollback_to_before()
     except Exception:
         raise ValueError("could not recover interrupted PDF replacement")
 
@@ -741,11 +809,15 @@ def replace_primary(project_dir: Path, candidate: Path | str, primary: Path | st
         tx = prepare_replacement(project_dir, candidate, primary, render_dir)
         try:
             result = tx.publish()
-            tx.finalize()
-            return result
+            tx.mark_committed()
         except Exception:
             tx.rollback()
             raise
+        try:
+            tx.finalize()
+        except Exception:
+            return {**result, "cleanup_pending": True}
+        return {**result, "cleanup_pending": False}
 
 
 def extract_page_text(path: Path, page_number: int) -> str:

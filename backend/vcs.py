@@ -32,6 +32,7 @@ _IGNORE_PATTERNS = [
     "/.pdf-journal-*",
     "/.pdf-txn-*",
     "/.pdf-render-*",
+    "/.pdf-restore-*",
     "/.pdf-replacement-*",
     "/.pdf-primary-txn-*",
     "/.pdf-candidate-txn-*",
