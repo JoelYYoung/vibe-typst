@@ -481,6 +481,13 @@ async def open_file(request: Request):
         requested_path = Path(requested).expanduser().resolve()
     except Exception as e:
         raise HTTPException(400, "invalid file path") from e
+    if _active_project is not None and _active_project.get("type") == "pdf":
+        try:
+            active_pdf, _ = _pdf_context()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if requested_path != active_pdf:
+            raise HTTPException(400, "a PDF project may only open document.pdf")
     if requested_path.suffix.lower() == ".pdf":
         info = _matching_pdf_project(requested_path)
         if info is None:
@@ -944,6 +951,15 @@ def _pdf_http_context() -> tuple[Path, int]:
         raise HTTPException(400, str(exc)) from exc
 
 
+def _locked_pdf_observation(operation):
+    """Observe an active PDF generation while the publish pair is locked and recovered."""
+    project = runtime.project_dir()
+    with pdf_service.project_write_lock(project):
+        pdf_service.recover_pending(project, runtime.render_dir())
+        pdf_path, page_count = _pdf_context()
+        return operation(pdf_path, page_count)
+
+
 async def _json_object(request: Request) -> dict:
     try:
         body = await request.json()
@@ -956,16 +972,17 @@ async def _json_object(request: Request) -> dict:
 
 @app.get("/api/pdf/transcripts")
 def get_pdf_transcripts():
-    _, page_count = _pdf_http_context()
     try:
-        return pdf_transcript.load(runtime.project_dir(), "document.pdf", page_count)
+        with pdf_service.project_write_lock(runtime.project_dir()):
+            pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
+            _, page_count = _pdf_context()
+            return pdf_transcript.load(runtime.project_dir(), "document.pdf", page_count)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @app.patch("/api/pdf/transcripts/{page}")
 async def patch_pdf_transcript(page: str, request: Request):
-    _, page_count = _pdf_http_context()
     body = await _json_object(request)
     if set(body) != {"text"} or not isinstance(body.get("text"), str):
         raise HTTPException(400, "body must contain only string text")
@@ -973,32 +990,115 @@ async def patch_pdf_transcript(page: str, request: Request):
         page_no = int(page)
         if str(page_no) != page:
             raise ValueError("page must be a positive integer")
-        return pdf_transcript.set_page(runtime.project_dir(), "document.pdf", page_count,
-                                       page_no, body["text"])
+        def patch_sync():
+            with pdf_service.project_write_lock(runtime.project_dir()):
+                pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
+                _, page_count = _pdf_context()
+                return pdf_transcript.set_page(runtime.project_dir(), "document.pdf", page_count,
+                                               page_no, body["text"])
+        return await asyncio.to_thread(patch_sync)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/api/pdf/transcripts/batch")
 async def patch_pdf_transcripts(request: Request):
-    _, page_count = _pdf_http_context()
     body = await _json_object(request)
     if set(body) != {"updates"}:
         raise HTTPException(400, "body must contain only updates")
     try:
-        return pdf_transcript.set_pages(runtime.project_dir(), "document.pdf", page_count,
-                                        body["updates"])
+        def patch_sync():
+            with pdf_service.project_write_lock(runtime.project_dir()):
+                pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
+                _, page_count = _pdf_context()
+                return pdf_transcript.set_pages(runtime.project_dir(), "document.pdf", page_count,
+                                                body["updates"])
+        return await asyncio.to_thread(patch_sync)
     except (KeyError, ValueError) as exc:
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/api/pdf/replace")
+async def replace_pdf(request: Request):
+    """Replace the active immutable PDF with durable before/after version snapshots."""
+    body = await _json_object(request)
+    if set(body) != {"candidate", "message"}:
+        raise HTTPException(400, "body must contain only candidate and message")
+    candidate = body.get("candidate")
+    message = body.get("message")
+    if (not isinstance(candidate, str) or not candidate.strip()
+            or not isinstance(message, str)):
+        raise HTTPException(400, "candidate and message must be strings")
+    candidate = candidate.strip()
+    if Path(candidate).suffix.lower() != ".pdf":
+        raise HTTPException(400, "candidate must be a PDF")
+    try:
+        pdf_path, _ = _pdf_context()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    project_dir = runtime.project_dir()
+    before_message = f"Before PDF replacement: {message.strip() or 'save current PDF'}"
+    after_message = f"Replace PDF: {message.strip() or 'install replacement PDF'}"
+    try:
+        pdf_service.validate_replacement_candidate(project_dir, candidate, pdf_path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    def replace_sync():
+      with pdf_service.project_write_lock(project_dir):
+        pdf_service.recover_pending(project_dir, runtime.render_dir())
+        # Revalidate after acquiring the cross-process lock: another replacement may have won.
+        try:
+            pdf_path, _ = _pdf_context()
+            pdf_service.validate_replacement_candidate(project_dir, candidate, pdf_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        before_version = vcs.save_version(project_dir, before_message)
+        if not before_version.get("ok"):
+            raise HTTPException(500, before_version.get("error", "could not save pre-replacement version"))
+        transaction = None
+        try:
+            transaction = pdf_service.prepare_replacement(project_dir, candidate, pdf_path,
+                                                          runtime.render_dir(pdf_path))
+            rendered = transaction.publish()
+            transcripts = pdf_transcript.load(project_dir, "document.pdf", rendered["page_count"])
+            expected_tag = vcs._next_tag(project_dir)
+            transaction.commit_intent(expected_tag)
+            after_version = vcs.save_version(project_dir, after_message)
+            if not after_version.get("ok"):
+                raise RuntimeError(after_version.get("error", "could not save replacement version"))
+            transaction.mark_versioned(after_version.get("tag", expected_tag))
+            transaction.finalize()
+        except Exception as exc:
+            # v1 is a complete pre-swap snapshot (primary, candidate, and sidecar). Restoring it
+            # plus its render makes a failed post-swap transaction externally coherent.
+            if transaction is not None:
+                transaction.rollback()
+            recovery = vcs.restore_version(project_dir, before_version["tag"])
+            if recovery.get("ok"):
+                try:
+                    restored = pdf_service.render_pdf(pdf_path, runtime.render_dir(pdf_path))
+                    _record_pdf_render_version(restored["pages"], pdf_path, _pdf_identity(pdf_path))
+                except Exception:
+                    recovery = {"ok": False, "error": "could not restore PDF render"}
+            detail = str(exc)
+            if not recovery.get("ok"):
+                detail += "; recovery failed: " + recovery.get("error", "unknown error")
+            raise HTTPException(500, detail) from exc
+        version = _record_pdf_render_version(rendered["pages"], pdf_path, _pdf_identity(pdf_path))
+        return {"ok": True, "page_count": rendered["page_count"], "pages": rendered["pages"],
+                "transcripts": transcripts, "version": version,
+                "before_version": before_version, "after_version": after_version}
+    return await asyncio.to_thread(replace_sync)
+
+
 @app.get("/api/pdf/text")
 def get_pdf_text(page: Optional[int] = None):
-    pdf_path, page_count = _pdf_http_context()
-    if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= page_count:
-        raise HTTPException(400, "page must be a page within the document")
-    try:
+    def observe(pdf_path, page_count):
+        if isinstance(page, bool) or not isinstance(page, int) or not 1 <= page <= page_count:
+            raise HTTPException(400, "page must be a page within the document")
         return {"page": page, "text": pdf_service.extract_page_text(pdf_path, page), "ocr": False}
+    try:
+        return _locked_pdf_observation(observe)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -1428,6 +1528,8 @@ async def project_rmdir(request: Request):
         raise HTTPException(404, str(e))
     except PermissionError as e:
         raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True}
 
 
@@ -1490,6 +1592,9 @@ async def write_project_file(request: Request):
         raise HTTPException(403, "path not allowed")
     if not target.exists():
         raise HTTPException(404, "file not found")
+    if _active_project is not None and _active_project.get("type") == "pdf":
+        if target.name == "document.pdf" or target.suffix.lower() == ".pdf":
+            raise HTTPException(400, "cannot write PDF files in a PDF project")
     target.write_text(content, encoding="utf-8")
     return {"ok": True}
 
@@ -1566,6 +1671,8 @@ async def create_project_file(request: Request):
         info = projects_mod.create_file(runtime.project_dir(), name)
     except FileExistsError as e:
         raise HTTPException(409, str(e))
+    except (ValueError, PermissionError) as e:
+        raise HTTPException(400, str(e))
     return info
 
 
@@ -1589,6 +1696,8 @@ async def delete_project_file(request: Request):
         projects_mod.delete_file(runtime.project_dir(), path)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True}
 
 
@@ -1616,7 +1725,12 @@ async def git_commit(request: Request):
     message = (body.get("message") or "").strip()
     if runtime.document_type() == "typst":
         await docstore.flush_now()  # persist in-memory edits before snapshotting
-    return vcs.save_version(runtime.project_dir(), message)
+        return vcs.save_version(runtime.project_dir(), message)
+    def save_pdf():
+        with pdf_service.project_write_lock(runtime.project_dir()):
+            pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
+            return vcs.save_version(runtime.project_dir(), message)
+    return await asyncio.to_thread(save_pdf)
 
 
 @app.post("/api/git/restore")
@@ -1629,7 +1743,11 @@ async def git_restore(request: Request):
     if not tag:
         raise HTTPException(400, "tag is required")
     if runtime.document_type() == "pdf":
-        result = vcs.restore_version(runtime.project_dir(), tag)
+        def restore_pdf():
+            with pdf_service.project_write_lock(runtime.project_dir()):
+                pdf_service.recover_pending(runtime.project_dir(), runtime.render_dir())
+                return vcs.restore_version(runtime.project_dir(), tag)
+        result = await asyncio.to_thread(restore_pdf)
         if not result["ok"]:
             raise HTTPException(400, result.get("error", "restore failed"))
         try:
