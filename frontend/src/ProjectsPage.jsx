@@ -136,7 +136,15 @@ function UserMenu({ onOpenAdmin }) {
   )
 }
 
-function ProjectCard({ project, onOpen, onRename, onDelete, onCopy }) {
+function ProjectCard({
+  project,
+  onOpen,
+  onRename,
+  onDelete,
+  onCopy,
+  opening,
+  interactionDisabled,
+}) {
   const [menu, setMenu] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
   const [renaming, setRenaming] = useState(false)
@@ -156,9 +164,13 @@ function ProjectCard({ project, onOpen, onRename, onDelete, onCopy }) {
     document.addEventListener('mousedown', close)
     return () => document.removeEventListener('mousedown', close)
   }, [menu])
+  useEffect(() => {
+    if (interactionDisabled) setMenu(false)
+  }, [interactionDisabled])
 
   function openMenu(e) {
     e.stopPropagation()
+    if (interactionDisabled) return
     const rect = menuBtnRef.current.getBoundingClientRect()
     setMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right })
     setMenu(v => !v)
@@ -174,8 +186,16 @@ function ProjectCard({ project, onOpen, onRename, onDelete, onCopy }) {
   }
 
   return (
-    <div className="project-card">
-      <div className="project-card-body" onClick={() => !renaming && onOpen(project.id)} title="Open project">
+    <div
+      className={'project-card' + (opening ? ' opening' : '') + (interactionDisabled ? ' interaction-disabled' : '')}
+      aria-busy={opening ? 'true' : undefined}
+    >
+      <div
+        className="project-card-body"
+        onClick={() => !renaming && !interactionDisabled && onOpen(project.id)}
+        title={opening ? 'Opening project' : 'Open project'}
+        aria-disabled={interactionDisabled}
+      >
         <div className="project-icon">✦</div>
         {renaming ? (
           <form onSubmit={submitRename} onClick={(e) => e.stopPropagation()} style={{ flex: 1 }}>
@@ -205,6 +225,7 @@ function ProjectCard({ project, onOpen, onRename, onDelete, onCopy }) {
             className="project-menu-btn"
             title="Project options"
             onClick={openMenu}
+            disabled={interactionDisabled}
           >⋯</button>
           {menu && (
             <div
@@ -219,6 +240,12 @@ function ProjectCard({ project, onOpen, onRename, onDelete, onCopy }) {
           )}
         </div>
       )}
+      {opening && (
+        <div className="project-opening-overlay" role="status" aria-live="polite">
+          <span className="project-opening-spinner" aria-hidden="true" />
+          <span>Opening…</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -231,10 +258,12 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   const [newType, setNewType] = useState('typst')
   const [pdfFile, setPdfFile] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [openingProjectId, setOpeningProjectId] = useState(null)
   const [confirm, setConfirm] = useState(null)   // {msg, onConfirm}
   const [copyPrompt, setCopyPrompt] = useState(null)  // {id, defaultName}
   const newInputRef = useRef(null)
   const pdfInputRef = useRef(null)
+  const openingProjectRef = useRef(null)
 
   const load = useCallback(async () => {
     try {
@@ -286,13 +315,18 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
   }
 
   async function handleOpen(id) {
-    setBusy(true)
+    if (openingProjectRef.current) return
+    openingProjectRef.current = id
+    setOpeningProjectId(id)
     try {
       const result = await api.openProject(id)
       onOpen(canonicalProjectFromOpen(result))
     } catch (err) {
       toast.error(err.message || 'Failed to open project')
-    } finally { setBusy(false) }
+    } finally {
+      openingProjectRef.current = null
+      setOpeningProjectId(null)
+    }
   }
 
   async function handleRename(id, name) {
@@ -397,6 +431,8 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
                 onRename={handleRename}
                 onDelete={handleDelete}
                 onCopy={handleCopy}
+                opening={openingProjectId === p.id}
+                interactionDisabled={openingProjectId !== null}
               />
             ))}
           </div>
