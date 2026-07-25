@@ -1,6 +1,5 @@
 const pageNames = (value) => Array.isArray(value) ? value.filter((name) => typeof name === 'string') : []
 
-export const pdfWorkspacePanes = ['terminal', 'preview', 'files', 'presenter']
 export const PDF_TERMINAL_MIN_WIDTH = 280
 export const PDF_PREVIEW_MIN_WIDTH = 480
 export const PDF_DIVIDER_WIDTH = 6
@@ -39,11 +38,6 @@ export function clampPdfTerminalWidth(pointerX, containerLeft, containerWidth) {
   const minimum = Math.min(PDF_TERMINAL_MIN_WIDTH, maximum)
   const requested = pointerX - containerLeft
   return Math.min(Math.max(requested, minimum), maximum)
-}
-
-export function pdfVersions(response) {
-  if (Array.isArray(response)) return response
-  return response && Array.isArray(response.versions) ? response.versions : []
 }
 
 export function pdfTranscriptDirty(draft, saved) {

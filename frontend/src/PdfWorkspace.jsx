@@ -7,60 +7,11 @@ import {
   clampPdfPage,
   clampPdfTerminalWidth,
   createPdfPollController,
-  createPdfRestoreResetLatch,
   nextPdfRenderState,
-  pdfVersions,
   reconcilePdfPageCursors,
   startPdfPresentationPage,
 } from './pdfWorkspace.js'
 import { shortPath, TerminalIcon } from './terminalUi.jsx'
-import { toast } from './Toaster.jsx'
-
-function PdfFilesDrawer({ onClose, onRestored }) {
-  const [files, setFiles] = useState([])
-  const [versions, setVersions] = useState([])
-  const [busy, setBusy] = useState(false)
-  const reload = useCallback(async () => {
-    const [fileResult, versionResult] = await Promise.all([
-      api.listProjectFiles().catch(() => ({ items: [] })),
-      api.gitVersions().catch(() => []),
-    ])
-    setFiles(fileResult.items || [])
-    setVersions(pdfVersions(versionResult))
-  }, [])
-  useEffect(() => { reload() }, [reload])
-  async function restore(version) {
-    if (!window.confirm(`Restore “${version.message}”? This replaces the active PDF with that saved version. Unsaved transcript drafts will be discarded.`)) return
-    setBusy(true)
-    try {
-      const result = await api.gitRestore(version.tag)
-      if (result && result.ok) {
-        await onRestored?.()
-        await reload()
-      } else {
-        toast.error((result && result.error) || 'Could not restore version')
-      }
-    } catch (error) {
-      toast.error(error.message || 'Could not restore version')
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <aside className="pdf-drawer" aria-label="PDF files and versions">
-      <div className="pdf-drawer-head"><strong>Files & versions</strong><button onClick={onClose}>✕</button></div>
-      <div className="pdf-drawer-section"><span>FILES</span>
-        {files.length ? files.map((item) => <div className="pdf-drawer-row" key={item.path}>{item.path}</div>) : <div className="empty">No project files.</div>}
-      </div>
-      <div className="pdf-drawer-section"><span>VERSIONS</span>
-        {versions.length ? versions.map((version) => <div className="pdf-drawer-row" key={version.tag}>
-          <span>{version.tag} · {version.message}</span>
-          {version.is_current ? <em>current</em> : <button disabled={busy} onClick={() => restore(version)}>Restore</button>}
-        </div>) : <div className="empty">No saved versions.</div>}
-      </div>
-    </aside>
-  )
-}
 
 export default function PdfWorkspace({ project, onBack }) {
   const [render, setRender] = useState({
@@ -69,11 +20,9 @@ export default function PdfWorkspace({ project, onBack }) {
   const [previewPage, setPreviewPage] = useState(1)
   const [presentPage, setPresentPage] = useState(1)
   const [projectDir, setProjectDir] = useState(project?.path || '')
-  const [drawerOpen, setDrawerOpen] = useState(false)
   const [presenting, setPresenting] = useState(false)
   const [presentationLive, setPresentationLive] = useState(false)
   const [terminalWidth, setTerminalWidth] = useState(null)
-  const [transcriptResetEpoch, setTranscriptResetEpoch] = useState(0)
   const mainRef = useRef(null)
   const dividerCleanupRef = useRef(null)
   const channelRef = useRef(null)
@@ -81,12 +30,6 @@ export default function PdfWorkspace({ project, onBack }) {
   const pointerRef = useRef(null)
   const lastPongRef = useRef(0)
   const initialLoadRef = useRef(true)
-  const restoreResetLatchRef = useRef(null)
-  if (!restoreResetLatchRef.current) {
-    restoreResetLatchRef.current = createPdfRestoreResetLatch(
-      () => setTranscriptResetEpoch((epoch) => epoch + 1)
-    )
-  }
   const pollerRef = useRef(null)
   if (!pollerRef.current) {
     pollerRef.current = createPdfPollController({
@@ -99,7 +42,6 @@ export default function PdfWorkspace({ project, onBack }) {
       loadMap: api.getSlideMap,
       onPair: (renderResult, mapResult) => {
         setRender((previous) => nextPdfRenderState(previous, renderResult, mapResult))
-        restoreResetLatchRef.current.consume()
       },
       // Keep the last successful transcript map and render visible during a replacement retry.
       onError: () => {},
@@ -107,11 +49,6 @@ export default function PdfWorkspace({ project, onBack }) {
   }
   const poller = pollerRef.current
   const refreshAfterTranscriptSave = useCallback(() => poller.invalidateMapAfterSave(), [poller])
-  const refreshAfterRestore = useCallback(async () => {
-    restoreResetLatchRef.current.markPending()
-    const refreshed = await poller.invalidateMapAfterSave()
-    if (!refreshed) throw new Error('Could not refresh the restored PDF')
-  }, [poller])
 
   useEffect(() => {
     let cancelled = false
@@ -220,12 +157,21 @@ export default function PdfWorkspace({ project, onBack }) {
   return (
     <div className="pdf-workspace">
       <header className="bar">
-        <button className="back-btn" onClick={onBack}>← Projects</button>
-        <strong className="project-name-chip">{project?.name || 'PDF project'}</strong>
-        <span className="grow" />
-        {presentationLive && <span className="status-chip live on"><span className="status-dot" />Projection live</span>}
-        <button className="openbtn" onClick={() => setDrawerOpen(true)}>Files & versions</button>
-        <button className="openbtn present" onClick={openPresenter} disabled={!render.pages.length}>Present</button>
+        <button className="back-btn" onClick={onBack} title="Back to projects">← Projects</button>
+        <div className="bar-title" title={project?.name || 'PDF project'}>
+          {project?.name || 'PDF project'}
+        </div>
+        <button className="openbtn present" onClick={openPresenter} disabled={!render.pages.length}
+          title="presenter view (current + next page, transcript, dual-screen)">▶ Present</button>
+        <div className="actions">
+          <span className={'status-chip live' + (presentationActive ? ' on' : '')}
+            title={presentationActive
+              ? 'a projection / presentation is open and live'
+              : 'open a projection from Present to control it from here'}>
+            <span className="status-dot" />
+            {presentationActive ? `live · ${presentPage}` : 'no presentation'}
+          </span>
+        </div>
       </header>
       <main className="pdf-workspace-main" ref={mainRef}>
         <section
@@ -253,7 +199,6 @@ export default function PdfWorkspace({ project, onBack }) {
           tokens={render.tokens}
           page={previewPage}
           setPage={setPreview}
-          resetEpoch={transcriptResetEpoch}
           slideMap={render.slideMap}
           orphans={render.orphans}
           presentPage={presentPage}
@@ -263,7 +208,6 @@ export default function PdfWorkspace({ project, onBack }) {
           onTranscriptSaved={refreshAfterTranscriptSave}
         />
       </main>
-      {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={refreshAfterRestore} />}
       {presenting && <Presenter onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
         onPointer={sendPointer} page={presentPage} setPage={setPresentation} pages={render.pages} tokens={render.tokens}
         slideMap={render.slideMap} generation={render.generation} />}

@@ -503,23 +503,11 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .pdf-transcript-actions { margin-top: 7px; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11.5px; }
 .pdf-transcript-actions button { height: 26px; font-size: 11.5px; }
 .pdf-orphans { flex: none; padding: 7px 12px; color: #8a4b00; background: #fff8e9; border-bottom: 1px solid #f0d9a5; font-size: 12px; }
-.pdf-drawer { position: fixed; z-index: 80; right: 0; top: 48px; bottom: 0; width: min(360px, 92vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -6px 0 28px rgba(20,28,38,.14); overflow: auto; }
-.pdf-drawer-head { display: flex; align-items: center; padding: 12px; border-bottom: 1px solid var(--line); }
-.pdf-drawer-head button { margin-left: auto; height: 26px; padding: 0 8px; }
-.pdf-drawer-section { padding: 12px; border-bottom: 1px solid var(--line); }
-.pdf-drawer-section > span { display: block; margin-bottom: 7px; color: var(--muted); font-size: 10.5px; font-weight: 700; letter-spacing: .05em; }
-.pdf-drawer-row { padding: 6px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px 'SF Mono', ui-monospace, Menlo, monospace; display: flex; align-items: center; gap: 6px; }
-.pdf-drawer-row > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pdf-drawer-row em { margin-left: auto; color: var(--accent2); font: 10px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-.pdf-drawer-row button { margin-left: auto; height: 24px; font: 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-
 @media (max-width: 760px) {
   .pdf-workspace-main { overflow-x: auto; }
   .pdf-terminal-pane { width: 280px !important; }
   .pdf-workspace .bar { height: auto; min-height: 48px; flex-wrap: wrap; padding: 8px 10px; }
-  .pdf-workspace .project-name-chip { max-width: calc(100vw - 178px); }
   .pdf-workspace .bar .openbtn { padding: 0 8px; }
-  .pdf-drawer { top: 0; }
 }
 
 /* ── file manager overlay ───────────────────────────────────────────────── */
@@ -567,7 +555,6 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .fm-row.fm-main .fm-name { color: var(--muted); font-style: italic; }
 
 /* project name chip in the editor top bar */
-.project-name-chip { font-size: 13px; font-weight: 600; color: var(--ink); background: #eef2f7; border: 1px solid #dde4ec; border-radius: 7px; padding: 3px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 
 /* file viewer modal (for images + PDFs) */
 .fm-viewer-overlay { position: fixed; inset: 0; background: rgba(10,14,22,.75); z-index: 200; display: flex; align-items: center; justify-content: center; }

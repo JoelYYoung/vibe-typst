@@ -11,13 +11,11 @@ import {
   nextPdfRenderState,
   pdfTranscriptExportText,
   pdfTranscriptDirty,
-  pdfVersions,
   reconcilePdfPageCursors,
   reconcilePdfTranscriptDrafts,
   resetPdfTranscriptDrafts,
   startPdfTranscriptSave,
   startPdfPresentationPage,
-  pdfWorkspacePanes,
 } from '../src/pdfWorkspace.js'
 
 const deferred = () => {
@@ -26,12 +24,6 @@ const deferred = () => {
   const promise = new Promise((res, rej) => { resolve = res; reject = rej })
   return { promise, resolve, reject }
 }
-
-test('PDF workspace keeps terminal, preview, files, and presenter while omitting Typst-only panes', () => {
-  assert.deepEqual(pdfWorkspacePanes, ['terminal', 'preview', 'files', 'presenter'])
-  assert.equal(pdfWorkspacePanes.includes('editor'), false)
-  assert.equal(pdfWorkspacePanes.includes('comments'), false)
-})
 
 test('PDF transcript draft is dirty only when it differs from saved page text', () => {
   assert.equal(pdfTranscriptDirty('', ''), false)
@@ -329,22 +321,11 @@ test('PDF transcript export uses the last saved per-page base and restore reset 
   assert.deepEqual(resetPdfTranscriptDrafts(drafts, [{ page: 1, note: 'restored one' }], 1), {
     1: { draft: 'restored one', base: 'restored one', saving: false },
   })
-  const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
-  assert.match(workspace, /Unsaved transcript drafts will be discarded/)
-  assert.match(workspace, /await onRestored\?\.\(\)\n        await reload\(\)/)
-})
-
-test('PDF versions keep the API array response and the drawer exposes restore', () => {
-  const versions = [{ tag: 'v2', message: 'revised', is_current: false }]
-  assert.deepEqual(pdfVersions(versions), versions)
-  assert.deepEqual(pdfVersions({ versions }), versions)
-  const source = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
-  assert.match(source, /api\.gitRestore/)
 })
 
 test('PDF workspace boundary mounts only viewer-safe components and does not invoke Typst APIs', () => {
   const source = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
-  for (const required of ['TermPanel', 'PdfPreviewPane', 'PdfFilesDrawer', 'Presenter']) {
+  for (const required of ['TermPanel', 'PdfPreviewPane', 'Presenter']) {
     assert.match(source, new RegExp(required))
   }
   for (const forbidden of [

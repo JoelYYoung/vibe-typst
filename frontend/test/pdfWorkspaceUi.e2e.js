@@ -68,6 +68,32 @@ async function presenterPageNumber(page) {
   return page.$eval('.pr-page', node => Number(node.textContent.match(/(\d+)/)[1]))
 }
 
+test('PDF toolbar mirrors Typst placement while omitting unavailable actions', async () => {
+  const page = await openPdfWorkspace()
+  const observed = await page.evaluate(() => {
+    const toolbar = document.querySelector('.pdf-workspace > .bar')
+    const title = toolbar.querySelector('.bar-title')
+    const titleRect = title?.getBoundingClientRect()
+    return {
+      hasSharedTitle: Boolean(title),
+      title: title?.textContent.trim() || '',
+      centerDelta: titleRect
+        ? Math.abs(titleRect.left + titleRect.width / 2 - window.innerWidth / 2)
+        : null,
+      buttons: [...toolbar.querySelectorAll('button')].map(button => button.textContent.trim()),
+      status: toolbar.querySelector('.status-chip.live')?.textContent.trim() || '',
+      hasDrawer: Boolean(document.querySelector('.pdf-drawer')),
+    }
+  })
+
+  assert.equal(observed.hasSharedTitle, true)
+  assert.ok(observed.title)
+  assert.ok(observed.centerDelta <= 1)
+  assert.deepEqual(observed.buttons, ['← Projects', '▶ Present'])
+  assert.equal(observed.status, 'no presentation')
+  assert.equal(observed.hasDrawer, false)
+})
+
 test('PDF workspace renders a sharp page with Typst terminal chrome', async () => {
   const page = await openPdfWorkspace()
   const observed = await page.evaluate(() => {
