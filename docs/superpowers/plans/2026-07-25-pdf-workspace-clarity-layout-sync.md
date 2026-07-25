@@ -289,47 +289,75 @@ git commit -m "refactor: split PDF preview and presentation state"
 - Modify: `frontend/src/PdfPreviewPane.jsx`
 - Modify: `frontend/src/styles.css`
 - Modify: `frontend/test/pdfWorkspace.test.js`
+- Add: `frontend/test/pdfWorkspaceUi.e2e.js`
 
-### Step 1: Write failing component-contract tests
+### Step 1: Write a failing browser behavior test
 
-Add source-level contract assertions to the existing frontend test suite:
+Create `frontend/test/pdfWorkspaceUi.e2e.js`. It opens the existing PDF project through the real Projects UI and asserts user-visible behavior rather than source text:
 
 ```javascript
-test('PDF workspace keeps independent preview and presentation pages', async () => {
-  const source = await readSource('src/PdfWorkspace.jsx')
-  assert.match(source, /const \[previewPage, setPreviewPage\]/)
-  assert.match(source, /const \[presentPage, setPresentPage\]/)
-  assert.match(source, /page=\{presentPage\}/)
-  assert.match(source, /page=\{previewPage\}/)
-})
+import assert from 'node:assert/strict'
+import puppeteer from 'puppeteer'
 
-test('PDF preview exposes explicit two-way presentation sync controls', async () => {
-  const source = await readSource('src/PdfPreviewPane.jsx')
-  assert.match(source, /Follow presentation/)
-  assert.match(source, /Send preview/)
-  assert.match(source, /presentationActive/)
-})
+const baseUrl = process.env.VIBE_TYPST_URL || 'http://127.0.0.1:9003'
+const browser = await puppeteer.launch({ headless: true })
+const page = await browser.newPage()
+await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 2 })
+await page.goto(baseUrl, { waitUntil: 'networkidle0' })
 
-test('PDF workspace uses a draggable divider and Typst terminal chrome', async () => {
-  const source = await readSource('src/PdfWorkspace.jsx')
-  assert.match(source, /pdf-workspace-divider/)
-  assert.match(source, /TerminalIcon/)
-  assert.match(source, /shortPath/)
-  assert.match(source, /ResizeObserver/)
+const projectName = await page.evaluate(async () => {
+  const response = await fetch('/api/projects')
+  const body = await response.json()
+  return body.projects.find(project => project.type === 'pdf')?.name || null
 })
+assert.ok(projectName, 'test deployment must contain one PDF project')
+
+await page.evaluate(name => {
+  const cards = [...document.querySelectorAll('.project-card')]
+  cards.find(card => card.textContent.includes(name))
+    ?.querySelector('.project-card-body')
+    ?.click()
+}, projectName)
+await page.waitForSelector('.pdf-workspace')
+
+const initial = await page.evaluate(() => ({
+  layout: getComputedStyle(document.querySelector('.pdf-workspace-main')).display,
+  divider: Boolean(document.querySelector('.pdf-workspace-divider')),
+  terminalHeader: document.querySelector('.pdf-terminal-pane .term-head')?.textContent,
+  longestImageEdge: Math.max(
+    document.querySelector('.pdf-page-stage img').naturalWidth,
+    document.querySelector('.pdf-page-stage img').naturalHeight,
+  ),
+}))
+assert.equal(initial.layout, 'flex')
+assert.equal(initial.divider, true)
+assert.ok(initial.terminalHeader)
+assert.ok(initial.longestImageEdge >= 2500)
+
+const divider = await page.$('.pdf-workspace-divider')
+const box = await divider.boundingBox()
+const beforeWidth = await page.$eval('.pdf-terminal-pane', node => node.getBoundingClientRect().width)
+await page.mouse.move(box.x + box.width / 2, box.y + 100)
+await page.mouse.down()
+await page.mouse.move(box.x + 140, box.y + 100, { steps: 8 })
+await page.mouse.up()
+const afterWidth = await page.$eval('.pdf-terminal-pane', node => node.getBoundingClientRect().width)
+assert.ok(afterWidth > beforeWidth + 100)
+
+await browser.close()
 ```
 
-The last assertion may be placed against `TermPanel.jsx` if xterm fitting remains encapsulated there; the contract is that the PDF layout uses the existing ResizeObserver-backed terminal rather than recreating a terminal.
+Extend the same script with the approved cursor behavior: navigate Preview, open a new Presenter and verify it starts on that Preview page, advance Presenter while Preview remains unchanged, close Presenter while Projection stays live, then exercise `Follow presentation` and `Send preview` in both directions.
 
 ### Step 2: Run the focused test and confirm failure
 
-Run:
+Run it against the current live application before implementation:
 
 ```bash
-node --test test/pdfWorkspace.test.js
+VIBE_TYPST_URL=http://127.0.0.1:9003 node test/pdfWorkspaceUi.e2e.js
 ```
 
-Expected: page-state, sync-control, and divider contracts fail.
+Expected: it fails because the current PDF workspace has no draggable divider, no Typst terminal header, a roughly 454-pixel-wide rendered page, and no independent sync controls.
 
 ### Step 3: Extract the established terminal chrome
 
@@ -578,7 +606,8 @@ git add \
   frontend/src/PdfWorkspace.jsx \
   frontend/src/PdfPreviewPane.jsx \
   frontend/src/styles.css \
-  frontend/test/pdfWorkspace.test.js
+  frontend/test/pdfWorkspace.test.js \
+  frontend/test/pdfWorkspaceUi.e2e.js
 git commit -m "feat: refine PDF workspace layout and page sync"
 ```
 
@@ -691,6 +720,7 @@ git commit -m "fix: initialize PDF terminal directory once"
 - Modify: `frontend/src/ProjectsPage.jsx`
 - Modify: `frontend/src/styles.css`
 - Modify: `frontend/test/projectCreationRouting.test.js`
+- Add: `frontend/test/pdfFilePicker.e2e.js`
 
 ### Step 1: Write failing selection and formatting tests
 
@@ -731,8 +761,6 @@ test('formatFileSize produces compact human-readable sizes', () => {
 })
 ```
 
-Add a source contract confirming that `ProjectsPage` renders `PdfFilePicker` instead of a visible native file input.
-
 ### Step 2: Run the focused test and confirm failure
 
 Run:
@@ -742,6 +770,14 @@ node --test test/projectCreationRouting.test.js
 ```
 
 Expected: helper/component contracts fail.
+
+Before implementation, also create `frontend/test/pdfFilePicker.e2e.js` and run it against the current application. The script opens the create dialog, chooses PDF mode, requires a styled `.pdf-file-picker`, uploads a small PDF through its hidden input, verifies filename and size text, drops a text file, and verifies the valid PDF remains selected:
+
+```bash
+VIBE_TYPST_URL=http://127.0.0.1:9003 node test/pdfFilePicker.e2e.js
+```
+
+Expected: it fails because the current dialog exposes only the native file input and has no drop target, selected-file actions, or retained invalid-drop behavior.
 
 ### Step 3: Implement selection helpers
 
@@ -914,7 +950,8 @@ git add \
   frontend/src/projectCreation.js \
   frontend/src/ProjectsPage.jsx \
   frontend/src/styles.css \
-  frontend/test/projectCreationRouting.test.js
+  frontend/test/projectCreationRouting.test.js \
+  frontend/test/pdfFilePicker.e2e.js
 git commit -m "feat: add polished PDF project picker"
 ```
 
