@@ -2,6 +2,45 @@ const pageNames = (value) => Array.isArray(value) ? value.filter((name) => typeo
 const quoteShell = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`
 
 export const pdfWorkspacePanes = ['terminal', 'preview', 'files', 'presenter']
+export const PDF_TERMINAL_MIN_WIDTH = 280
+export const PDF_PREVIEW_MIN_WIDTH = 480
+export const PDF_DIVIDER_WIDTH = 6
+
+export function clampPdfPage(page, totalPages) {
+  const total = Number.isFinite(totalPages) ? Math.max(0, Math.trunc(totalPages)) : 0
+  if (total === 0) return 1
+  const value = Number.isFinite(page) ? Math.trunc(page) : 1
+  return Math.min(Math.max(value, 1), total)
+}
+
+export function reconcilePdfPageCursors(cursors, totalPages) {
+  return {
+    previewPage: clampPdfPage(cursors.previewPage, totalPages),
+    presentPage: clampPdfPage(cursors.presentPage, totalPages),
+  }
+}
+
+export function startPdfPresentationPage(
+  previewPage,
+  presentPage,
+  presentationActive,
+  totalPages,
+) {
+  return clampPdfPage(
+    presentationActive ? presentPage : previewPage,
+    totalPages,
+  )
+}
+
+export function clampPdfTerminalWidth(pointerX, containerLeft, containerWidth) {
+  const maximum = Math.max(
+    0,
+    containerWidth - PDF_PREVIEW_MIN_WIDTH - PDF_DIVIDER_WIDTH,
+  )
+  const minimum = Math.min(PDF_TERMINAL_MIN_WIDTH, maximum)
+  const requested = pointerX - containerLeft
+  return Math.min(Math.max(requested, minimum), maximum)
+}
 
 export function pdfVersions(response) {
   if (Array.isArray(response)) return response
@@ -22,10 +61,7 @@ export function nextPdfRenderState(previous = {}, response = {}, mapResponse) {
   const tokens = Object.fromEntries(pages.map((name) => [name, serverTokens[name] ?? `pdf-${generation}-${name}`]))
   const slideMap = Array.isArray(mapResponse?.pages) ? mapResponse.pages : (previous.slideMap || [])
   const orphans = Array.isArray(mapResponse?.orphans) ? mapResponse.orphans : (previous.orphans || [])
-  const total = pages.length
-  const requested = Number.isInteger(previous.page) ? previous.page : 1
-  const page = total ? Math.max(1, Math.min(requested, total)) : 1
-  return { pages, tokens, version, generation, page, slideMap, orphans }
+  return { pages, tokens, version, generation, slideMap, orphans }
 }
 
 export function pdfTerminalCdCommand(path) {

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import {
+  clampPdfPage,
+  clampPdfTerminalWidth,
   createPdfPollController,
   createPdfRestoreResetLatch,
   editPdfTranscriptDraft,
@@ -12,9 +14,11 @@ import {
   pdfTranscriptExportText,
   pdfTranscriptDirty,
   pdfVersions,
+  reconcilePdfPageCursors,
   reconcilePdfTranscriptDrafts,
   resetPdfTranscriptDrafts,
   startPdfTranscriptSave,
+  startPdfPresentationPage,
   pdfWorkspacePanes,
 } from '../src/pdfWorkspace.js'
 
@@ -42,11 +46,37 @@ test('PDF render polling uses an opaque generation for tokens and accepts a rest
   const first = nextPdfRenderState(previous, { version: 7, generation: 'generation-A', pages: ['page-1.png', 'page-2.png'] })
   const restarted = nextPdfRenderState(first, { version: 1, generation: 'generation-B', pages: ['page-1.png'] })
 
-  assert.equal(first.page, 2)
+  assert.equal('page' in first, false)
   assert.deepEqual(first.tokens, { 'page-1.png': 'pdf-generation-A-page-1.png', 'page-2.png': 'pdf-generation-A-page-2.png' })
   assert.equal(restarted.version, 1)
   assert.equal(restarted.generation, 'generation-B')
   assert.deepEqual(restarted.tokens, { 'page-1.png': 'pdf-generation-B-page-1.png' })
+})
+
+test('PDF preview and presentation cursors clamp independently when page count changes', () => {
+  assert.equal(clampPdfPage(-5, 4), 1)
+  assert.equal(clampPdfPage(20, 4), 4)
+  assert.deepEqual(
+    reconcilePdfPageCursors({ previewPage: 9, presentPage: 2 }, 4),
+    { previewPage: 4, presentPage: 2 },
+  )
+  assert.deepEqual(
+    reconcilePdfPageCursors({ previewPage: 1, presentPage: 3 }, 0),
+    { previewPage: 1, presentPage: 1 },
+  )
+})
+
+test('a new PDF presentation starts from Preview while an active one keeps its page', () => {
+  assert.equal(startPdfPresentationPage(5, 1, false, 10), 5)
+  assert.equal(startPdfPresentationPage(5, 1, true, 10), 1)
+  assert.equal(startPdfPresentationPage(12, 1, false, 10), 10)
+})
+
+test('PDF terminal width preserves the terminal and preview bounds', () => {
+  assert.equal(clampPdfTerminalWidth(40, 0, 1200), 280)
+  assert.equal(clampPdfTerminalWidth(1100, 0, 1200), 714)
+  assert.equal(clampPdfTerminalWidth(420, 100, 1200), 320)
+  assert.equal(clampPdfTerminalWidth(100, 0, 600), 114)
 })
 
 test('PDF replacement updates Presenter pages and transcript rows from the matched parent map', async () => {
