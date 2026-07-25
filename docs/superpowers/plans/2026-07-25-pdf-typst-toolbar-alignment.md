@@ -26,15 +26,23 @@
 - Modify: `frontend/test/pdfWorkspace.test.js`
 - Modify: `frontend/test/pdfWorkspaceUi.e2e.js`
 - Modify: `frontend/src/PdfWorkspace.jsx`
+- Modify: `frontend/src/pdfWorkspace.js`
 - Modify: `frontend/src/styles.css`
 
 **Interfaces:**
 - Consumes: `PdfWorkspace({ project, onBack })`, existing `openPresenter()`, `presentationActive`, and `presentPage`.
 - Produces: a PDF `<header className="bar">` using `back-btn`, `bar-title`, `openbtn present`, `actions`, and `status-chip live`.
 
-- [ ] **Step 1: Add a focused source-level regression test**
+- [ ] **Step 1: Update obsolete drawer expectations and add a focused regression test**
 
-Append this test to `frontend/test/pdfWorkspace.test.js`:
+In `frontend/test/pdfWorkspace.test.js`:
+
+- change `pdfWorkspacePanes` to expect `['terminal', 'preview', 'presenter']`;
+- remove `pdfVersions` from the imports and delete its drawer-specific test;
+- keep the pure transcript reset and restore-latch tests, but remove their
+  assertions that inspect `PdfWorkspace.jsx` for drawer restore wiring;
+- remove `PdfFilesDrawer` from the viewer-safe component list; and
+- append this test:
 
 ```js
 test('PDF toolbar reuses Typst structure without Files and versions behavior', () => {
@@ -60,7 +68,8 @@ Run:
 ```
 
 Expected: FAIL because `PdfWorkspace.jsx` still uses `project-name-chip`,
-renders Files & versions, and contains the drawer/API calls.
+renders Files & versions, and contains the drawer/API calls, while
+`pdfWorkspacePanes` still contains `files`.
 
 - [ ] **Step 3: Remove the PDF-only drawer and restore-only component state**
 
@@ -74,8 +83,10 @@ In `frontend/src/PdfWorkspace.jsx`:
 - stop passing `resetEpoch` to `PdfPreviewPane`; and
 - remove the conditional drawer render.
 
-Do not remove the pure restore helpers from `pdfWorkspace.js`; their existing
-tests remain valid and no unrelated API surface changes are needed.
+In `frontend/src/pdfWorkspace.js`, remove the now-unused `pdfVersions` helper
+and remove `files` from `pdfWorkspacePanes`. Do not remove the pure transcript
+reset or restore-latch helpers; their existing behavior remains valid and no
+unrelated API surface changes are needed.
 
 - [ ] **Step 4: Replace the PDF toolbar with the Typst layout pattern**
 
@@ -207,7 +218,7 @@ PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add frontend/src/PdfWorkspace.jsx frontend/src/styles.css \
+git add frontend/src/PdfWorkspace.jsx frontend/src/pdfWorkspace.js frontend/src/styles.css \
   frontend/test/pdfWorkspace.test.js frontend/test/pdfWorkspaceUi.e2e.js
 git commit -m "feat: align PDF workspace toolbar with Typst"
 ```
