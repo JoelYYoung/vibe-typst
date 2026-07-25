@@ -2,9 +2,9 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
 import { projectType } from './projectTypes.js'
+import PdfFilePicker from './PdfFilePicker.jsx'
 import {
   canSubmitProjectCreation,
-  pdfFileFromSelection,
   resetProjectCreation as resetProjectCreationState,
   switchProjectCreationType,
 } from './projectCreation.js'
@@ -256,7 +256,7 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
     setNewName(reset.name)
     setNewType(reset.type)
     setPdfFile(reset.file)
-    if (pdfInputRef.current) pdfInputRef.current.value = ''
+    pdfInputRef.current?.clear()
   }
 
   function selectProjectType(type) {
@@ -266,7 +266,7 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
     setNewType(next.type)
     setPdfFile(next.file)
     if (type !== 'pdf') {
-      if (pdfInputRef.current) pdfInputRef.current.value = ''
+      pdfInputRef.current?.clear()
     }
   }
 
@@ -366,14 +366,11 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
               <button type="button" className={newType === 'pdf' ? 'selected' : ''} onClick={() => selectProjectType('pdf')}>PDF</button>
             </div>
             {newType === 'pdf' && (
-              <input
+              <PdfFilePicker
                 ref={pdfInputRef}
-                className="new-project-file"
-                type="file"
-                accept=".pdf,application/pdf"
-                onChange={(e) => {
-                  setPdfFile(pdfFileFromSelection(e.target.files))
-                }}
+                file={pdfFile}
+                onFile={setPdfFile}
+                onError={(message) => toast.error(message)}
               />
             )}
             <button type="submit" className="primary" disabled={!canSubmitProjectCreation({ name: newName, type: newType, file: pdfFile, busy })}>

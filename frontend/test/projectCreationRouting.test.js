@@ -2,8 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   canSubmitProjectCreation,
+  formatFileSize,
   pdfFileFromSelection,
   resetProjectCreation,
+  selectPdfFile,
   switchProjectCreationType,
 } from '../src/projectCreation.js'
 import { canonicalProjectFromOpen, workspaceViewFor } from '../src/projectRouting.js'
@@ -31,6 +33,43 @@ test('PDF creation only accepts one PDF file and switching away clears it', () =
     switchProjectCreationType({ name: 'Paper', type: 'pdf', file: pdf }, 'typst'),
     { name: 'Paper', type: 'typst', file: null },
   )
+})
+
+test('PDF selection accepts exactly one PDF and reports its file', () => {
+  const file = { name: 'deck.pdf', size: 2048, type: 'application/pdf' }
+
+  assert.deepEqual(selectPdfFile([file], null), { file, error: null })
+})
+
+test('an invalid PDF drop preserves the current valid selection', () => {
+  const current = { name: 'deck.pdf', size: 2048, type: 'application/pdf' }
+  const result = selectPdfFile(
+    [{ name: 'notes.txt', size: 10, type: 'text/plain' }],
+    current,
+  )
+
+  assert.equal(result.file, current)
+  assert.match(result.error, /PDF/)
+})
+
+test('a multiple-file PDF drop preserves the current valid selection', () => {
+  const current = { name: 'deck.pdf', size: 2048, type: 'application/pdf' }
+  const result = selectPdfFile(
+    [
+      { name: 'a.pdf', size: 20, type: 'application/pdf' },
+      { name: 'b.pdf', size: 30, type: 'application/pdf' },
+    ],
+    current,
+  )
+
+  assert.equal(result.file, current)
+  assert.match(result.error, /one PDF/)
+})
+
+test('PDF file sizes use compact binary units', () => {
+  assert.equal(formatFileSize(512), '512 B')
+  assert.equal(formatFileSize(2048), '2 KB')
+  assert.equal(formatFileSize(1572864), '1.5 MB')
 })
 
 test('PDF creation readiness includes name, selected file, and busy state, then resets', () => {
