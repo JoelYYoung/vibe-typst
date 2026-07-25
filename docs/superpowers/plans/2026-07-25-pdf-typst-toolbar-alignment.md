@@ -33,119 +33,9 @@
 - Consumes: `PdfWorkspace({ project, onBack })`, existing `openPresenter()`, `presentationActive`, and `presentPage`.
 - Produces: a PDF `<header className="bar">` using `back-btn`, `bar-title`, `openbtn present`, `actions`, and `status-chip live`.
 
-- [ ] **Step 1: Update obsolete drawer expectations and add a focused regression test**
+- [ ] **Step 1: Add a real browser regression test**
 
-In `frontend/test/pdfWorkspace.test.js`:
-
-- change `pdfWorkspacePanes` to expect `['terminal', 'preview', 'presenter']`;
-- remove `pdfVersions` from the imports and delete its drawer-specific test;
-- keep the pure transcript reset and restore-latch tests, but remove their
-  assertions that inspect `PdfWorkspace.jsx` for drawer restore wiring;
-- remove `PdfFilesDrawer` from the viewer-safe component list; and
-- append this test:
-
-```js
-test('PDF toolbar reuses Typst structure without Files and versions behavior', () => {
-  const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
-
-  assert.match(workspace, /className="bar-title"/)
-  assert.match(workspace, /className="openbtn present"/)
-  assert.match(workspace, /className="actions"/)
-  assert.match(workspace, /status-chip live/)
-  assert.doesNotMatch(workspace, /PdfFilesDrawer/)
-  assert.doesNotMatch(workspace, /Files & versions/)
-  assert.doesNotMatch(workspace, /listProjectFiles|gitVersions|gitRestore/)
-})
-```
-
-- [ ] **Step 2: Run the test and verify RED**
-
-Run:
-
-```bash
-/Users/xavier/Projects/nsw-driving-test-slot-monitor/.node/bin/node \
-  --test frontend/test/pdfWorkspace.test.js
-```
-
-Expected: FAIL because `PdfWorkspace.jsx` still uses `project-name-chip`,
-renders Files & versions, and contains the drawer/API calls, while
-`pdfWorkspacePanes` still contains `files`.
-
-- [ ] **Step 3: Remove the PDF-only drawer and restore-only component state**
-
-In `frontend/src/PdfWorkspace.jsx`:
-
-- delete `PdfFilesDrawer`;
-- remove `pdfVersions` and `createPdfRestoreResetLatch` from imports;
-- remove `drawerOpen`, `transcriptResetEpoch`, `restoreResetLatchRef`, and
-  `refreshAfterRestore`;
-- remove the restore-latch `consume()` call from the poll controller;
-- stop passing `resetEpoch` to `PdfPreviewPane`; and
-- remove the conditional drawer render.
-
-In `frontend/src/pdfWorkspace.js`, remove the now-unused `pdfVersions` helper
-and remove `files` from `pdfWorkspacePanes`. Do not remove the pure transcript
-reset or restore-latch helpers; their existing behavior remains valid and no
-unrelated API surface changes are needed.
-
-- [ ] **Step 4: Replace the PDF toolbar with the Typst layout pattern**
-
-Use this structure in `PdfWorkspace.jsx`:
-
-```jsx
-<header className="bar">
-  <button className="back-btn" onClick={onBack} title="Back to projects">
-    ← Projects
-  </button>
-  <div className="bar-title" title={project?.name || 'PDF project'}>
-    {project?.name || 'PDF project'}
-  </div>
-  <button
-    className="openbtn present"
-    onClick={openPresenter}
-    disabled={!render.pages.length}
-    title="presenter view (current + next page, transcript, dual-screen)"
-  >
-    ▶ Present
-  </button>
-  <div className="actions">
-    <span
-      className={'status-chip live' + (presentationActive ? ' on' : '')}
-      title={presentationActive
-        ? 'a projection / presentation is open and live'
-        : 'open a projection from Present to control it from here'}
-    >
-      <span className="status-dot" />
-      {presentationActive ? `live · ${presentPage}` : 'no presentation'}
-    </span>
-  </div>
-</header>
-```
-
-The PDF difference is deliberate: it has no Files, export, or pending-comment
-buttons, and its Present action stays disabled until rendered pages exist.
-
-- [ ] **Step 5: Remove unreachable PDF drawer and project-chip CSS**
-
-Delete `.pdf-drawer*`, `.project-name-chip`, and PDF mobile overrides that only
-target those removed elements. Keep all terminal, divider, preview, transcript,
-and responsive pane rules unchanged.
-
-- [ ] **Step 6: Run the focused test and verify GREEN**
-
-Run:
-
-```bash
-/Users/xavier/Projects/nsw-driving-test-slot-monitor/.node/bin/node \
-  --test frontend/test/pdfWorkspace.test.js
-```
-
-Expected: all tests in the file PASS.
-
-- [ ] **Step 7: Add browser assertions for layout and status**
-
-Add a test to `frontend/test/pdfWorkspaceUi.e2e.js` that opens a PDF project and
-asserts real DOM behavior:
+Add this test to `frontend/test/pdfWorkspaceUi.e2e.js`:
 
 ```js
 test('PDF toolbar mirrors Typst placement while omitting unavailable actions', async () => {
@@ -153,18 +43,20 @@ test('PDF toolbar mirrors Typst placement while omitting unavailable actions', a
   const observed = await page.evaluate(() => {
     const toolbar = document.querySelector('.pdf-workspace > .bar')
     const title = toolbar.querySelector('.bar-title')
-    const titleRect = title.getBoundingClientRect()
+    const titleRect = title?.getBoundingClientRect()
     return {
-      title: title.textContent.trim(),
-      centerDelta: Math.abs(
-        titleRect.left + titleRect.width / 2 - window.innerWidth / 2,
-      ),
+      hasSharedTitle: Boolean(title),
+      title: title?.textContent.trim() || '',
+      centerDelta: titleRect
+        ? Math.abs(titleRect.left + titleRect.width / 2 - window.innerWidth / 2)
+        : null,
       buttons: [...toolbar.querySelectorAll('button')].map(button => button.textContent.trim()),
-      status: toolbar.querySelector('.status-chip.live')?.textContent.trim(),
+      status: toolbar.querySelector('.status-chip.live')?.textContent.trim() || '',
       hasDrawer: Boolean(document.querySelector('.pdf-drawer')),
     }
   })
 
+  assert.equal(observed.hasSharedTitle, true)
   assert.ok(observed.title)
   assert.ok(observed.centerDelta <= 1)
   assert.deepEqual(observed.buttons, ['← Projects', '▶ Present'])
@@ -173,7 +65,7 @@ test('PDF toolbar mirrors Typst placement while omitting unavailable actions', a
 })
 ```
 
-- [ ] **Step 8: Run the browser test against the worktree frontend**
+- [ ] **Step 2: Start the worktree Vite server and verify RED**
 
 From the worktree's `frontend/` directory, start a Vite server whose API and
 WebSocket routes proxy to the existing container on port 9003:
@@ -212,10 +104,96 @@ VIBE_TYPST_URL=http://127.0.0.1:4174 \
   frontend/test/pdfWorkspaceUi.e2e.js
 ```
 
-Expected: the new toolbar test and all existing PDF workspace browser tests
-PASS.
+Expected: FAIL at `hasSharedTitle` because the rendered PDF toolbar still uses
+`project-name-chip` and exposes Files & versions.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 3: Remove obsolete drawer tests and dead helpers**
+
+In `frontend/test/pdfWorkspace.test.js`:
+
+- remove `pdfWorkspacePanes` and `pdfVersions` from the imports;
+- delete the `pdfWorkspacePanes` test and the drawer-specific versions test;
+- keep the pure transcript reset and restore-latch tests, but remove their
+  assertions that inspect `PdfWorkspace.jsx` for drawer restore wiring; and
+- remove `PdfFilesDrawer` from the viewer-safe component list.
+
+In `frontend/src/pdfWorkspace.js`, remove the unused `pdfWorkspacePanes` and
+`pdfVersions` exports.
+
+- [ ] **Step 4: Remove the PDF-only drawer and restore-only component state**
+
+In `frontend/src/PdfWorkspace.jsx`:
+
+- delete `PdfFilesDrawer`;
+- remove `pdfVersions` and `createPdfRestoreResetLatch` from imports;
+- remove `drawerOpen`, `transcriptResetEpoch`, `restoreResetLatchRef`, and
+  `refreshAfterRestore`;
+- remove the restore-latch `consume()` call from the poll controller;
+- stop passing `resetEpoch` to `PdfPreviewPane`; and
+- remove the conditional drawer render.
+
+Do not remove the pure transcript reset or restore-latch helpers; their
+existing behavior remains valid and no unrelated API surface changes are
+needed.
+
+- [ ] **Step 5: Replace the PDF toolbar with the Typst layout pattern**
+
+Use this structure in `PdfWorkspace.jsx`:
+
+```jsx
+<header className="bar">
+  <button className="back-btn" onClick={onBack} title="Back to projects">
+    ← Projects
+  </button>
+  <div className="bar-title" title={project?.name || 'PDF project'}>
+    {project?.name || 'PDF project'}
+  </div>
+  <button
+    className="openbtn present"
+    onClick={openPresenter}
+    disabled={!render.pages.length}
+    title="presenter view (current + next page, transcript, dual-screen)"
+  >
+    ▶ Present
+  </button>
+  <div className="actions">
+    <span
+      className={'status-chip live' + (presentationActive ? ' on' : '')}
+      title={presentationActive
+        ? 'a projection / presentation is open and live'
+        : 'open a projection from Present to control it from here'}
+    >
+      <span className="status-dot" />
+      {presentationActive ? `live · ${presentPage}` : 'no presentation'}
+    </span>
+  </div>
+</header>
+```
+
+The PDF difference is deliberate: it has no Files, export, or pending-comment
+buttons, and its Present action stays disabled until rendered pages exist.
+
+- [ ] **Step 6: Remove unreachable PDF drawer and project-chip CSS**
+
+Delete `.pdf-drawer*`, `.project-name-chip`, and PDF mobile overrides that only
+target those removed elements. Keep all terminal, divider, preview, transcript,
+and responsive pane rules unchanged.
+
+- [ ] **Step 7: Run unit and browser tests and verify GREEN**
+
+Run:
+
+```bash
+/Users/xavier/Projects/nsw-driving-test-slot-monitor/.node/bin/node \
+  --test frontend/test/pdfWorkspace.test.js
+VIBE_TYPST_URL=http://127.0.0.1:4174 \
+  /Users/xavier/Projects/nsw-driving-test-slot-monitor/.node/bin/node \
+  frontend/test/pdfWorkspaceUi.e2e.js
+```
+
+Expected: both commands PASS.
+
+- [ ] **Step 8: Commit**
 
 ```bash
 git add frontend/src/PdfWorkspace.jsx frontend/src/pdfWorkspace.js frontend/src/styles.css \
