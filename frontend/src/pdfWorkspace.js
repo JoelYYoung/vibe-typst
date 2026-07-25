@@ -1,5 +1,4 @@
 const pageNames = (value) => Array.isArray(value) ? value.filter((name) => typeof name === 'string') : []
-const quoteShell = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`
 
 export const pdfWorkspacePanes = ['terminal', 'preview', 'files', 'presenter']
 export const PDF_TERMINAL_MIN_WIDTH = 280
@@ -62,10 +61,6 @@ export function nextPdfRenderState(previous = {}, response = {}, mapResponse) {
   const slideMap = Array.isArray(mapResponse?.pages) ? mapResponse.pages : (previous.slideMap || [])
   const orphans = Array.isArray(mapResponse?.orphans) ? mapResponse.orphans : (previous.orphans || [])
   return { pages, tokens, version, generation, slideMap, orphans }
-}
-
-export function pdfTerminalCdCommand(path) {
-  return `cd ${quoteShell(path)}\n`
 }
 
 export function createPdfPollController({ loadRender, loadMap, onPair = () => {}, onError = () => {} }) {

@@ -86,6 +86,10 @@ test('PDF workspace renders a sharp page with Typst terminal chrome', async () =
 
 test('dragging the PDF divider refits without reconnecting the terminal', async () => {
   const page = await openPdfWorkspace({ countSockets: true })
+  await delay(500)
+  const terminalText = await page.$eval('.xterm-rows', node => node.textContent)
+  assert.equal((terminalText.match(/\bcd '/g) || []).length, 0)
+
   const divider = await page.waitForSelector('.pdf-workspace-divider')
   const box = await divider.boundingBox()
   const before = await page.evaluate(() => ({

@@ -2,27 +2,14 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
-import { pdfTerminalCdCommand } from './pdfWorkspace.js'
 
 // A real shell over the backend PTY (WebSocket). Server-hosted, so it works the same
-// locally and from a remote browser. Starts in HOME; the parent can `runCommand('cd …')`
-// to move it to the deck's directory on demand.
-const TermPanel = forwardRef(function TermPanel({ initialCwd }, ref) {
+// locally and from a remote browser. The backend starts it in the active project directory.
+const TermPanel = forwardRef(function TermPanel(_props, ref) {
   const hostRef = useRef(null)
   const wsRef = useRef(null)
   const refitRef = useRef(null)
   const roTimerRef = useRef(null)
-  const initialCwdRef = useRef(initialCwd)
-  const appliedCwdRef = useRef(null)
-
-  useEffect(() => {
-    initialCwdRef.current = initialCwd || null
-    const ws = wsRef.current
-    if (initialCwd && ws && ws.readyState === 1 && appliedCwdRef.current !== initialCwd) {
-      ws.send(JSON.stringify({ t: 'i', d: pdfTerminalCdCommand(initialCwd) }))
-      appliedCwdRef.current = initialCwd
-    }
-  }, [initialCwd])
 
   useImperativeHandle(ref, () => ({
     runCommand(cmd) {
@@ -110,17 +97,11 @@ const TermPanel = forwardRef(function TermPanel({ initialCwd }, ref) {
       // (codex/claude) draw past the right and bottom edges.
       ws.onopen = () => {
         resize()
-        const cwd = initialCwdRef.current
-        if (cwd) {
-          ws.send(JSON.stringify({ t: 'i', d: pdfTerminalCdCommand(cwd) }))
-          appliedCwdRef.current = cwd
-        }
         setTimeout(() => { if (alive && wsRef.current === ws) resize() }, 150)
       }
       ws.onmessage = (e) => term.write(new Uint8Array(e.data))
       ws.onclose = () => {
         wsRef.current = null
-        appliedCwdRef.current = null
         if (!alive) return                       // intentional unmount — do not relaunch
         term.write('\r\n\x1b[33m[shell exited — restarting…]\x1b[0m\r\n')
         reconnectTimer = setTimeout(() => { if (!alive) return; term.reset(); connect() }, 400)

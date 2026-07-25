@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { execFileSync } from 'node:child_process'
 import {
   clampPdfPage,
   clampPdfTerminalWidth,
@@ -10,7 +9,6 @@ import {
   editPdfTranscriptDraft,
   finishPdfTranscriptSave,
   nextPdfRenderState,
-  pdfTerminalCdCommand,
   pdfTranscriptExportText,
   pdfTranscriptDirty,
   pdfVersions,
@@ -118,14 +116,6 @@ test('PDF replacement updates Presenter pages and transcript rows from the match
   const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
   assert.match(workspace, /<Presenter[\s\S]*slideMap=\{render\.slideMap\}/)
   assert.match(workspace, /<Presenter[\s\S]*generation=\{render\.generation\}/)
-})
-
-test('PDF terminal cd command works with the deployed one-argument wrapper and quoted paths', () => {
-  const command = pdfTerminalCdCommand("/workspace/Paper's draft")
-  assert.equal(command.includes('cd --'), false)
-  assert.equal(command, "cd '/workspace/Paper'\\''s draft'\n")
-  const observed = execFileSync('bash', ['-c', `cd() { local t="${'${1:-/workspace}'}"; printf '%s' "$t"; }; ${command}`], { encoding: 'utf8' })
-  assert.equal(observed, "/workspace/Paper's draft")
 })
 
 test('PDF poll controller commits only a matched render/map generation after a mismatch', async () => {
@@ -363,14 +353,6 @@ test('PDF workspace boundary mounts only viewer-safe components and does not inv
   ]) {
     assert.equal(source.includes(forbidden), false, `${forbidden} must not appear in PdfWorkspace`)
   }
-})
-
-test('PDF terminal receives the canonical project directory through TermPanel initialCwd', () => {
-  const workspace = fs.readFileSync(new URL('../src/PdfWorkspace.jsx', import.meta.url), 'utf8')
-  const terminal = fs.readFileSync(new URL('../src/TermPanel.jsx', import.meta.url), 'utf8')
-  assert.match(workspace, /initialCwd=\{projectDir\}/)
-  assert.match(terminal, /initialCwd/)
-  assert.match(terminal, /ws\.onopen[\s\S]*initialCwd/)
 })
 
 test('PDF API helpers load and save one authoritative transcript page', async () => {

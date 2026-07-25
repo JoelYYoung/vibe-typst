@@ -238,7 +238,7 @@ export default function PdfWorkspace({ project, onBack }) {
               {shortPath(projectDir) || '~'}
             </span>
           </div>
-          <TermPanel initialCwd={projectDir} />
+          <TermPanel />
         </section>
         <div
           className="pdf-workspace-divider"
