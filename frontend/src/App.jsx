@@ -8,18 +8,12 @@ import FileManager from './FileManager.jsx'
 import FilePicker from './FilePicker.jsx'
 import TermPanel from './TermPanel.jsx'
 import { filterAndSortComments } from './commentOrdering.js'
+import { shortPath, TerminalIcon } from './terminalUi.jsx'
 
 const FILTERS = ['pending', 'done', 'all']
 const selKey = (s) => (s.kind === 'page' ? `p${s.page_no}` : `${s.page}:${s.text}`)
 const CLAUDE_MSG = "I've added new comments. Please fetch them via MCP and revise the deck according to the comments."
 
-// keep full path if short, else "…/last/three/levels"
-function shortPath(p, threshold = 5, keep = 3) {
-  if (!p) return ''
-  const segs = p.split('/').filter(Boolean)
-  if (segs.length <= threshold) return p
-  return '…/' + segs.slice(-keep).join('/')
-}
 const samePath = (a, b) => (a || '').replace(/\/+$/, '') === (b || '').replace(/\/+$/, '')
 
 // clean chevron icons for collapse/expand (replace the chunky ◀ ▶ triangles)
@@ -27,16 +21,6 @@ const Chevron = ({ dir = 'right', size = 15 }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
     <path d={dir === 'left' ? 'M15 6l-6 6 6 6' : 'M9 6l6 6-6 6'} />
-  </svg>
-)
-
-// one shared terminal icon (toggle + terminal header), crisp at any size
-const TerminalIcon = ({ size = 16 }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'block' }}>
-    <rect x="2" y="4" width="20" height="16" rx="2" />
-    <path d="M6 9l3 3-3 3" />
-    <path d="M13 15h4" />
   </svg>
 )
 

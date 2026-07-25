@@ -3,7 +3,17 @@ import * as api from './api.js'
 import TermPanel from './TermPanel.jsx'
 import Presenter from './Presenter.jsx'
 import PdfPreviewPane from './PdfPreviewPane.jsx'
-import { createPdfPollController, createPdfRestoreResetLatch, nextPdfRenderState, pdfVersions } from './pdfWorkspace.js'
+import {
+  clampPdfPage,
+  clampPdfTerminalWidth,
+  createPdfPollController,
+  createPdfRestoreResetLatch,
+  nextPdfRenderState,
+  pdfVersions,
+  reconcilePdfPageCursors,
+  startPdfPresentationPage,
+} from './pdfWorkspace.js'
+import { shortPath, TerminalIcon } from './terminalUi.jsx'
 import { toast } from './Toaster.jsx'
 
 function PdfFilesDrawer({ onClose, onRestored }) {
@@ -54,13 +64,18 @@ function PdfFilesDrawer({ onClose, onRestored }) {
 
 export default function PdfWorkspace({ project, onBack }) {
   const [render, setRender] = useState({
-    pages: [], tokens: {}, version: 0, generation: '', page: 1, slideMap: [], orphans: [],
+    pages: [], tokens: {}, version: 0, generation: '', slideMap: [], orphans: [],
   })
+  const [previewPage, setPreviewPage] = useState(1)
+  const [presentPage, setPresentPage] = useState(1)
   const [projectDir, setProjectDir] = useState(project?.path || '')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [presenting, setPresenting] = useState(false)
   const [presentationLive, setPresentationLive] = useState(false)
+  const [terminalWidth, setTerminalWidth] = useState(null)
   const [transcriptResetEpoch, setTranscriptResetEpoch] = useState(0)
+  const mainRef = useRef(null)
+  const dividerCleanupRef = useRef(null)
   const channelRef = useRef(null)
   const presentationStateRef = useRef({ page: 1, pages: [], tokens: {}, pointer: null })
   const pointerRef = useRef(null)
@@ -110,8 +125,13 @@ export default function PdfWorkspace({ project, onBack }) {
   }, [poller])
 
   useEffect(() => {
-    presentationStateRef.current = { page: render.page, pages: render.pages, tokens: render.tokens, pointer: pointerRef.current }
-  }, [render.page, render.pages, render.tokens])
+    presentationStateRef.current = {
+      page: presentPage,
+      pages: render.pages,
+      tokens: render.tokens,
+      pointer: pointerRef.current,
+    }
+  }, [presentPage, render.pages, render.tokens])
   useEffect(() => {
     const channel = new BroadcastChannel('tcb-present')
     channelRef.current = channel
@@ -126,15 +146,71 @@ export default function PdfWorkspace({ project, onBack }) {
     }, 1500)
     return () => { clearInterval(heartbeat); channel.close(); channelRef.current = null }
   }, [])
-  useEffect(() => { channelRef.current?.postMessage(presentationStateRef.current) }, [render.page, render.pages, render.tokens])
+  useEffect(() => {
+    channelRef.current?.postMessage(presentationStateRef.current)
+  }, [presentPage, render.pages, render.tokens])
 
-  const setPage = useCallback((next) => {
-    setRender((previous) => {
-      const wanted = typeof next === 'function' ? next(previous.page) : next
-      const total = previous.pages.length
-      return { ...previous, page: total ? Math.max(1, Math.min(Number(wanted) || 1, total)) : 1 }
+  useEffect(() => {
+    const next = reconcilePdfPageCursors(
+      { previewPage, presentPage },
+      render.pages.length,
+    )
+    if (next.previewPage !== previewPage) setPreviewPage(next.previewPage)
+    if (next.presentPage !== presentPage) setPresentPage(next.presentPage)
+  }, [previewPage, presentPage, render.pages.length])
+
+  useEffect(() => () => dividerCleanupRef.current?.(), [])
+
+  const setPreview = useCallback((next) => {
+    setPreviewPage((previous) => {
+      const wanted = typeof next === 'function' ? next(previous) : next
+      return clampPdfPage(Number(wanted), render.pages.length)
     })
+  }, [render.pages.length])
+
+  const setPresentation = useCallback((next) => {
+    setPresentPage((previous) => {
+      const wanted = typeof next === 'function' ? next(previous) : next
+      return clampPdfPage(Number(wanted), render.pages.length)
+    })
+  }, [render.pages.length])
+
+  const presentationActive = presenting || presentationLive
+
+  const openPresenter = useCallback(() => {
+    setPresentPage((current) => startPdfPresentationPage(
+      previewPage,
+      current,
+      presentationActive,
+      render.pages.length,
+    ))
+    setPresenting(true)
+  }, [presentationActive, previewPage, render.pages.length])
+
+  const startDividerDrag = useCallback((event) => {
+    if (!mainRef.current) return
+    event.preventDefault()
+    dividerCleanupRef.current?.()
+    const bounds = mainRef.current.getBoundingClientRect()
+    const move = (moveEvent) => {
+      setTerminalWidth(clampPdfTerminalWidth(
+        moveEvent.clientX,
+        bounds.left,
+        bounds.width,
+      ))
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+      window.removeEventListener('pointercancel', stop)
+      dividerCleanupRef.current = null
+    }
+    dividerCleanupRef.current = stop
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+    window.addEventListener('pointercancel', stop)
   }, [])
+
   const sendPointer = useCallback((pointer) => {
     pointerRef.current = pointer || null
     presentationStateRef.current = { ...presentationStateRef.current, pointer: pointerRef.current }
@@ -149,16 +225,47 @@ export default function PdfWorkspace({ project, onBack }) {
         <span className="grow" />
         {presentationLive && <span className="status-chip live on"><span className="status-dot" />Projection live</span>}
         <button className="openbtn" onClick={() => setDrawerOpen(true)}>Files & versions</button>
-        <button className="openbtn present" onClick={() => setPresenting(true)} disabled={!render.pages.length}>Present</button>
+        <button className="openbtn present" onClick={openPresenter} disabled={!render.pages.length}>Present</button>
       </header>
-      <main className="pdf-workspace-main">
-        <section className="pdf-terminal-pane"><div className="pdf-terminal-head">Terminal</div><TermPanel initialCwd={projectDir} /></section>
-        <PdfPreviewPane pages={render.pages} tokens={render.tokens} page={render.page} setPage={setPage} resetEpoch={transcriptResetEpoch}
-          slideMap={render.slideMap} orphans={render.orphans} onTranscriptSaved={refreshAfterTranscriptSave} />
+      <main className="pdf-workspace-main" ref={mainRef}>
+        <section
+          className="pdf-terminal-pane"
+          style={{ width: terminalWidth == null ? '38%' : terminalWidth }}
+        >
+          <div className="term-head">
+            <span className="termpath" title={projectDir}>
+              <TerminalIcon size={13} />
+              {shortPath(projectDir) || '~'}
+            </span>
+          </div>
+          <TermPanel initialCwd={projectDir} />
+        </section>
+        <div
+          className="pdf-workspace-divider"
+          role="separator"
+          aria-label="Resize terminal and PDF preview"
+          aria-orientation="vertical"
+          title="drag to resize terminal"
+          onPointerDown={startDividerDrag}
+        />
+        <PdfPreviewPane
+          pages={render.pages}
+          tokens={render.tokens}
+          page={previewPage}
+          setPage={setPreview}
+          resetEpoch={transcriptResetEpoch}
+          slideMap={render.slideMap}
+          orphans={render.orphans}
+          presentPage={presentPage}
+          presentationActive={presentationActive}
+          onFollowPresentation={() => setPreview(presentPage)}
+          onSendPreview={() => setPresentation(previewPage)}
+          onTranscriptSaved={refreshAfterTranscriptSave}
+        />
       </main>
       {drawerOpen && <PdfFilesDrawer onClose={() => setDrawerOpen(false)} onRestored={refreshAfterRestore} />}
       {presenting && <Presenter onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
-        onPointer={sendPointer} page={render.page} setPage={setPage} pages={render.pages} tokens={render.tokens}
+        onPointer={sendPointer} page={presentPage} setPage={setPresentation} pages={render.pages} tokens={render.tokens}
         slideMap={render.slideMap} generation={render.generation} />}
     </div>
   )

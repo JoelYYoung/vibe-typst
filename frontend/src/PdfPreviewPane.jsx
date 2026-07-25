@@ -16,12 +16,26 @@ function transcriptText(slideMap, page) {
   return row && typeof row.note === 'string' ? row.note : ''
 }
 
-export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap, orphans, onTranscriptSaved, resetEpoch = 0 }) {
+export default function PdfPreviewPane({
+  pages,
+  tokens,
+  page,
+  setPage,
+  slideMap,
+  orphans,
+  presentPage,
+  presentationActive,
+  onFollowPresentation,
+  onSendPreview,
+  onTranscriptSaved,
+  resetEpoch = 0,
+}) {
   const [transcriptsOn, setTranscriptsOn] = useState(true)
   const [drafts, setDrafts] = useState({})
   const resetEpochRef = useRef(resetEpoch)
   const total = pages.length
   const current = pages[page - 1]
+  const canSyncPresentation = total > 0 && presentationActive
   const draftState = drafts[page] || { draft: transcriptText(slideMap, page), base: transcriptText(slideMap, page), saving: false }
   const dirty = pdfTranscriptDirty(draftState.draft, draftState.base)
 
@@ -73,6 +87,26 @@ export default function PdfPreviewPane({ pages, tokens, page, setPage, slideMap,
       <div className="pdf-preview-head">
         <strong>PDF preview</strong>
         <span className="grow" />
+        <div className="pdf-sync-controls">
+          <button
+            className="pdf-sync-button"
+            type="button"
+            disabled={!canSyncPresentation}
+            onClick={onFollowPresentation}
+            title={`Show presentation page ${presentPage || 1} in Preview`}
+          >
+            ⇤ Follow presentation
+          </button>
+          <button
+            className="pdf-sync-button"
+            type="button"
+            disabled={!canSyncPresentation}
+            onClick={onSendPreview}
+            title={`Send Preview page ${page} to the presentation`}
+          >
+            ⇥ Send preview
+          </button>
+        </div>
         <button onClick={downloadTranscripts} disabled={!total}>↓ Transcripts</button>
         <label className="switch" title="show the current page transcript">
           <input type="checkbox" checked={transcriptsOn} onChange={(event) => setTranscriptsOn(event.target.checked)} />
