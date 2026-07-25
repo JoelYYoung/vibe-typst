@@ -36,6 +36,10 @@ async function openPdfWorkspace({ countSockets = false } = {}) {
   })
   await page.waitForSelector('.pdf-workspace')
   await page.waitForSelector('.pdf-page-stage img')
+  await page.waitForFunction(() => {
+    const image = document.querySelector('.pdf-page-stage img')
+    return image?.complete && image.naturalWidth > 0
+  })
   return page
 }
 
