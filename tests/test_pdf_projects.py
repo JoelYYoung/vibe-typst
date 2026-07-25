@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -104,8 +105,9 @@ class _FakePage:
     def __init__(self, number: int, fail: bool = False):
         self.number = number
         self.fail = fail
+        self.rect = SimpleNamespace(width=720, height=405)
 
-    def get_pixmap(self) -> _FakePixmap:
+    def get_pixmap(self, *, matrix=None, alpha=True) -> _FakePixmap:
         if self.fail:
             raise RuntimeError("forced render failure")
         return _FakePixmap(f"new page {self.number}".encode())
@@ -660,6 +662,37 @@ class PdfRenderingTest(unittest.TestCase):
         self.assertTrue((destination / "page-1.png").is_file())
         self.assertEqual([path.name for path in destination.iterdir()], ["page-1.png"])
 
+    def test_render_pdf_scales_landscape_page_to_qhd_long_edge(self):
+        import fitz
+
+        source = self.root / "landscape.pdf"
+        destination = self.root / "landscape-pages"
+        document = fitz.open()
+        document.new_page(width=720, height=405)
+        document.save(source)
+        document.close()
+
+        result = self.pdf_service.render_pdf(source, destination)
+
+        pixmap = fitz.Pixmap(str(destination / "page-1.png"))
+        self.assertEqual(max(pixmap.width, pixmap.height), 2560)
+        self.assertEqual(result["render_profile"], "pdf-qhd-v1")
+
+    def test_render_pdf_scales_portrait_page_to_qhd_long_edge(self):
+        import fitz
+
+        source = self.root / "portrait.pdf"
+        destination = self.root / "portrait-pages"
+        document = fitz.open()
+        document.new_page(width=405, height=720)
+        document.save(source)
+        document.close()
+
+        self.pdf_service.render_pdf(source, destination)
+
+        pixmap = fitz.Pixmap(str(destination / "page-1.png"))
+        self.assertEqual(max(pixmap.width, pixmap.height), 2560)
+
     def test_failed_render_preserves_existing_destination_and_leaves_no_staging_residue(self):
         source = self.root / "source.pdf"
         destination = self.root / "pages"
@@ -744,6 +777,8 @@ class PdfReplacementTest(unittest.TestCase):
                           if p.name.startswith(".") and "write.lock" not in p.name], [])
 
     def test_success_consumes_candidate_and_replaces_every_render_page(self):
+        import fitz
+
         self.candidate.write_bytes(self.new_pdf)
 
         result = self.pdf_service.replace_primary(self.root, self.candidate, self.primary,
@@ -753,6 +788,9 @@ class PdfReplacementTest(unittest.TestCase):
         self.assertFalse(self.candidate.exists())
         self.assertEqual(self.primary.read_bytes(), self.new_pdf)
         self.assertEqual([p.name for p in self.render_dir.iterdir()], ["page-1.png"])
+        pixmap = fitz.Pixmap(str(self.render_dir / "page-1.png"))
+        self.assertEqual(max(pixmap.width, pixmap.height), 2560)
+        self.assertEqual(result["render_profile"], "pdf-qhd-v1")
         recovery = self.root / result["candidate_recovery_path"]
         self.assertEqual(recovery.read_bytes(), self.new_pdf)
         self.assertRegex(
@@ -2552,9 +2590,11 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         state = (await self._request("GET", "/api/state")).json()
         render = (await self._request("GET", "/api/render-version")).json()
         slide_map = (await self._request("GET", "/api/slide-map")).json()
+        record = self.app._pdf_render_record()
         self.assertIsInstance(state["generation"], str)
         self.assertEqual(state["generation"], render["generation"])
         self.assertEqual(state["generation"], slide_map["generation"])
+        self.assertEqual(record["profile"], "pdf-qhd-v1")
 
         self.app._pdf_render_state.clear()
         self.app._pdf_render_state.update({"next_version": 0, "records": {}})

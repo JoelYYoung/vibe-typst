@@ -2,6 +2,7 @@
 import fcntl
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -35,6 +36,8 @@ _PHASES = {
 _PROCESS_LOCKS: dict[str, threading.RLock] = {}
 _PROCESS_LOCKS_GUARD = threading.Lock()
 _LOCK_STATE = threading.local()
+PDF_RENDER_LONG_EDGE = 2560
+PDF_RENDER_PROFILE = "pdf-qhd-v1"
 
 
 @contextmanager
@@ -112,6 +115,16 @@ def inspect_pdf(path: Path) -> dict:
         raise ValueError(f"invalid PDF: {exc}") from exc
 
 
+def _render_page_pixmap(page):
+    width = float(page.rect.width)
+    height = float(page.rect.height)
+    longest_edge = max(width, height)
+    if not math.isfinite(longest_edge) or longest_edge <= 0:
+        raise ValueError("PDF page has invalid dimensions")
+    scale = PDF_RENDER_LONG_EDGE / longest_edge
+    return page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+
+
 def render_pdf(path: Path, destination: Path) -> dict:
     """Render each page of a validated PDF as PNGs, replacing ``destination`` atomically."""
     info = inspect_pdf(path)
@@ -127,7 +140,7 @@ def render_pdf(path: Path, destination: Path) -> dict:
         with fitz.open(path) as doc:
             for number, page in enumerate(doc, start=1):
                 name = f"page-{number}.png"
-                page.get_pixmap().save(staging_dir / name)
+                _render_page_pixmap(page).save(staging_dir / name)
                 pages.append(name)
         if destination.exists():
             backup_dir = destination.with_name(f".pdf-render-backup-{uuid.uuid4().hex}")
@@ -160,7 +173,7 @@ def render_pdf(path: Path, destination: Path) -> dict:
                 backup_dir.rename(destination)
                 backup_dir = None
         raise ValueError(f"could not render PDF: {exc}") from exc
-    return {**info, "pages": pages}
+    return {**info, "pages": pages, "render_profile": PDF_RENDER_PROFILE}
 
 
 def _lexical_path(root: Path, value: Path | str, label: str) -> Path:
@@ -345,14 +358,18 @@ def _prepared_render(
         with fitz.open(path) as doc:
             for number, page in enumerate(doc, start=1):
                 name = f"page-{number}.png"
-                page.get_pixmap().save(staging / name)
+                _render_page_pixmap(page).save(staging / name)
                 with (staging / name).open("rb") as rendered:
                     os.fsync(rendered.fileno())
                 pages.append(name)
         _fsync_dir(staging)
         if fault_hook is not None:
             fault_hook("render_prepared")
-        return {**info, "pages": pages}, staging
+        return {
+            **info,
+            "pages": pages,
+            "render_profile": PDF_RENDER_PROFILE,
+        }, staging
     except Exception as exc:
         shutil.rmtree(staging, ignore_errors=True)
         _fsync_dir(destination.parent)

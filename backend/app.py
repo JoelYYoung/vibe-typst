@@ -291,10 +291,15 @@ def _record_pdf_render_version(pages: list[str], path: Path | None = None,
     digest = hashlib.sha1()
     target = path or runtime.current_file()
     render_identity = identity or _pdf_identity(target)
+    profile = pdf_service.PDF_RENDER_PROFILE
     digest.update(render_identity.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(profile.encode("utf-8"))
+    digest.update(b"\0")
     for name in pages:
         page = runtime.render_dir(path) / name
         digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
         digest.update(page.read_bytes())
     fingerprint = digest.hexdigest()
     with _pdf_render_state_lock:
@@ -309,6 +314,7 @@ def _record_pdf_render_version(pages: list[str], path: Path | None = None,
             "fingerprint": fingerprint,
             "version": version,
             "page_count": len(pages),
+            "profile": profile,
         }
         _pdf_render_state["records"] = records
         return version
