@@ -60,6 +60,18 @@ async function clickButton(page, label, rootSelector = 'body') {
   }, label, rootSelector)
 }
 
+async function clickButtonByAriaLabel(page, ariaLabel) {
+  await page.waitForFunction(
+    label => {
+      const button = document.querySelector(`button[aria-label="${label}"]`)
+      return button && !button.disabled
+    },
+    {},
+    ariaLabel,
+  )
+  await page.click(`button[aria-label="${ariaLabel}"]`)
+}
+
 async function previewPageNumber(page) {
   return page.$eval('.pdf-page-controls span', node => Number(node.textContent.match(/Page (\d+)/)[1]))
 }
@@ -92,6 +104,25 @@ test('PDF toolbar mirrors Typst placement while omitting unavailable actions', a
   assert.deepEqual(observed.buttons, ['← Projects', '▶ Present'])
   assert.equal(observed.status, 'no presentation')
   assert.equal(observed.hasDrawer, false)
+})
+
+test('PDF synchronization controls match Typst icon buttons', async () => {
+  const page = await openPdfWorkspace()
+  const controls = await page.$$eval('.pdf-sync-controls button', buttons => buttons.map(button => ({
+    text: button.textContent.trim(),
+    className: button.className,
+    title: button.title,
+    ariaLabel: button.getAttribute('aria-label'),
+  })))
+
+  assert.deepEqual(controls.map(control => control.text), ['⇤', '⇥'])
+  assert.ok(controls.every(control => control.className.includes('pb-btn')))
+  assert.ok(controls.every(control => control.className.includes('icon')))
+  assert.deepEqual(controls.map(control => control.ariaLabel), [
+    'Follow presentation',
+    'Send preview',
+  ])
+  assert.ok(controls.every(control => control.title))
 })
 
 test('PDF workspace renders a sharp page with Typst terminal chrome', async () => {
@@ -163,11 +194,11 @@ test('PDF Preview and Presentation pages synchronize only through explicit contr
   await delay(1800)
 
   assert.equal(await previewPageNumber(page), 3)
-  await clickButton(page, 'Follow presentation', '.pdf-preview-head')
+  await clickButtonByAriaLabel(page, 'Follow presentation')
   assert.equal(await previewPageNumber(page), 4)
   await clickButton(page, 'Previous', '.pdf-page-controls')
   assert.equal(await previewPageNumber(page), 3)
-  await clickButton(page, 'Send preview', '.pdf-preview-head')
+  await clickButtonByAriaLabel(page, 'Send preview')
   await clickButton(page, 'Present', '.bar')
   assert.equal(await presenterPageNumber(page), 3)
 })

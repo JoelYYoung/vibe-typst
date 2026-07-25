@@ -89,22 +89,24 @@ export default function PdfPreviewPane({
         <span className="grow" />
         <div className="pdf-sync-controls">
           <button
-            className="pdf-sync-button"
+            className="pb-btn icon"
             type="button"
             disabled={!canSyncPresentation}
             onClick={onFollowPresentation}
-            title={`Show presentation page ${presentPage || 1} in Preview`}
+            title={`Follow presentation — show page ${presentPage || 1} in Preview`}
+            aria-label="Follow presentation"
           >
-            ⇤ Follow presentation
+            ⇤
           </button>
           <button
-            className="pdf-sync-button"
+            className="pb-btn icon"
             type="button"
             disabled={!canSyncPresentation}
             onClick={onSendPreview}
-            title={`Send Preview page ${page} to the presentation`}
+            title={`Send Preview — make the presentation show page ${page}`}
+            aria-label="Send preview"
           >
-            ⇥ Send preview
+            ⇥
           </button>
         </div>
         <button onClick={downloadTranscripts} disabled={!total}>↓ Transcripts</button>
