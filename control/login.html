@@ -121,6 +121,7 @@
   <div id="error" class="error">Invalid username or password.</div>
 
   <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{NEXT}}">
     <div class="field">
       <label for="username">Username</label>
       <input type="text" id="username" name="username"

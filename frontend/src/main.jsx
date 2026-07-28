@@ -7,7 +7,14 @@ import ProjectsPage from './ProjectsPage.jsx'
 import AdminPage from './AdminPage.jsx'
 import PdfWorkspace from './PdfWorkspace.jsx'
 import Toaster from './Toaster.jsx'
-import { workspaceViewFor } from './projectRouting.js'
+import { toast } from './Toaster.jsx'
+import * as api from './api.js'
+import {
+  canonicalProjectFromOpen,
+  clearRequestedProject,
+  requestedProjectId,
+  workspaceViewFor,
+} from './projectRouting.js'
 import './styles.css'
 
 function Root() {
@@ -18,10 +25,33 @@ function Root() {
     try {
       const r = await fetch('/api/app/state')
       const s = await r.json()
-      // Always land on the Projects page on (re)load — only divert to onboarding when the
-      // local app hasn't been configured yet. The editor is entered by opening a project.
-      if (!s.configured && s.mode === 'local') setView('onboarding')
-      else setView('projects')
+      if (!s.configured && s.mode === 'local') {
+        setView('onboarding')
+        return
+      }
+      const requested = requestedProjectId(location.search)
+      if (requested) {
+        try {
+          const opened = await api.openProject(requested)
+          const project = canonicalProjectFromOpen(opened)
+          if (!project) throw new Error('Workspace returned an invalid project')
+          setActiveProject(project)
+          setView('editor')
+          history.replaceState(
+            null,
+            '',
+            location.pathname
+              + clearRequestedProject(location.search)
+              + location.hash,
+          )
+          return
+        } catch (openError) {
+          toast.error(
+            openError.message || 'Unable to open shared project link',
+          )
+        }
+      }
+      setView('projects')
     } catch {
       setView('projects')
     }

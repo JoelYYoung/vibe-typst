@@ -16,6 +16,7 @@ Usage:
 import asyncio
 import hashlib
 import hmac
+import html
 import os
 import secrets
 import shlex
@@ -27,6 +28,7 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode, urlsplit
 
 import aiofiles
 import httpx
@@ -645,34 +647,64 @@ async def health():
     return {"ok": True}
 
 
-@app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    if _current_user(request):
-        return RedirectResponse("/")
+def _safe_next(value: str | None) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or not value.startswith("/")
+        or value.startswith("//")
+        or "\\" in value
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+    ):
+        return "/"
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return "/"
+    return value
+
+
+async def _login_html(next_path: str, *, error: bool = False) -> str:
     async with aiofiles.open(str(LOGIN_HTML)) as f:
-        return HTMLResponse(await f.read())
+        body = await f.read()
+    body = body.replace(
+        "{{NEXT}}", html.escape(_safe_next(next_path), quote=True)
+    )
+    if error:
+        body = body.replace(
+            'id="error"',
+            'id="error" style="display:block"',
+        )
+    return body
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, next: str | None = None):
+    destination = _safe_next(next)
+    if _current_user(request):
+        return RedirectResponse(destination)
+    return HTMLResponse(await _login_html(destination))
 
 
 @app.post("/login")
 async def do_login(request: Request,
                    username: str = Form(...),
-                   password: str = Form(...)):
+                   password: str = Form(...),
+                   next: str = Form("/")):
+    destination = _safe_next(next)
     user = _user_by_name(username)
     if not user or user.get("locked") or not _check_pw(password, user["pw_hash"]):
-        async with aiofiles.open(str(LOGIN_HTML)) as f:
-            html = await f.read()
-        html = html.replace(
-            'id="error"',
-            'id="error" style="display:block"',
+        return HTMLResponse(
+            await _login_html(destination, error=True),
+            status_code=401,
         )
-        return HTMLResponse(html, status_code=401)
 
     token = _new_session(user["id"])
     _touch_user(user)
     # kick off workspace start without blocking the login response
     asyncio.create_task(_ensure_workspace(user))
 
-    resp = RedirectResponse("/", status_code=303)
+    resp = RedirectResponse(destination, status_code=303)
     resp.set_cookie(
         COOKIE, token,
         httponly=True, samesite="lax",
@@ -924,7 +956,11 @@ async def ws_pty(websocket: WebSocket):
 async def catch_all(request: Request, path: str):
     user = _current_user(request)
     if not user:
-        return RedirectResponse("/login")
+        query = f"?{request.url.query}" if request.url.query else ""
+        destination = _safe_next(request.url.path + query)
+        return RedirectResponse(
+            "/login?" + urlencode({"next": destination})
+        )
     _touch_user(user)
 
     if not _workspace_up(user):

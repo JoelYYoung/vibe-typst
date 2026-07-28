@@ -8,7 +8,12 @@ import {
   selectPdfFile,
   switchProjectCreationType,
 } from '../src/projectCreation.js'
-import { canonicalProjectFromOpen, workspaceViewFor } from '../src/projectRouting.js'
+import {
+  canonicalProjectFromOpen,
+  clearRequestedProject,
+  requestedProjectId,
+  workspaceViewFor,
+} from '../src/projectRouting.js'
 
 test('the canonical open result, rather than a stale card, selects PdfWorkspace', () => {
   const staleCard = { id: 'project-1', type: 'typst' }
@@ -19,6 +24,16 @@ test('the canonical open result, rather than a stale card, selects PdfWorkspace'
   assert.equal(canonical, response.project)
   assert.equal(workspaceViewFor(canonical), 'PdfWorkspace')
   assert.notEqual(workspaceViewFor(canonical), 'App')
+})
+
+test('openProject is distinct from the projection query', () => {
+  assert.equal(requestedProjectId('?openProject=abc%20123'), 'abc 123')
+  assert.equal(requestedProjectId('?project'), null)
+  assert.equal(
+    clearRequestedProject('?openProject=p1&theme=dark'),
+    '?theme=dark',
+  )
+  assert.equal(clearRequestedProject('?openProject=p1'), '')
 })
 
 test('PDF creation only accepts one PDF file and switching away clears it', () => {

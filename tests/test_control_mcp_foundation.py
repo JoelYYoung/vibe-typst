@@ -1331,6 +1331,77 @@ class ControlMcpStoreWiringTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing.status_code, 401)
         self.assertEqual(cookie_only.status_code, 401)
 
+    async def test_safe_login_next_preserves_direct_project_links_only(self):
+        self.assertEqual(
+            self.control._safe_next("/?openProject=pdf-1"),
+            "/?openProject=pdf-1",
+        )
+        for unsafe in (
+            None,
+            "",
+            "//evil.example/path",
+            "https://evil.example/path",
+            "/\\evil.example/path",
+            "/path\r\nX-Test: injected",
+        ):
+            with self.subTest(unsafe=unsafe):
+                self.assertEqual(self.control._safe_next(unsafe), "/")
+
+        transport = httpx.ASGITransport(app=self.control.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            redirected = await client.get("/?openProject=pdf-1")
+            self.assertEqual(redirected.status_code, 307)
+            login_url = httpx.URL(redirected.headers["location"])
+            self.assertEqual(login_url.path, "/login")
+            self.assertEqual(
+                login_url.params["next"], "/?openProject=pdf-1"
+            )
+
+            login = await client.get(
+                "/login", params={"next": "/?openProject=pdf-1"}
+            )
+            self.assertIn(
+                'name="next" value="/?openProject=pdf-1"',
+                login.text,
+            )
+            failed = await client.post(
+                "/login",
+                data={
+                    "username": self.user["username"],
+                    "password": "wrong",
+                    "next": "/?openProject=pdf-1",
+                },
+            )
+            self.assertEqual(failed.status_code, 401)
+            self.assertIn(
+                'name="next" value="/?openProject=pdf-1"',
+                failed.text,
+            )
+            signed_in = await client.post(
+                "/login",
+                data={
+                    "username": self.user["username"],
+                    "password": "correct-horse",
+                    "next": "/?openProject=pdf-1",
+                },
+            )
+            self.assertEqual(signed_in.status_code, 303)
+            self.assertEqual(
+                signed_in.headers["location"], "/?openProject=pdf-1"
+            )
+            already_signed_in = await client.get(
+                "/login", params={"next": "/?openProject=typst-1"}
+            )
+            self.assertEqual(already_signed_in.status_code, 307)
+            self.assertEqual(
+                already_signed_in.headers["location"],
+                "/?openProject=typst-1",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
