@@ -475,6 +475,46 @@ class RemoteFileEndpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored["path"], "notes.md")
         self.assertTrue((self.project_dir / "notes.md").is_file())
 
+    async def test_agent_install_upload_accepts_only_verified_upload_id(self):
+        upload_id = "a" * 32
+        upload_dir = self.project_dir.parent / ".tcb" / "uploads"
+        upload_dir.mkdir(parents=True)
+        ready = upload_dir / f"{upload_id}.ready"
+        ready.write_bytes(b"asset")
+
+        installed = await self.app.agent_install_upload(_Request({
+            "upload_id": upload_id,
+            "path": "assets/logo.bin",
+            "size": 5,
+            "sha256": hashlib.sha256(b"asset").hexdigest(),
+            "overwrite": False,
+            "expected_sha256": None,
+        }))
+
+        self.assertEqual(installed["path"], "assets/logo.bin")
+        self.assertFalse(ready.exists())
+        self.assertEqual(
+            (self.project_dir / "assets" / "logo.bin").read_bytes(),
+            b"asset",
+        )
+
+        bad_id = "b" * 32
+        bad = upload_dir / f"{bad_id}.ready"
+        bad.write_bytes(b"bad")
+        with self.assertRaises(Exception):
+            await self.app.agent_install_upload(_Request({
+                "upload_id": bad_id,
+                "path": "assets/bad.bin",
+                "size": 3,
+                "sha256": "0" * 64,
+                "overwrite": False,
+                "expected_sha256": None,
+            }))
+        self.assertTrue(bad.exists())
+        self.assertFalse(
+            (self.project_dir / "assets" / "bad.bin").exists()
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

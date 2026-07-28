@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json as json_module
+from contextlib import asynccontextmanager
 from typing import Any, Callable
 from urllib.parse import quote, urlsplit
 
@@ -126,6 +127,42 @@ class WorkspaceGateway:
                 "BACKEND_ERROR", "workspace returned an invalid response"
             )
         return body
+
+    @asynccontextmanager
+    async def stream_response(
+        self,
+        identity: PatIdentity,
+        path: str,
+        timeout: float = 30,
+    ):
+        """Open one fixed backend byte stream without buffering it in control."""
+        url = self._backend_url(identity, path)
+        was_up = bool(await _resolve(self._workspace_up(identity)))
+        if not was_up:
+            await _resolve(self._ensure_workspace(identity))
+        manager = self._client.stream(
+            "GET", url, timeout=timeout
+        )
+        try:
+            response = await manager.__aenter__()
+        except httpx.HTTPError as exc:
+            if was_up:
+                raise McpServiceError(
+                    "WORKSPACE_UNAVAILABLE",
+                    "workspace is unavailable",
+                    retryable=True,
+                    retry_after=1.0,
+                ) from exc
+            raise McpServiceError(
+                "WORKSPACE_STARTING",
+                "workspace is starting",
+                retryable=True,
+                retry_after=1.0,
+            ) from exc
+        try:
+            yield response
+        finally:
+            await manager.__aexit__(None, None, None)
 
     @staticmethod
     def _raise_backend_status(status_code: int, path: str) -> None:

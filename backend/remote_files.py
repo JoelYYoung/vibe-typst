@@ -408,6 +408,39 @@ def install_file(
     }
 
 
+def resolve_staged_upload(
+    projects_root: Path,
+    upload_id: str,
+    size: int,
+    sha256: str,
+) -> Path:
+    if (
+        not isinstance(upload_id, str)
+        or re.fullmatch(r"[0-9a-f]{32}", upload_id) is None
+    ):
+        raise ValueError("upload id is invalid")
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise ValueError("upload size is invalid")
+    if (
+        not isinstance(sha256, str)
+        or re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None
+    ):
+        raise ValueError("upload sha256 is invalid")
+    root = Path(projects_root)
+    if root.is_symlink():
+        raise PermissionError("projects root may not be a symbolic link")
+    root = root.resolve(strict=True)
+    private_root = root / ".tcb"
+    uploads = private_root / "uploads"
+    if private_root.is_symlink() or uploads.is_symlink():
+        raise PermissionError("upload path may not be a symbolic link")
+    ready = uploads / f"{upload_id}.ready"
+    info = _assert_regular(ready)
+    if info.st_size != size or sha256_file(ready) != sha256.lower():
+        raise ValueError("staged upload metadata does not match")
+    return ready
+
+
 def _trash_project_root(project: dict) -> Path:
     root = _project_root(project)
     project_id = project.get("id")

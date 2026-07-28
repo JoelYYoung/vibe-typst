@@ -1981,6 +1981,30 @@ async def agent_move_file(request: Request):
     return _with_active_context(result)
 
 
+@app.post("/api/agent/files/install-upload")
+async def agent_install_upload(request: Request):
+    project = _active_agent_project()
+    body = await request.json() or {}
+    try:
+        staged = remote_files.resolve_staged_upload(
+            Path(project["path"]).resolve().parent,
+            body.get("upload_id"),
+            body.get("size"),
+            body.get("sha256"),
+        )
+        result = remote_files.install_file(
+            project,
+            staged,
+            body.get("path"),
+            body.get("overwrite") is True,
+            body.get("expected_sha256"),
+        )
+        staged.unlink()
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
 @app.post("/api/agent/files/delete")
 async def agent_delete_file(request: Request):
     project = _active_agent_project()

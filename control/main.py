@@ -39,6 +39,7 @@ from starlette.routing import Route
 
 import pat_store
 import mcp_store
+from mcp_transfer import create_transfer_router
 from remote_mcp import create_remote_mcp
 from workspace_gateway import WorkspaceGateway
 
@@ -386,6 +387,11 @@ async def _mcp_sweeper():
         await asyncio.sleep(interval)
         try:
             await asyncio.to_thread(mcp_store.sweep_expired, DB_PATH)
+            await asyncio.to_thread(
+                mcp_store.sweep_transfer_sessions,
+                DB_PATH,
+                WORKSPACE_BASE,
+            )
         except Exception as exc:
             print(f"[mcp] cleanup failed: {exc}", file=sys.stderr)
 
@@ -598,6 +604,7 @@ async def lifespan(app):
     global _client
     init_db()
     mcp_store.sweep_expired(DB_PATH)
+    mcp_store.sweep_transfer_sessions(DB_PATH, WORKSPACE_BASE)
     _client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     app.state.idle_task = asyncio.create_task(_idle_sweeper())
     app.state.mcp_sweep_task = asyncio.create_task(_mcp_sweeper())
@@ -619,6 +626,9 @@ async def lifespan(app):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(
+    create_transfer_router(DB_PATH, WORKSPACE_BASE, workspace_gateway)
+)
 app.router.routes.append(
     Route(
         "/mcp",
