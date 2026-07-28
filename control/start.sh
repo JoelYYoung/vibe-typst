@@ -6,6 +6,13 @@ CTRL_DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV="$CTRL_DIR/.venv"
 UV="${UV_BIN:-uv}"
 
+if [ -d "$VENV" ] && ! "$VENV/bin/python" -c \
+  'import sys; assert sys.version_info >= (3, 11)' >/dev/null 2>&1; then
+  VENV_BACKUP="$CTRL_DIR/.venv.pre-python311.$(date +%Y%m%d%H%M%S).$$"
+  mv "$VENV" "$VENV_BACKUP"
+  echo "[start] Preserved incompatible virtualenv at $VENV_BACKUP"
+fi
+
 if [ ! -d "$VENV" ]; then
   echo "[start] Creating virtualenv…"
   if command -v "$UV" >/dev/null 2>&1; then
@@ -13,14 +20,36 @@ if [ ! -d "$VENV" ]; then
     "$UV" pip install --python "$VENV/bin/python" \
       "fastapi>=0.115" "uvicorn[standard]>=0.34" \
       "httpx>=0.28" "aiofiles>=24.1" \
-      "python-multipart>=0.0.20" "websockets>=12.0"
+      "python-multipart>=0.0.20" "websockets>=12.0" \
+      "mcp>=1.28,<2" "packaging>=24"
   else
-    python3 -m venv "$VENV"
+    PYTHON_BIN="python3.11"
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+      if python3 -c 'import sys; assert sys.version_info >= (3, 11)' \
+        >/dev/null 2>&1; then
+        PYTHON_BIN="python3"
+      else
+        echo "[start] Python 3.11+ is required" >&2
+        exit 1
+      fi
+    fi
+    "$PYTHON_BIN" -m venv "$VENV"
     "$VENV/bin/pip" install --upgrade pip
     "$VENV/bin/pip" install \
       "fastapi>=0.115" "uvicorn[standard]>=0.34" \
       "httpx>=0.28" "aiofiles>=24.1" \
-      "python-multipart>=0.0.20" "websockets>=12.0"
+      "python-multipart>=0.0.20" "websockets>=12.0" \
+      "mcp>=1.28,<2" "packaging>=24"
+  fi
+fi
+
+if ! "$VENV/bin/python" -c \
+  'import importlib.metadata as m; from packaging.version import Version; v=Version(m.version("mcp")); assert Version("1.28") <= v < Version("2")' \
+  >/dev/null 2>&1; then
+  if command -v "$UV" >/dev/null 2>&1; then
+    "$UV" pip install --python "$VENV/bin/python" "mcp>=1.28,<2" "packaging>=24"
+  else
+    "$VENV/bin/pip" install "mcp>=1.28,<2" "packaging>=24"
   fi
 fi
 

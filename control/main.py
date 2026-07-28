@@ -35,9 +35,12 @@ from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
+from starlette.routing import Route
 
 import pat_store
 import mcp_store
+from remote_mcp import create_remote_mcp
+from workspace_gateway import WorkspaceGateway
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -55,6 +58,10 @@ VOLUME_SUFFIX  = os.environ.get("VOLUME_SUFFIX")
 if VOLUME_SUFFIX is None:
     VOLUME_SUFFIX = ":Z" if CONTAINER_RUNTIME == "podman" else ""
 BASE_PORT      = int(os.environ.get("BASE_PORT",  "9001"))
+PORT           = int(os.environ.get("PORT", "8090"))
+PUBLIC_BASE_URL = os.environ.get(
+    "PUBLIC_BASE_URL", f"http://localhost:{PORT}"
+).rstrip("/")
 SESSION_DAYS   = 30
 SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 IDLE_STOP_SECONDS = int(os.environ.get("IDLE_STOP_SECONDS", "1800"))
@@ -403,6 +410,13 @@ async def _ensure_workspace(user: dict):
 _client: httpx.AsyncClient = None
 
 
+class _SharedWorkspaceClient:
+    def stream(self, *args, **kwargs):
+        if _client is None:
+            raise httpx.ConnectError("workspace client is not ready")
+        return _client.stream(*args, **kwargs)
+
+
 async def _proxy_http(request: Request, port: int) -> Response:
     url = httpx.URL(
         f"http://localhost:{port}{request.url.path}",
@@ -530,6 +544,55 @@ p{{font-size:.85rem;opacity:.6;color:#c9c9e3}}
 
 # ── FastAPI app ────────────────────────────────────────────────────────────────
 
+
+def _identity_user(identity) -> dict:
+    return {
+        "id": identity.user_id,
+        "username": identity.username,
+        "port": identity.port,
+    }
+
+
+async def _ensure_identity_workspace(identity):
+    user = _identity_user(identity)
+    _touch_user(user)
+    await _ensure_workspace(user)
+
+
+def _identity_workspace_up(identity) -> bool:
+    user = _identity_user(identity)
+    _touch_user(user)
+    return _workspace_up(user)
+
+
+workspace_gateway = WorkspaceGateway(
+    ensure_workspace=_ensure_identity_workspace,
+    workspace_up=_identity_workspace_up,
+    client=_SharedWorkspaceClient(),
+    public_base_url=PUBLIC_BASE_URL,
+)
+project_mcp = create_remote_mcp(
+    DB_PATH, workspace_gateway, PUBLIC_BASE_URL
+)
+project_mcp_app = project_mcp.streamable_http_app()
+
+
+class _ExactMcpEndpoint:
+    """Forward `/mcp` without Starlette's mount-point slash redirect."""
+
+    def __init__(self, asgi_app):
+        self.asgi_app = asgi_app
+
+    async def __call__(self, scope, receive, send):
+        child_scope = dict(scope)
+        child_scope["path"] = "/"
+        child_scope["raw_path"] = b"/"
+        child_scope["root_path"] = (
+            scope.get("root_path", "") + "/mcp"
+        )
+        await self.asgi_app(child_scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app):
     global _client
@@ -538,21 +601,33 @@ async def lifespan(app):
     _client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     app.state.idle_task = asyncio.create_task(_idle_sweeper())
     app.state.mcp_sweep_task = asyncio.create_task(_mcp_sweeper())
-    yield
-    app.state.idle_task.cancel()
-    app.state.mcp_sweep_task.cancel()
     try:
-        await app.state.idle_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await app.state.mcp_sweep_task
-    except asyncio.CancelledError:
-        pass
-    await _client.aclose()
+        async with project_mcp.session_manager.run():
+            yield
+    finally:
+        app.state.idle_task.cancel()
+        app.state.mcp_sweep_task.cancel()
+        try:
+            await app.state.idle_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await app.state.mcp_sweep_task
+        except asyncio.CancelledError:
+            pass
+        await _client.aclose()
 
 
 app = FastAPI(lifespan=lifespan)
+app.router.routes.append(
+    Route(
+        "/mcp",
+        _ExactMcpEndpoint(project_mcp_app),
+        methods=["GET", "POST", "DELETE"],
+        include_in_schema=False,
+    )
+)
+app.mount("/mcp", project_mcp_app)
 
 
 @app.get("/_health")
