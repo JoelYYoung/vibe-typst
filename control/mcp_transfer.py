@@ -65,6 +65,47 @@ def _error_response(status: int, code: str, message: str) -> JSONResponse:
     )
 
 
+def stage_inline_upload(
+    db_path: Path,
+    workspace_base: Path,
+    session: mcp_store.UploadSession,
+    content: bytes,
+) -> Path:
+    if (
+        len(content) != session.size
+        or hashlib.sha256(content).hexdigest() != session.sha256
+    ):
+        raise McpServiceError(
+            "CHECKSUM_MISMATCH",
+            "inline upload metadata does not match its content",
+        )
+    upload_dir = _upload_directory(workspace_base, session.username)
+    part_path = upload_dir / f"{session.id}.part"
+    ready_path = upload_dir / f"{session.id}.ready"
+    if ready_path.exists() or ready_path.is_symlink():
+        raise McpServiceError(
+            "UPLOAD_ALREADY_USED", "upload capability was already used"
+        )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(part_path, flags, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(part_path, ready_path)
+        mcp_store.mark_upload_received(
+            db_path, session.id, len(content)
+        )
+        return ready_path
+    except Exception:
+        part_path.unlink(missing_ok=True)
+        ready_path.unlink(missing_ok=True)
+        raise
+
+
 def create_transfer_router(
     db_path: Path,
     workspace_base: Path,

@@ -414,6 +414,18 @@ class RemoteFileEndpointTest(unittest.IsolatedAsyncioTestCase):
         self._tmp.cleanup()
 
     async def test_agent_file_routes_include_active_context(self):
+        (self.project_dir / ".secret").write_text(
+            "hidden", encoding="utf-8"
+        )
+        listed = self.app.agent_list_files()
+        self.assertEqual(
+            {item["path"] for item in listed["items"]},
+            {"main.typ", "notes.md"},
+        )
+        self.assertTrue(all(
+            "abs_path" not in item for item in listed["items"]
+        ))
+
         read = self.app.agent_read_file("notes.md", offset=1, limit=10)
         self.assertEqual(read["project_id"], "p1")
         self.assertEqual(read["context_version"], "ctx-1")

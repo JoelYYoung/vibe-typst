@@ -173,6 +173,43 @@ def _metadata(target: Path, root: Path) -> dict:
     }
 
 
+def list_items(project: dict) -> list[dict]:
+    root = _project_root(project)
+    active_main = _active_main(project, root)
+    items = []
+    for target in sorted(root.rglob("*")):
+        relative = target.relative_to(root)
+        if any(part.startswith(".") for part in relative.parts):
+            continue
+        if target.is_symlink():
+            continue
+        if target.is_dir():
+            item = {
+                "path": relative.as_posix(),
+                "name": target.name,
+                "type": "dir",
+            }
+        elif target.is_file():
+            item = {
+                "path": relative.as_posix(),
+                "name": target.name,
+                "type": "file",
+                "size": target.stat().st_size,
+            }
+        else:
+            continue
+        protected = target == active_main
+        if project.get("type") == "pdf":
+            protected = protected or projects._is_pdf_managed_path(
+                root, target
+            )
+        item["protected"] = protected
+        items.append(item)
+        if len(items) > 5000:
+            raise ValueError("project contains too many items to list")
+    return items
+
+
 def read_text(
     project: dict,
     rel_path: str,

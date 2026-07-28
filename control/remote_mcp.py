@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
+import re
 import secrets
 import time
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable
 from urllib.parse import quote, urlsplit
 
@@ -20,6 +25,7 @@ from typing_extensions import TypedDict
 
 import mcp_store
 import pat_store
+from mcp_transfer import stage_inline_upload
 from mcp_errors import McpServiceError
 from mcp_limits import TokenLimiter
 from pat_store import PatIdentity
@@ -94,10 +100,12 @@ class _RemoteProjectService:
         db_path: Path,
         gateway: WorkspaceGateway,
         limiter: TokenLimiter | None = None,
+        workspace_base: Path = Path("/workspaces"),
     ):
         self.db_path = db_path
         self.gateway = gateway
         self.limiter = limiter or TokenLimiter()
+        self.workspace_base = Path(workspace_base)
 
     @staticmethod
     def _identity() -> PatIdentity:
@@ -232,6 +240,57 @@ class _RemoteProjectService:
             )
         return lease, project, context
 
+    @staticmethod
+    def _relative_path(path: str) -> str:
+        if (
+            not isinstance(path, str)
+            or not path
+            or len(path) > 1024
+            or "\x00" in path
+            or "\\" in path
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", "path is not allowed"
+            )
+        parsed = PurePosixPath(path)
+        if parsed.is_absolute() or path == "." or ".." in parsed.parts:
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", "path is not allowed"
+            )
+        return parsed.as_posix()
+
+    @staticmethod
+    def _opaque_id(value: str, label: str) -> str:
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"[0-9a-f]{32}", value) is None
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", f"{label} is invalid"
+            )
+        return value
+
+    @staticmethod
+    def _checked_backend_result(
+        lease: mcp_store.Lease, body: dict
+    ) -> RemoteToolResult:
+        if (
+            body.get("project_id") != lease.project_id
+            or body.get("context_version") != lease.context_version
+        ):
+            raise McpServiceError(
+                "PROJECT_CONTEXT_CHANGED",
+                "the active project context changed; open the project again",
+            )
+        return {
+            "ok": True,
+            **{
+                key: value
+                for key, value in body.items()
+                if key not in {"project_id", "context_version", "ok"}
+            },
+        }
+
     async def list_projects(self) -> RemoteToolResult:
         async def operation(identity):
             projects = await self.gateway.list_projects(identity)
@@ -358,11 +417,460 @@ class _RemoteProjectService:
             audit_context=audit_context,
         )
 
+    async def list_files(self, project_handle: str) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            body = await self.gateway.request(
+                identity, "GET", "/api/agent/files"
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run("list_files", "files:read", operation)
+
+    async def read_text_file(
+        self,
+        project_handle: str,
+        path: str,
+        offset: int = 1,
+        limit: int = 120,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_path = self._relative_path(path)
+            body = await self.gateway.request(
+                identity,
+                "GET",
+                (
+                    "/api/agent/files/read"
+                    f"?path={quote(safe_path, safe='')}"
+                    f"&offset={offset}&limit={limit}"
+                ),
+            )
+            result = self._checked_backend_result(lease, body)
+            if result.get("download_required") is True:
+                public, capability = mcp_store.begin_download(
+                    self.db_path,
+                    identity,
+                    lease.project_id,
+                    (
+                        "/api/project/files/download"
+                        f"?path={quote(safe_path, safe='')}"
+                    ),
+                    filename=PurePosixPath(safe_path).name,
+                    size=result.get("size"),
+                    sha256=result.get("sha256"),
+                )
+                result.update({
+                    "download_url": (
+                        f"{self.gateway.public_base_url}"
+                        f"/mcp-download/{public['id']}"
+                    ),
+                    "authorization": f"Download {capability}",
+                    "expires_at": public["expires_at"],
+                })
+            return result
+
+        return await self._run(
+            "read_text_file", "files:read", operation
+        )
+
+    async def write_text_file(
+        self,
+        project_handle: str,
+        path: str,
+        content: str,
+        expected_sha256: str,
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_path = self._relative_path(path)
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"file:{safe_path}",),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/agent/files/write",
+                json={
+                    "path": safe_path,
+                    "content": content,
+                    "expected_sha256": expected_sha256,
+                },
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "write_text_file",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def create_directory(
+        self, project_handle: str, path: str
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_path = self._relative_path(path)
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"directory:{safe_path}",),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/agent/files/mkdir",
+                json={"path": safe_path},
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "create_directory",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def move_file(
+        self,
+        project_handle: str,
+        old_path: str,
+        new_path: str,
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_old = self._relative_path(old_path)
+            safe_new = self._relative_path(new_path)
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (
+                    f"file:{safe_old}",
+                    f"file:{safe_new}",
+                ),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/agent/files/move",
+                json={"from": safe_old, "to": safe_new},
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "move_file",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def begin_file_upload(
+        self,
+        project_handle: str,
+        path: str,
+        filename: str,
+        size: int,
+        sha256: str,
+        overwrite: bool = False,
+        expected_sha256: str | None = None,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_path = self._relative_path(path)
+            public, capability = mcp_store.begin_upload(
+                self.db_path,
+                identity,
+                "file",
+                lease.project_id,
+                safe_path,
+                size,
+                sha256,
+                filename,
+                overwrite=overwrite,
+                expected_sha256=expected_sha256,
+            )
+            return {
+                "ok": True,
+                "upload_id": public["id"],
+                "upload_url": (
+                    f"{self.gateway.public_base_url}"
+                    f"/mcp-upload/{public['id']}"
+                ),
+                "authorization": f"Upload {capability}",
+                "expires_at": public["expires_at"],
+                "size": public["size"],
+                "sha256": public["sha256"],
+            }
+
+        return await self._run(
+            "begin_file_upload", "files:write", operation
+        )
+
+    async def _finish_file_session(
+        self,
+        identity: PatIdentity,
+        project_handle: str,
+        upload_id: str,
+    ) -> RemoteToolResult:
+        lease, _, _ = await self._handled_project(
+            identity, project_handle
+        )
+        session = mcp_store.complete_upload(
+            self.db_path,
+            upload_id,
+            identity,
+            expected_kind="file",
+            expected_project_id=lease.project_id,
+        )
+        try:
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/agent/files/install-upload",
+                json={
+                    "upload_id": session.id,
+                    "path": session.destination,
+                    "size": session.size,
+                    "sha256": session.sha256,
+                    "overwrite": session.overwrite,
+                    "expected_sha256": session.expected_sha256,
+                },
+            )
+            result = self._checked_backend_result(lease, body)
+            mcp_store.finish_upload(self.db_path, upload_id)
+            return result
+        except Exception:
+            mcp_store.fail_upload(
+                self.db_path, upload_id, "BACKEND_ERROR"
+            )
+            raise
+
+    async def finish_file_upload(
+        self, project_handle: str, upload_id: str
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            safe_upload_id = self._opaque_id(upload_id, "upload id")
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"upload:{safe_upload_id}",),
+            })
+            result = await self._finish_file_session(
+                identity, project_handle, safe_upload_id
+            )
+            return result
+
+        return await self._run(
+            "finish_file_upload",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def upload_file(
+        self,
+        project_handle: str,
+        path: str,
+        content_base64: str,
+        size: int,
+        sha256: str,
+        overwrite: bool = False,
+        expected_sha256: str | None = None,
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_path = self._relative_path(path)
+            if (
+                isinstance(size, bool)
+                or not isinstance(size, int)
+                or size < 0
+                or size > 1024 * 1024
+            ):
+                raise McpServiceError(
+                    "FILE_TOO_LARGE",
+                    "inline uploads are limited to 1 MiB",
+                )
+            try:
+                content = base64.b64decode(
+                    content_base64, validate=True
+                )
+            except (TypeError, ValueError, binascii.Error) as exc:
+                raise McpServiceError(
+                    "CHECKSUM_MISMATCH",
+                    "inline upload is not valid base64",
+                ) from exc
+            if (
+                len(content) != size
+                or not isinstance(sha256, str)
+                or hashlib.sha256(content).hexdigest()
+                != sha256.lower()
+            ):
+                raise McpServiceError(
+                    "CHECKSUM_MISMATCH",
+                    "inline upload metadata does not match",
+                )
+            public, capability = mcp_store.begin_upload(
+                self.db_path,
+                identity,
+                "file",
+                lease.project_id,
+                safe_path,
+                size,
+                sha256,
+                PurePosixPath(safe_path).name,
+                overwrite=overwrite,
+                expected_sha256=expected_sha256,
+            )
+            session = mcp_store.authorize_upload(
+                self.db_path, public["id"], capability
+            )
+            ready_path = None
+            try:
+                ready_path = stage_inline_upload(
+                    self.db_path,
+                    self.workspace_base,
+                    session,
+                    content,
+                )
+                result = await self._finish_file_session(
+                    identity, project_handle, session.id
+                )
+            except Exception:
+                if ready_path is not None:
+                    ready_path.unlink(missing_ok=True)
+                mcp_store.fail_upload(
+                    self.db_path, session.id, "BACKEND_ERROR"
+                )
+                raise
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"file:{safe_path}",),
+            })
+            return result
+
+        return await self._run(
+            "upload_file",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def delete_file(
+        self, project_handle: str, path: str
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_path = self._relative_path(path)
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"file:{safe_path}",),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/agent/files/delete",
+                json={
+                    "path": safe_path,
+                    "actor_token_id": identity.token_id,
+                },
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "delete_file",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def list_deleted_files(
+        self, project_handle: str
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            body = await self.gateway.request(
+                identity, "GET", "/api/agent/files/trash"
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "list_deleted_files", "files:read", operation
+        )
+
+    async def restore_deleted_file(
+        self, project_handle: str, trash_id: str
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _, _ = await self._handled_project(
+                identity, project_handle
+            )
+            safe_trash_id = self._opaque_id(trash_id, "trash id")
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"trash:{safe_trash_id}",),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/agent/files/restore",
+                json={"trash_id": safe_trash_id},
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "restore_deleted_file",
+            "files:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
 
 def create_remote_mcp(
     db_path: Path,
     gateway: WorkspaceGateway,
     public_base_url: str,
+    workspace_base: Path = Path("/workspaces"),
 ) -> FastMCP:
     public_base_url = public_base_url.rstrip("/")
     parsed = urlsplit(public_base_url)
@@ -394,7 +902,9 @@ def create_remote_mcp(
             ],
         ),
     )
-    service = _RemoteProjectService(db_path, gateway)
+    service = _RemoteProjectService(
+        db_path, gateway, workspace_base=workspace_base
+    )
 
     @server.tool()
     async def list_projects() -> CallToolResult:
@@ -429,5 +939,146 @@ def create_remote_mcp(
     async def close_project(project_handle: str) -> CallToolResult:
         """Close the handled project and invalidate its project context."""
         return _protocol_result(await service.close_project(project_handle))
+
+    @server.tool()
+    async def list_files(project_handle: str) -> CallToolResult:
+        """List safe visible paths in the handled project; protected main files are labelled."""
+        return _protocol_result(await service.list_files(project_handle))
+
+    @server.tool()
+    async def read_text_file(
+        project_handle: str,
+        path: str,
+        offset: int = 1,
+        limit: int = 120,
+    ) -> CallToolResult:
+        """Read a bounded text window from the handled project; binary/large files return a one-time download."""
+        return _protocol_result(
+            await service.read_text_file(
+                project_handle, path, offset, limit
+            )
+        )
+
+    @server.tool()
+    async def write_text_file(
+        project_handle: str,
+        path: str,
+        content: str,
+        expected_sha256: str,
+    ) -> CallToolResult:
+        """Replace an ordinary text file only at expected_sha256; Typst main and PDF-managed files are protected."""
+        return _protocol_result(
+            await service.write_text_file(
+                project_handle, path, content, expected_sha256
+            )
+        )
+
+    @server.tool()
+    async def create_directory(
+        project_handle: str, path: str
+    ) -> CallToolResult:
+        """Create a visible directory inside the handled project."""
+        return _protocol_result(
+            await service.create_directory(project_handle, path)
+        )
+
+    @server.tool()
+    async def move_file(
+        project_handle: str,
+        old_path: str,
+        new_path: str,
+    ) -> CallToolResult:
+        """Move one ordinary file/directory without overwriting; protected project state cannot move."""
+        return _protocol_result(
+            await service.move_file(
+                project_handle, old_path, new_path
+            )
+        )
+
+    @server.tool()
+    async def upload_file(
+        project_handle: str,
+        path: str,
+        content_base64: str,
+        size: int,
+        sha256: str,
+        overwrite: bool = False,
+        expected_sha256: str | None = None,
+    ) -> CallToolResult:
+        """Upload at most 1 MiB inline to an ordinary path; overwrite is off unless paired with the current SHA-256."""
+        return _protocol_result(
+            await service.upload_file(
+                project_handle,
+                path,
+                content_base64,
+                size,
+                sha256,
+                overwrite,
+                expected_sha256,
+            )
+        )
+
+    @server.tool()
+    async def begin_file_upload(
+        project_handle: str,
+        path: str,
+        filename: str,
+        size: int,
+        sha256: str,
+        overwrite: bool = False,
+        expected_sha256: str | None = None,
+    ) -> CallToolResult:
+        """Begin a 100 MiB maximum staged upload; PUT once with the returned Upload authorization, then finish_file_upload."""
+        return _protocol_result(
+            await service.begin_file_upload(
+                project_handle,
+                path,
+                filename,
+                size,
+                sha256,
+                overwrite,
+                expected_sha256,
+            )
+        )
+
+    @server.tool()
+    async def finish_file_upload(
+        project_handle: str, upload_id: str
+    ) -> CallToolResult:
+        """Atomically install a completed staged upload into its predeclared handled-project path."""
+        return _protocol_result(
+            await service.finish_file_upload(
+                project_handle, upload_id
+            )
+        )
+
+    @server.tool()
+    async def delete_file(
+        project_handle: str, path: str
+    ) -> CallToolResult:
+        """Move an ordinary handled-project file/directory to recoverable 30-day trash."""
+        return _protocol_result(
+            await service.delete_file(project_handle, path)
+        )
+
+    @server.tool()
+    async def list_deleted_files(
+        project_handle: str,
+    ) -> CallToolResult:
+        """List recoverable deleted items for the handled project."""
+        return _protocol_result(
+            await service.list_deleted_files(project_handle)
+        )
+
+    @server.tool()
+    async def restore_deleted_file(
+        project_handle: str, trash_id: str
+    ) -> CallToolResult:
+        """Restore a trashed item only when its original path is still free."""
+        return _protocol_result(
+            await service.restore_deleted_file(
+                project_handle, trash_id
+            )
+        )
 
     return server

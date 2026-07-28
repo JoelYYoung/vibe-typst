@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import json
 import socket
@@ -67,6 +68,8 @@ class _FailIfReadStream(httpx.AsyncByteStream):
 
 
 class _FakeProjectGateway:
+    public_base_url = "https://slides.example"
+
     def __init__(self):
         self.projects = [
             {"id": "p1", "name": "One", "type": "typst"},
@@ -74,6 +77,7 @@ class _FakeProjectGateway:
         ]
         self.active = None
         self.context_version = "ctx-empty"
+        self.files = {"notes.md": b"old"}
 
     async def list_projects(self, identity):
         return [dict(project) for project in self.projects]
@@ -121,6 +125,49 @@ class _FakeProjectGateway:
     async def request(
         self, identity, method, path, json=None, timeout=30
     ):
+        if method == "GET" and path == "/api/agent/files":
+            return {
+                "items": [{
+                    "path": "notes.md",
+                    "name": "notes.md",
+                    "type": "file",
+                    "size": len(self.files["notes.md"]),
+                    "protected": False,
+                }],
+                "project_id": self.active["id"],
+                "context_version": self.context_version,
+            }
+        if method == "GET" and path.startswith(
+            "/api/agent/files/read?"
+        ):
+            content = self.files["notes.md"]
+            return {
+                "path": "notes.md",
+                "size": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "total_lines": 1,
+                "shown": "1-1",
+                "text": f"1: {content.decode()}",
+                "truncated": False,
+                "next": None,
+                "download_required": False,
+                "project_id": self.active["id"],
+                "context_version": self.context_version,
+            }
+        if (
+            method == "POST"
+            and path == "/api/agent/files/write"
+        ):
+            self.files["notes.md"] = json["content"].encode()
+            return {
+                "path": "notes.md",
+                "size": len(self.files["notes.md"]),
+                "sha256": hashlib.sha256(
+                    self.files["notes.md"]
+                ).hexdigest(),
+                "project_id": self.active["id"],
+                "context_version": self.context_version,
+            }
         if method == "PATCH" and path == "/api/projects/p1":
             self.active = {**self.active, "name": json["name"]}
             self.projects = [
@@ -623,6 +670,17 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                             "get_project",
                             "rename_project",
                             "close_project",
+                            "list_files",
+                            "read_text_file",
+                            "write_text_file",
+                            "create_directory",
+                            "move_file",
+                            "upload_file",
+                            "begin_file_upload",
+                            "finish_file_upload",
+                            "delete_file",
+                            "list_deleted_files",
+                            "restore_deleted_file",
                         },
                     )
 
@@ -671,6 +729,32 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         got.structuredContent["project"]["id"], "p1"
                     )
+                    remote_files = await session.call_tool(
+                        "list_files", {"project_handle": handle}
+                    )
+                    self.assertEqual(
+                        remote_files.structuredContent["items"][0]["path"],
+                        "notes.md",
+                    )
+                    remote_text = await session.call_tool(
+                        "read_text_file",
+                        {
+                            "project_handle": handle,
+                            "path": "notes.md",
+                        },
+                    )
+                    written = await session.call_tool(
+                        "write_text_file",
+                        {
+                            "project_handle": handle,
+                            "path": "notes.md",
+                            "content": "new",
+                            "expected_sha256": (
+                                remote_text.structuredContent["sha256"]
+                            ),
+                        },
+                    )
+                    self.assertTrue(written.structuredContent["ok"])
                     renamed = await session.call_tool(
                         "rename_project",
                         {
@@ -726,6 +810,7 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
             {
                 "create_typst_project",
                 "open_project",
+                "write_text_file",
                 "rename_project",
                 "close_project",
             },
@@ -921,6 +1006,43 @@ class WorkspaceGatewayTest(unittest.IsolatedAsyncioTestCase):
             await gateway.list_projects(self.identity)
         self.assertEqual(starting.exception.code, "WORKSPACE_STARTING")
         self.assertNotIn("9101", str(starting.exception))
+
+    async def test_agent_file_conflicts_keep_stable_revision_error(self):
+        async def backend(request):
+            return httpx.Response(
+                409,
+                json={
+                    "detail": {
+                        "code": "REVISION_CONFLICT",
+                        "message": "private path omitted",
+                        "current_sha256": "a" * 64,
+                    }
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        self.addAsyncCleanup(client.aclose)
+        gateway = WorkspaceGateway(
+            ensure_workspace=lambda identity: None,
+            workspace_up=lambda identity: True,
+            client=client,
+            public_base_url="https://slides.example",
+        )
+
+        with self.assertRaises(McpServiceError) as conflict:
+            await gateway.request(
+                self.identity,
+                "POST",
+                "/api/agent/files/write",
+                json={
+                    "path": "notes.md",
+                    "content": "new",
+                    "expected_sha256": "0" * 64,
+                },
+            )
+
+        self.assertEqual(conflict.exception.code, "REVISION_CONFLICT")
+        self.assertNotIn("private path", str(conflict.exception))
 
     async def test_declared_oversized_json_is_rejected_without_reading_it(self):
         async def backend(request):

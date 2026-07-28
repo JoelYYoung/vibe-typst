@@ -62,6 +62,8 @@ class UploadSession:
     size: int
     sha256: str
     filename: str
+    overwrite: bool
+    expected_sha256: str | None
     state: str
     created_at: float
     expires_at: float
@@ -144,6 +146,8 @@ def migrate(db_path: Path) -> None:
                 size          INTEGER NOT NULL,
                 sha256        TEXT NOT NULL,
                 filename      TEXT NOT NULL,
+                overwrite     INTEGER NOT NULL DEFAULT 0,
+                expected_sha256 TEXT,
                 state         TEXT NOT NULL,
                 created_at    REAL NOT NULL,
                 expires_at    REAL NOT NULL,
@@ -177,6 +181,26 @@ def migrate(db_path: Path) -> None:
                 ON download_sessions(expires_at);
             """
         )
+        upload_columns = {
+            row[1]
+            for row in db.execute(
+                "PRAGMA table_info(upload_sessions)"
+            ).fetchall()
+        }
+        if "overwrite" not in upload_columns:
+            db.execute(
+                """
+                ALTER TABLE upload_sessions
+                ADD COLUMN overwrite INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        if "expected_sha256" not in upload_columns:
+            db.execute(
+                """
+                ALTER TABLE upload_sessions
+                ADD COLUMN expected_sha256 TEXT
+                """
+            )
 
 
 def _required_text(value: str, label: str) -> str:
@@ -392,6 +416,8 @@ def _upload_from_row(row: sqlite3.Row) -> UploadSession:
         size=row["size"],
         sha256=row["sha256"],
         filename=row["filename"],
+        overwrite=bool(row["overwrite"]),
+        expected_sha256=row["expected_sha256"],
         state=row["state"],
         created_at=row["created_at"],
         expires_at=row["expires_at"],
@@ -436,6 +462,9 @@ def begin_upload(
     sha256: str,
     filename: str,
     now: float | None = None,
+    *,
+    overwrite: bool = False,
+    expected_sha256: str | None = None,
 ) -> tuple[dict, str]:
     if kind not in {"file", "pdf_project", "pdf_replacement"}:
         raise ValueError("upload kind is invalid")
@@ -448,6 +477,14 @@ def begin_upload(
     validated_size = _validated_size(size)
     validated_hash = _validated_sha256(sha256)
     filename = _validated_filename(filename)
+    if not isinstance(overwrite, bool):
+        raise ValueError("overwrite must be a boolean")
+    if overwrite:
+        expected_sha256 = _validated_sha256(expected_sha256)
+    elif expected_sha256 is not None:
+        raise ValueError(
+            "expected_sha256 is only valid when overwrite is true"
+        )
     created_at = time.time() if now is None else float(now)
     expires_at = created_at + UPLOAD_TTL_SECONDS
     upload_id = secrets.token_hex(16)
@@ -476,8 +513,8 @@ def begin_upload(
             INSERT INTO upload_sessions (
                 id, capability_hash, user_id, token_id, username, kind,
                 project_id, destination, size, sha256, filename, state,
-                created_at, expires_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+                created_at, expires_at, overwrite, expected_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
             """,
             (
                 upload_id,
@@ -493,6 +530,8 @@ def begin_upload(
                 filename,
                 created_at,
                 expires_at,
+                int(overwrite),
+                expected_sha256,
             ),
         )
     return (
@@ -504,6 +543,8 @@ def begin_upload(
             "size": validated_size,
             "sha256": validated_hash,
             "filename": filename,
+            "overwrite": overwrite,
+            "expected_sha256": expected_sha256,
             "created_at": created_at,
             "expires_at": expires_at,
         },
@@ -600,6 +641,9 @@ def complete_upload(
     upload_id: str,
     identity: PatIdentity,
     now: float | None = None,
+    *,
+    expected_kind: str | None = None,
+    expected_project_id: str | None = None,
 ) -> UploadSession:
     completed_at = time.time() if now is None else float(now)
     with _connect(db_path) as db:
@@ -612,6 +656,14 @@ def complete_upload(
             or row["expires_at"] <= completed_at
             or row["user_id"] != identity.user_id
             or row["token_id"] != identity.token_id
+            or (
+                expected_kind is not None
+                and row["kind"] != expected_kind
+            )
+            or (
+                expected_project_id is not None
+                and row["project_id"] != expected_project_id
+            )
         ):
             raise _private_transfer_error()
         if row["state"] != "received":

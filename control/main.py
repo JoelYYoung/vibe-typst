@@ -578,7 +578,7 @@ workspace_gateway = WorkspaceGateway(
     public_base_url=PUBLIC_BASE_URL,
 )
 project_mcp = create_remote_mcp(
-    DB_PATH, workspace_gateway, PUBLIC_BASE_URL
+    DB_PATH, workspace_gateway, PUBLIC_BASE_URL, WORKSPACE_BASE
 )
 project_mcp_app = project_mcp.streamable_http_app()
 

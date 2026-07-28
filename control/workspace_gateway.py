@@ -79,7 +79,24 @@ class WorkspaceGateway:
                 method.upper(), url, **kwargs
             ) as response:
                 if response.status_code >= 400:
-                    self._raise_backend_status(response.status_code, path)
+                    error_payload = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        error_payload.extend(chunk)
+                        if len(error_payload) > 64 * 1024:
+                            break
+                    error_code = None
+                    try:
+                        error_body = json_module.loads(error_payload)
+                        detail = error_body.get("detail")
+                        if isinstance(detail, dict):
+                            candidate = detail.get("code")
+                            if isinstance(candidate, str):
+                                error_code = candidate
+                    except (TypeError, ValueError):
+                        pass
+                    self._raise_backend_status(
+                        response.status_code, path, error_code
+                    )
                 declared_size = response.headers.get("content-length")
                 if declared_size is not None:
                     try:
@@ -165,7 +182,11 @@ class WorkspaceGateway:
             await manager.__aexit__(None, None, None)
 
     @staticmethod
-    def _raise_backend_status(status_code: int, path: str) -> None:
+    def _raise_backend_status(
+        status_code: int,
+        path: str,
+        error_code: str | None = None,
+    ) -> None:
         if status_code == 404:
             if path.startswith("/api/projects/"):
                 raise McpServiceError(
@@ -173,8 +194,21 @@ class WorkspaceGateway:
                 )
             raise McpServiceError("FILE_NOT_FOUND", "resource not found")
         if status_code == 409:
+            if error_code == "REVISION_CONFLICT":
+                raise McpServiceError(
+                    "REVISION_CONFLICT",
+                    "file revision changed; read it again before writing",
+                )
             raise McpServiceError(
                 "DESTINATION_EXISTS", "destination already exists"
+            )
+        if status_code == 403:
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", "path is not allowed"
+            )
+        if status_code == 400 and path.startswith("/api/agent/files"):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", "file operation was rejected"
             )
         if status_code == 413:
             raise McpServiceError("FILE_TOO_LARGE", "file is too large")

@@ -1931,6 +1931,16 @@ def _raise_remote_file_error(exc: Exception) -> None:
     raise exc
 
 
+@app.get("/api/agent/files")
+def agent_list_files():
+    project = _active_agent_project()
+    try:
+        items = remote_files.list_items(project)
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context({"items": items})
+
+
 @app.get("/api/agent/files/read")
 def agent_read_file(path: str, offset: int = 1, limit: int = 120):
     project = _active_agent_project()
