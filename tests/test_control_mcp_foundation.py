@@ -10,7 +10,7 @@ import tempfile
 import unittest
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import uvicorn
@@ -1383,18 +1383,26 @@ class ControlMcpStoreWiringTest(unittest.IsolatedAsyncioTestCase):
                 'name="next" value="/?openProject=pdf-1"',
                 failed.text,
             )
-            signed_in = await client.post(
-                "/login",
-                data={
-                    "username": self.user["username"],
-                    "password": "correct-horse",
-                    "next": "/?openProject=pdf-1",
-                },
-            )
+            ensure_workspace = AsyncMock()
+            with patch.object(
+                self.control,
+                "_ensure_workspace",
+                ensure_workspace,
+            ):
+                signed_in = await client.post(
+                    "/login",
+                    data={
+                        "username": self.user["username"],
+                        "password": "correct-horse",
+                        "next": "/?openProject=pdf-1",
+                    },
+                )
+                await asyncio.sleep(0)
             self.assertEqual(signed_in.status_code, 303)
             self.assertEqual(
                 signed_in.headers["location"], "/?openProject=pdf-1"
             )
+            ensure_workspace.assert_awaited_once_with(self.user)
             already_signed_in = await client.get(
                 "/login", params={"next": "/?openProject=typst-1"}
             )
