@@ -15,6 +15,7 @@ import json
 import os
 import pty
 import re
+import secrets
 import signal
 import stat
 import struct
@@ -57,6 +58,7 @@ HERE = Path(__file__).resolve().parent
 
 # ── active project (in-memory; cleared on restart unless runtime state persists the file) ──
 _active_project: dict | None = None
+_project_context_version = secrets.token_urlsafe(24)
 _pdf_render_state = {"next_version": 0, "records": {}}
 _pdf_render_state_lock = threading.Lock()
 _PDF_PAGE_NAME = re.compile(r"page-([1-9][0-9]*)\.png$")
@@ -64,6 +66,22 @@ MAX_PDF_UPLOAD_BYTES = projects_mod.MAX_PDF_UPLOAD_BYTES
 _PDF_UPLOAD_CHUNK_BYTES = 1024 * 1024
 _PDF_MULTIPART_OVERHEAD_BYTES = 64 * 1024
 _PDF_FORM_MAX_PART_BYTES = 16 * 1024
+
+
+def _active_context() -> dict[str, str | None]:
+    return {
+        "project_id": (_active_project or {}).get("id"),
+        "context_version": _project_context_version,
+    }
+
+
+def _set_active_project(project: dict | None) -> None:
+    global _active_project, _project_context_version
+    before = (_active_project or {}).get("id")
+    after = (project or {}).get("id")
+    if before != after:
+        _project_context_version = secrets.token_urlsafe(24)
+    _active_project = project
 
 
 class _PdfIngressTooLarge(MultiPartException):
@@ -368,6 +386,7 @@ def _pdf_activation_response(
         "tokens": {}, "version": version,
         "generation": _pdf_render_generation(target.pdf, target.identity),
         "transcripts": transcripts,
+        **_active_context(),
     }
 
 
@@ -408,7 +427,6 @@ async def _activate_pdf() -> dict:
 
 async def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
     """Prepare PDF state before publishing a switch away from a Typst project."""
-    global _active_project
     expected = _target_pdf_identity(info, pdf_path)
     rendered, transcripts, version = await asyncio.to_thread(
         _prepare_locked_pdf, expected, require_active=False
@@ -417,11 +435,11 @@ async def _activate_pdf_project(info: dict, pdf_path: Path) -> dict:
     previous_project = _active_project
     try:
         runtime.set_file(str(pdf_path))
-        _active_project = info
+        _set_active_project(info)
         await _retire_typst_for_pdf()
         return _pdf_activation_response(rendered, transcripts, version, expected)
     except Exception:
-        _active_project = previous_project
+        _set_active_project(previous_project)
         runtime.restore_file(previous_file)
         raise
 
@@ -436,17 +454,16 @@ def _has_valid_file() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _active_project
     # A PDF does not start the CRDT websocket server. Typst initializes it only when needed.
     if _has_valid_file():
         if runtime.document_type() == "pdf":
             info = _matching_pdf_project(runtime.current_file())
             if info is not None:
-                _active_project = info
+                _set_active_project(info)
                 try:
                     await _activate_pdf()
                 except Exception:
-                    _active_project = None
+                    _set_active_project(None)
         else:
             await docstore.start()
             store.set_path(str(runtime.store_path()))
@@ -557,6 +574,7 @@ def state():
                     "generation": _pdf_render_generation(
                         expected.pdf, expected.identity
                     ),
+                    **_active_context(),
                 }
             return _locked_pdf_observation(observe, expected, recorded_render=True)
         except ValueError as exc:
@@ -577,6 +595,7 @@ def state():
         "preview": resolver.status(),
         "workdir_ready": workdir.is_ready(),
         "external_edit_seq": docstore.external_edit_seq,
+        **_active_context(),
     }
 
 
@@ -677,12 +696,12 @@ async def _activate_current() -> dict:
         "preview": resolver.status(),
         "workdir_ready": workdir.is_ready(),
         "external_edit_seq": docstore.external_edit_seq,
+        **_active_context(),
     }
 
 
 @app.post("/api/open-file")
 async def open_file(request: Request):
-    global _active_project
     body = await request.json()
     requested = (body or {}).get("path", "")
     try:
@@ -713,7 +732,7 @@ async def open_file(request: Request):
     previous_project = _active_project
     try:
         runtime.set_file(requested)
-        _active_project = None
+        _set_active_project(None)
         return await _activate_current()
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
@@ -727,7 +746,7 @@ async def open_file(request: Request):
             store.close()
         except Exception:
             pass
-        _active_project = previous_project
+        _set_active_project(previous_project)
         runtime.restore_file(previous_file)
         raise
 
@@ -1611,6 +1630,7 @@ def app_state():
             if root and str(f).startswith(str(root)):
                 project_id = f.parent.name
                 proj = projects_mod.get_project(project_id)
+                _set_active_project(proj)
         except Exception:
             pass
     return {
@@ -1618,6 +1638,7 @@ def app_state():
         "configured": app_config.is_configured(),
         "active_project": proj,
         "editor_ready": _has_valid_file(),
+        **_active_context(),
     }
 
 
@@ -1745,15 +1766,13 @@ async def rename_project(project_id: str, request: Request):
     except FileExistsError as e:
         raise HTTPException(409, str(e))
     # If the renamed project is the active one, update the active project state
-    global _active_project
     if _active_project and _active_project.get("id") == project_id:
-        _active_project = p
+        _set_active_project(p)
     return p
 
 
 @app.delete("/api/projects/{project_id:path}")
 def delete_project(project_id: str):
-    global _active_project
     # Release every handle to the project's files FIRST (resolver process + comment-DB
     # connection) if they point into the folder we're about to delete — even if it was
     # already "closed" (active=None) but the resolver/store still hold its files. On NFS an
@@ -1770,7 +1789,7 @@ def delete_project(project_id: str):
     except Exception:
         pass
     if _active_project and _active_project.get("id") == project_id:
-        _active_project = None
+        _set_active_project(None)
     try:
         projects_mod.delete_project(project_id)
     except FileNotFoundError as e:
@@ -1798,7 +1817,6 @@ async def copy_project(project_id: str, request: Request):
 @app.post("/api/projects/{project_id:path}/open")
 async def open_project(project_id: str):
     """Activate a project: set its main file as the active file and start the resolver."""
-    global _active_project
     try:
         info = projects_mod.get_project(project_id)
     except FileNotFoundError as e:
@@ -1807,6 +1825,18 @@ async def open_project(project_id: str):
         project_type, main_path = _project_document(info)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    same_runtime = (
+        (_active_project or {}).get("id") == project_id
+        and runtime.current_file() == main_path
+    )
+    if project_type == "pdf":
+        render_record = _pdf_render_record(
+            main_path, _pdf_identity(main_path, info)
+        )
+        same_runtime = same_runtime and render_record is not None
+    if same_runtime:
+        _set_active_project(info)
+        return {"ok": True, "project": info, **_active_context()}
     if project_type == "pdf":
         try:
             await _activate_pdf_project(info, main_path)
@@ -1816,12 +1846,12 @@ async def open_project(project_id: str):
             _setup_workdir_and_migrate()
         except Exception:
             pass
-        return {"ok": True, "project": info}
+        return {"ok": True, "project": info, **_active_context()}
     previous_file = runtime._state.get("file")
     previous_project = _active_project
     try:
         runtime.set_file(str(main_path))
-        _active_project = info
+        _set_active_project(info)
         store.set_path(str(runtime.store_path()))
         runtime.backup()
         await docstore.start()
@@ -1837,7 +1867,7 @@ async def open_project(project_id: str):
             store.close()
         except Exception:
             pass
-        _active_project = previous_project
+        _set_active_project(previous_project)
         runtime.restore_file(previous_file)
         raise
     # Auto-set-up the workdir (Claude + Codex config + enabled vibe-typst MCP server) on every
@@ -1847,7 +1877,7 @@ async def open_project(project_id: str):
         _setup_workdir_and_migrate()
     except Exception:
         pass
-    return {"ok": True, "project": info}
+    return {"ok": True, "project": info, **_active_context()}
 
 
 @app.post("/api/projects/close")
@@ -1855,13 +1885,12 @@ def close_project():
     """Deactivate the current project (returns to the projects list). Releases the resolver
     process and comment-DB connection so the project's files aren't held open — otherwise a
     subsequent delete on NFS leaves .nfs* silly-rename ghosts."""
-    global _active_project
-    _active_project = None
+    _set_active_project(None)
     try: resolver.stop()
     except Exception: pass
     try: store.close()
     except Exception: pass
-    return {"ok": True}
+    return {"ok": True, **_active_context()}
 
 
 # ---------------------------------------------------------------- file management within project
