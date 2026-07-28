@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import json
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,7 @@ import mcp_limits
 import mcp_store
 from mcp_errors import ERROR_CODES, McpServiceError
 from pat_store import PatIdentity
+from workspace_gateway import WorkspaceGateway
 
 
 EXPECTED_ERROR_CODES = frozenset(
@@ -47,6 +49,12 @@ EXPECTED_ERROR_CODES = frozenset(
         "BACKEND_ERROR",
     }
 )
+
+
+class _FailIfReadStream(httpx.AsyncByteStream):
+    async def __aiter__(self):
+        raise AssertionError("oversized response body was read")
+        yield b""
 
 
 class McpErrorTest(unittest.TestCase):
@@ -382,6 +390,215 @@ class TokenLimiterTest(unittest.IsolatedAsyncioTestCase):
         permit.release()
 
 
+class WorkspaceGatewayTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.identity = PatIdentity(
+            token_id="token-a",
+            user_id="user-a",
+            username="alice",
+            port=9101,
+            scopes=frozenset({"projects:read"}),
+            expires_at=None,
+        )
+        self.requested_urls = []
+        self.requested_methods = []
+
+        async def backend(request):
+            self.requested_urls.append(str(request.url))
+            self.requested_methods.append(request.method)
+            if request.url.path == "/api/projects":
+                if request.method == "POST":
+                    return httpx.Response(
+                        200,
+                        json={
+                            "id": "new-deck",
+                            "name": "New Deck",
+                            "type": "typst",
+                        },
+                    )
+                return httpx.Response(
+                    200,
+                    json={
+                        "projects": [
+                            {"id": "p1", "name": "One", "type": "typst"}
+                        ]
+                    },
+                )
+            if request.url.path == "/api/projects/p1/open":
+                return httpx.Response(
+                    200,
+                    json={
+                        "ok": True,
+                        "project": {
+                            "id": "p1",
+                            "name": "One",
+                            "type": "typst",
+                        },
+                        "project_id": "p1",
+                        "context_version": "ctx-1",
+                    },
+                )
+            if request.url.path == "/api/app/state":
+                return httpx.Response(
+                    200,
+                    json={
+                        "active_project": {"id": "p1", "type": "typst"},
+                        "project_id": "p1",
+                        "context_version": "ctx-1",
+                    },
+                )
+            return httpx.Response(404, json={"detail": "no such project"})
+
+        self.client = httpx.AsyncClient(
+            transport=httpx.MockTransport(backend)
+        )
+
+    async def asyncTearDown(self):
+        await self.client.aclose()
+
+    async def test_gateway_starts_workspace_then_calls_only_identity_port(self):
+        started = []
+
+        async def ensure(identity):
+            started.append(identity.username)
+
+        gateway = WorkspaceGateway(
+            ensure_workspace=ensure,
+            workspace_up=lambda identity: False,
+            client=self.client,
+            public_base_url="https://slides.example",
+        )
+
+        projects = await gateway.list_projects(self.identity)
+        created = await gateway.create_typst_project(self.identity, "New Deck")
+        opened = await gateway.open_project(self.identity, "p1")
+        context = await gateway.active_context(self.identity)
+
+        self.assertEqual(started, ["alice", "alice", "alice", "alice"])
+        self.assertEqual(projects[0]["id"], "p1")
+        self.assertEqual(created["id"], "new-deck")
+        self.assertEqual(opened["project_id"], "p1")
+        self.assertEqual(context["context_version"], "ctx-1")
+        self.assertEqual(
+            self.requested_urls,
+            [
+                "http://127.0.0.1:9101/api/projects",
+                "http://127.0.0.1:9101/api/projects",
+                "http://127.0.0.1:9101/api/projects/p1/open",
+                "http://127.0.0.1:9101/api/app/state",
+            ],
+        )
+        self.assertEqual(
+            gateway.project_web_url("project / one"),
+            "https://slides.example/?openProject=project%20%2F%20one",
+        )
+
+    async def test_gateway_rejects_non_api_and_absolute_urls(self):
+        gateway = WorkspaceGateway(
+            ensure_workspace=lambda identity: None,
+            workspace_up=lambda identity: True,
+            client=self.client,
+            public_base_url="https://slides.example",
+        )
+
+        for path in (
+            "http://attacker.invalid/api/projects",
+            "//attacker.invalid/api/projects",
+            "/admin/users",
+        ):
+            with self.subTest(path=path):
+                with self.assertRaises(ValueError):
+                    await gateway.request(self.identity, "GET", path)
+        self.assertEqual(self.requested_urls, [])
+
+    async def test_starting_and_unavailable_errors_hide_internal_ports(self):
+        async def connect_failure(request):
+            raise httpx.ConnectError("connect failed", request=request)
+
+        failing_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(connect_failure)
+        )
+        self.addAsyncCleanup(failing_client.aclose)
+
+        async def ensure(identity):
+            return None
+
+        starting = WorkspaceGateway(
+            ensure_workspace=ensure,
+            workspace_up=lambda identity: False,
+            client=failing_client,
+            public_base_url="https://slides.example",
+        )
+        with self.assertRaises(McpServiceError) as starting_error:
+            await starting.list_projects(self.identity)
+        self.assertEqual(starting_error.exception.code, "WORKSPACE_STARTING")
+        self.assertNotIn("9101", str(starting_error.exception))
+
+        unavailable = WorkspaceGateway(
+            ensure_workspace=ensure,
+            workspace_up=lambda identity: True,
+            client=failing_client,
+            public_base_url="https://slides.example",
+        )
+        with self.assertRaises(McpServiceError) as unavailable_error:
+            await unavailable.list_projects(self.identity)
+        self.assertEqual(
+            unavailable_error.exception.code, "WORKSPACE_UNAVAILABLE"
+        )
+        self.assertNotIn("9101", str(unavailable_error.exception))
+
+    async def test_backend_statuses_are_normalized_without_leaking_details(self):
+        async def backend(request):
+            if request.url.path.endswith("/missing/open"):
+                return httpx.Response(
+                    404,
+                    json={"detail": "/private/workspaces/alice/missing"},
+                )
+            if request.url.path == "/api/projects":
+                return httpx.Response(503, text="internal port 9101")
+            return httpx.Response(500, text="traceback on port 9101")
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        self.addAsyncCleanup(client.aclose)
+        gateway = WorkspaceGateway(
+            ensure_workspace=lambda identity: None,
+            workspace_up=lambda identity: True,
+            client=client,
+            public_base_url="https://slides.example",
+        )
+
+        with self.assertRaises(McpServiceError) as missing:
+            await gateway.open_project(self.identity, "missing")
+        self.assertEqual(missing.exception.code, "PROJECT_NOT_FOUND")
+        self.assertNotIn("/private/", str(missing.exception))
+
+        with self.assertRaises(McpServiceError) as starting:
+            await gateway.list_projects(self.identity)
+        self.assertEqual(starting.exception.code, "WORKSPACE_STARTING")
+        self.assertNotIn("9101", str(starting.exception))
+
+    async def test_declared_oversized_json_is_rejected_without_reading_it(self):
+        async def backend(request):
+            return httpx.Response(
+                200,
+                headers={"Content-Length": str(9 * 1024 * 1024)},
+                stream=_FailIfReadStream(),
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(backend))
+        self.addAsyncCleanup(client.aclose)
+        gateway = WorkspaceGateway(
+            ensure_workspace=lambda identity: None,
+            workspace_up=lambda identity: True,
+            client=client,
+            public_base_url="https://slides.example",
+        )
+
+        with self.assertRaises(McpServiceError) as caught:
+            await gateway.request(self.identity, "GET", "/api/state")
+        self.assertEqual(caught.exception.code, "BACKEND_ERROR")
+
+
 class ControlMcpStoreWiringTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -550,6 +767,35 @@ class ControlMcpStoreWiringTest(unittest.IsolatedAsyncioTestCase):
                 "SELECT COUNT(*) FROM project_leases"
             ).fetchone()[0]
         self.assertEqual(remaining, 0)
+
+    async def test_new_workspace_container_publishes_only_on_loopback(self):
+        workspace = Path(self._tmp.name) / "alice-workspace"
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with (
+            patch.object(self.control, "_is_running", return_value=False),
+            patch.object(self.control, "_container_exists", return_value=False),
+            patch.object(self.control, "_image_exists", return_value=True),
+            patch.object(self.control, "_wsdir", return_value=workspace),
+            patch.object(
+                self.control, "_container", return_value=completed
+            ) as container,
+        ):
+            started = self.control._start_workspace(self.user)
+
+        self.assertTrue(started)
+        args = container.call_args.args
+        publish_index = args.index("-p")
+        mount_index = args.index("-v")
+        self.assertEqual(
+            args[publish_index + 1],
+            f"127.0.0.1:{self.user['port']}:8080",
+        )
+        self.assertEqual(
+            args[mount_index + 1],
+            f"{workspace}:/workspace{self.control.VOLUME_SUFFIX}",
+        )
 
 
 if __name__ == "__main__":

@@ -297,7 +297,7 @@ def _start_workspace(user: dict) -> bool:
         "run", "-d",
         "--name", name,
         "--restart", "unless-stopped",
-        "-p", f"{port}:8080",
+        "-p", f"127.0.0.1:{port}:8080",
         *env_args,
         "-v", f"{wsdir}:/workspace{VOLUME_SUFFIX}",
         TCB_IMAGE,
