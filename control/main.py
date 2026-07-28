@@ -28,7 +28,7 @@ import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import unquote, urlencode, urlsplit
 
 import aiofiles
 import httpx
@@ -660,6 +660,16 @@ def _safe_next(value: str | None) -> str:
         return "/"
     parsed = urlsplit(value)
     if parsed.scheme or parsed.netloc:
+        return "/"
+    decoded_path = unquote(parsed.path)
+    if (
+        decoded_path.startswith("//")
+        or "\\" in decoded_path
+        or any(
+            ord(char) < 32 or ord(char) == 127
+            for char in decoded_path
+        )
+    ):
         return "/"
     return value
 

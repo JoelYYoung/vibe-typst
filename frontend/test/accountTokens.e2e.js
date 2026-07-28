@@ -89,6 +89,10 @@ test('account tokens are created once, hidden after dismissal, and explicitly re
     // Deep comparison below also proves the secret never entered browser storage or URL.
     { local: [], session: [], url: baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/` },
   )
+  await page.$eval('.token-dialog-backdrop', (element) => {
+    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+  })
+  assert.notEqual(await page.$('[data-testid="token-secret"]'), null)
 
   await page.click('button[data-action="close-token-secret"]')
   assert.equal(await page.$('[data-testid="token-secret"]'), null)

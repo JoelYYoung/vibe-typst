@@ -120,7 +120,10 @@ export default function AccountTokensDialog({ onClose }) {
   }
 
   return (
-    <div className="token-dialog-backdrop" onMouseDown={close}>
+    <div
+      className="token-dialog-backdrop"
+      onMouseDown={() => { if (!secret) close() }}
+    >
       <section
         className="token-dialog"
         role="dialog"

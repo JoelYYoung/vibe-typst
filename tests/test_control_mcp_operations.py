@@ -722,6 +722,18 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             batch["pages"]["1"]["text"], "Batch opening"
         )
+        oversized = await self._call(
+            self.editor,
+            "set_transcripts",
+            self.editor_handle,
+            [
+                {"page": page, "text": "x" * (220 * 1024)}
+                for page in range(1, 6)
+            ],
+        )
+        self.assertEqual(
+            oversized["error"]["code"], "PATH_NOT_ALLOWED"
+        )
         preview = await self._call(
             self.viewer, "get_page_preview", self.viewer_handle, 1
         )

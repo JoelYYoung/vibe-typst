@@ -1342,6 +1342,8 @@ class ControlMcpStoreWiringTest(unittest.IsolatedAsyncioTestCase):
             "//evil.example/path",
             "https://evil.example/path",
             "/\\evil.example/path",
+            "/%5cevil.example/path",
+            "/%2F%2Fevil.example/path",
             "/path\r\nX-Test: injected",
         ):
             with self.subTest(unsafe=unsafe):

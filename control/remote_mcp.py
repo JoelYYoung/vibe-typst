@@ -1353,10 +1353,10 @@ class _RemoteProjectService:
                 identity, project_handle, "pdf"
             )
             safe_page = self._page_number(page)
-            if not isinstance(text, str) or len(text) > 1024 * 1024:
+            if not isinstance(text, str) or len(text) > 256 * 1024:
                 raise McpServiceError(
                     "PATH_NOT_ALLOWED",
-                    "transcript text must be at most 1 MiB",
+                    "transcript text must be at most 256 KiB",
                 )
             audit_context.update({
                 "project_id": lease.project_id,
@@ -1408,6 +1408,7 @@ class _RemoteProjectService:
                 )
             clean_updates = []
             targets = []
+            total_chars = 0
             for update in updates:
                 if not isinstance(update, dict) or set(update) != {
                     "page", "text"
@@ -1418,10 +1419,16 @@ class _RemoteProjectService:
                     )
                 safe_page = self._page_number(update.get("page"))
                 text = update.get("text")
-                if not isinstance(text, str) or len(text) > 1024 * 1024:
+                if not isinstance(text, str) or len(text) > 256 * 1024:
                     raise McpServiceError(
                         "PATH_NOT_ALLOWED",
-                        "transcript text must be at most 1 MiB",
+                        "transcript text must be at most 256 KiB",
+                    )
+                total_chars += len(text)
+                if total_chars > 1024 * 1024:
+                    raise McpServiceError(
+                        "PATH_NOT_ALLOWED",
+                        "transcript batch must be at most 1 MiB",
                     )
                 clean_updates.append({
                     "page": safe_page,

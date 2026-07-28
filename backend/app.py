@@ -1299,12 +1299,17 @@ async def restore_pdf_orphan_transcript(request: Request):
         raise HTTPException(400, str(exc)) from exc
 
 
-async def _replace_pdf_candidate(candidate: str, message: str) -> dict:
+async def _replace_pdf_candidate(
+    candidate: str,
+    message: str,
+    expected: _PdfIdentity | None = None,
+) -> dict:
     """Run the authoritative locked/versioned PDF replacement transaction."""
-    try:
-        expected = _capture_pdf_identity()
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+    if expected is None:
+        try:
+            expected = _capture_pdf_identity()
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     before_message = f"Before PDF replacement: {message.strip() or 'save current PDF'}"
     after_message = f"Replace PDF: {message.strip() or 'install replacement PDF'}"
 
@@ -2260,7 +2265,8 @@ async def agent_create_pdf_project_from_upload(request: Request):
             body.get("size"),
             body.get("sha256"),
         )
-        candidate = _copy_verified_staged_pdf(
+        candidate = await asyncio.to_thread(
+            _copy_verified_staged_pdf,
             staged,
             projects_root,
             prefix=".pdf-project-upload-",
@@ -2273,7 +2279,10 @@ async def agent_create_pdf_project_from_upload(request: Request):
             filename,
             candidate,
         )
-        staged.unlink()
+        try:
+            staged.unlink()
+        except OSError:
+            pass
         return {"project": project}
     except Exception as exc:
         _raise_remote_file_error(exc)
@@ -2308,21 +2317,30 @@ async def agent_replace_pdf_from_upload(request: Request):
         )
     candidate = None
     try:
+        expected = _capture_pdf_identity()
+        if expected.project != Path(project["path"]).resolve():
+            raise HTTPException(409, "active project context changed")
         staged = remote_files.resolve_staged_upload(
             Path(project["path"]).resolve().parent,
             body.get("upload_id"),
             body.get("size"),
             body.get("sha256"),
         )
-        candidate = _copy_verified_staged_pdf(
+        candidate = await asyncio.to_thread(
+            _copy_verified_staged_pdf,
             staged,
-            Path(project["path"]),
+            expected.project,
             prefix=".pdf-replacement-remote-",
             expected_size=body["size"],
             expected_sha256=body["sha256"],
         )
-        result = await _replace_pdf_candidate(candidate.name, message)
-        staged.unlink()
+        result = await _replace_pdf_candidate(
+            candidate.name, message, expected
+        )
+        try:
+            staged.unlink()
+        except OSError:
+            pass
         return _with_active_context(result)
     except Exception as exc:
         _raise_remote_file_error(exc)
