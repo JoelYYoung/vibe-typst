@@ -3,6 +3,7 @@ import * as api from './api.js'
 import { toast } from './Toaster.jsx'
 import { projectType } from './projectTypes.js'
 import PdfFilePicker from './PdfFilePicker.jsx'
+import AccountTokensDialog from './AccountTokensDialog.jsx'
 import {
   canSubmitProjectCreation,
   resetProjectCreation as resetProjectCreationState,
@@ -96,7 +97,9 @@ function UserMenu({ onOpenAdmin }) {
   const [user, setUser] = useState(undefined) // undefined = loading, null = none
   const [open, setOpen] = useState(false)
   const [pwOpen, setPwOpen] = useState(false)
+  const [tokensOpen, setTokensOpen] = useState(false)
   const ref = useRef(null)
+  const accountButtonRef = useRef(null)
 
   useEffect(() => { api.whoami().then((r) => setUser(r && r.username ? r : null)) }, [])
   useEffect(() => {
@@ -110,7 +113,7 @@ function UserMenu({ onOpenAdmin }) {
   const initial = (user.username[0] || '?').toUpperCase()
   return (
     <div className="usermenu" ref={ref}>
-      <button className={'usermenu-btn' + (open ? ' open' : '')} onClick={() => setOpen((o) => !o)} title="Account">
+      <button ref={accountButtonRef} className={'usermenu-btn' + (open ? ' open' : '')} onClick={() => setOpen((o) => !o)} title="Account">
         <span className="usermenu-avatar">{initial}</span>
         <span className="usermenu-name">{user.username}</span>
         <span className="fp-caret">▾</span>
@@ -125,6 +128,13 @@ function UserMenu({ onOpenAdmin }) {
             </div>
           </div>
           <button className="usermenu-item" onClick={() => { setOpen(false); setPwOpen(true) }}>Change password</button>
+          <button
+            className="usermenu-item"
+            data-action="manage-tokens"
+            onClick={() => { setOpen(false); setTokensOpen(true) }}
+          >
+            Personal access tokens
+          </button>
           {user.role === 'admin' && (
             <button className="usermenu-item" onClick={() => { setOpen(false); onOpenAdmin && onOpenAdmin() }}>Manage users</button>
           )}
@@ -132,6 +142,14 @@ function UserMenu({ onOpenAdmin }) {
         </div>
       )}
       {pwOpen && <ChangePasswordDialog onClose={() => setPwOpen(false)} />}
+      {tokensOpen && (
+        <AccountTokensDialog
+          onClose={() => {
+            setTokensOpen(false)
+            setTimeout(() => accountButtonRef.current?.focus(), 0)
+          }}
+        />
+      )}
     </div>
   )
 }
