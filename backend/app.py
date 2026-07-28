@@ -45,6 +45,7 @@ import notes as notes_mod
 import projects as projects_mod
 import pdf_service
 import pdf_transcript
+import remote_files
 import resolver
 import runtime
 import slidemap
@@ -1894,6 +1895,92 @@ def close_project():
 
 
 # ---------------------------------------------------------------- file management within project
+def _active_agent_project() -> dict:
+    """Return a fresh active-project snapshot for workspace-internal agent APIs."""
+    if _active_project is None or not _has_valid_file():
+        raise HTTPException(400, "no active project")
+    try:
+        project_root = Path(_active_project["path"]).resolve(strict=True)
+        current_root = runtime.project_dir().resolve(strict=True)
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise HTTPException(400, "active project is invalid") from exc
+    if project_root != current_root:
+        raise HTTPException(409, "active project context changed")
+    return dict(_active_project)
+
+
+def _with_active_context(result: dict) -> dict:
+    return {**result, **_active_context()}
+
+
+def _raise_remote_file_error(exc: Exception) -> None:
+    if isinstance(exc, remote_files.RevisionConflict):
+        raise HTTPException(409, {
+            "code": "REVISION_CONFLICT",
+            "message": str(exc),
+            "current_sha256": exc.current_sha256,
+        }) from exc
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(404, str(exc)) from exc
+    if isinstance(exc, FileExistsError):
+        raise HTTPException(409, str(exc)) from exc
+    if isinstance(exc, PermissionError):
+        raise HTTPException(403, str(exc)) from exc
+    if isinstance(exc, (IsADirectoryError, NotADirectoryError, ValueError)):
+        raise HTTPException(400, str(exc)) from exc
+    raise exc
+
+
+@app.get("/api/agent/files/read")
+def agent_read_file(path: str, offset: int = 1, limit: int = 120):
+    project = _active_agent_project()
+    try:
+        result = remote_files.read_text(project, path, offset, limit)
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
+@app.post("/api/agent/files/write")
+async def agent_write_file(request: Request):
+    project = _active_agent_project()
+    body = await request.json() or {}
+    try:
+        result = remote_files.write_text(
+            project,
+            body.get("path"),
+            body.get("content"),
+            body.get("expected_sha256"),
+        )
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
+@app.post("/api/agent/files/mkdir")
+async def agent_create_directory(request: Request):
+    project = _active_agent_project()
+    body = await request.json() or {}
+    try:
+        result = remote_files.create_directory(project, body.get("path"))
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
+@app.post("/api/agent/files/move")
+async def agent_move_file(request: Request):
+    project = _active_agent_project()
+    body = await request.json() or {}
+    try:
+        result = remote_files.move_item(
+            project, body.get("from"), body.get("to")
+        )
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
 @app.get("/api/project/files")
 def project_files():
     """List all files and directories in the active project."""
