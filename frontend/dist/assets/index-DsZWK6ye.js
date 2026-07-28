@@ -37632,7 +37632,9 @@ WARNING: This link could potentially be dangerous`)) {
         }
         return g.jsx("div", {
           className: "token-dialog-backdrop",
-          onMouseDown: k,
+          onMouseDown: () => {
+            m || k();
+          },
           children: g.jsxs("section", {
             className: "token-dialog",
             role: "dialog",
