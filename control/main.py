@@ -32,9 +32,11 @@ import aiofiles
 import httpx
 import websockets.client
 from fastapi import FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
+
+import pat_store
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -101,6 +103,7 @@ def init_db():
             row = db.execute("SELECT id FROM users ORDER BY created_at LIMIT 1").fetchone()
             if row:
                 db.execute("UPDATE users SET role='admin', locked=0 WHERE id=?", (row[0],))
+    pat_store.migrate(DB_PATH)
 
 def _user_by_name(username: str) -> Optional[dict]:
     with _db() as db:
@@ -619,6 +622,43 @@ async def account_password(request: Request):
     if len(new) < 6:
         raise HTTPException(400, "new password must be at least 6 characters")
     _set_password(u["id"], new)
+    return {"ok": True}
+
+
+@app.get("/account/tokens")
+async def account_tokens(request: Request):
+    user = _require_user(request)
+    return JSONResponse(
+        {"tokens": pat_store.list_tokens(DB_PATH, user["id"])},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/account/tokens")
+async def account_create_token(request: Request):
+    user = _require_user(request)
+    body = await request.json() or {}
+    try:
+        public, raw = pat_store.issue_token(
+            DB_PATH,
+            user["id"],
+            body.get("name", ""),
+            body.get("preset", "viewer"),
+            body.get("expires_at"),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return JSONResponse(
+        {"token": public, "secret": raw},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.delete("/account/tokens/{token_id}")
+async def account_revoke_token(token_id: str, request: Request):
+    user = _require_user(request)
+    if not pat_store.revoke_token(DB_PATH, user["id"], token_id):
+        raise HTTPException(404, "token not found")
     return {"ok": True}
 
 
