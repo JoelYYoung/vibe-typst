@@ -20,15 +20,22 @@ The tradeoff is that it requires a compiler. That compiler is what makes the vis
 
 ---
 
-## Source as single source of truth
+## Durable project state
 
-The `.typ` file on disk is the only durable state. Everything else is derived from it:
+For Typst projects, the `.typ` file on disk is the durable document source. Everything else is
+derived from it:
 
 - The rendered SVGs are produced by the compiler and cached temporarily
 - The CRDT document in memory is seeded from disk on project open
 - Speaker notes, comments, and versioned snapshots all reference the source text
 
 This means the system is simple to reason about: if you lose the database or the render cache, you lose nothing important. `git restore` to any saved version gives you the exact state that was committed.
+
+PDF projects instead have one app-managed `document.pdf` plus a `transcript.json` sidecar keyed by
+1-based page number. Their project type is immutable. PDF replacement runs under the project
+write lock, validates and renders the candidate before publication, preserves transcripts for
+surviving page numbers, and captures before/after Git versions. PDF projects intentionally do
+not expose the Typst comment workflow.
 
 ---
 
@@ -76,6 +83,25 @@ The control plane also tracks authenticated HTTP and WebSocket activity. Workspa
 idle past the configured threshold are stopped and their sessions are cleared; the next login
 starts the existing container again.
 
+### Remote project-control MCP
+
+The control plane exposes `/mcp` as a Streamable HTTP resource server. It is one level above the
+project-local stdio MCP: a remote agent can list, create, select, and operate projects while the
+workspace backend remains the only component allowed to mutate project files or live documents.
+Cookie sessions are rejected at `/mcp`; every request needs a personal bearer token.
+
+Personal access tokens are hashed in SQLite and use fixed Viewer or Editor presets. The control
+plane issues opaque project handles bound to the token, project ID, and backend
+`context_version`. A browser project switch invalidates the old handle instead of silently
+reopening its project. File changes use hashes, bounded one-time transfers, and recoverable
+30-day trash. Typst edits still go through the live CRDT; PDF replacements still go through the
+locked version transaction.
+
+The control database adds `api_tokens`, `project_leases`, `upload_sessions`,
+`download_sessions`, and `mcp_audit_log`. Audit rows contain stable project IDs and relative
+targets, never bearer secrets, container ports, or workspace paths. There is deliberately no
+remote terminal, whole-project deletion, shell-command, or trash-purge tool.
+
 ---
 
 ## Component map
@@ -97,7 +123,9 @@ backend  (FastAPI, single process)
 
 control plane  (server mode only)
   ├── FastAPI               Auth, session management, user admin
-  ├── SQLite                Users, sessions
+  ├── Streamable HTTP MCP   PAT auth, project handles, bounded tools
+  ├── Transfer gateway      One-time staged upload/download capabilities
+  ├── SQLite                Users, sessions, PATs, leases, audit, transfers
   ├── Podman                Per-user container lifecycle
   ├── Idle sweeper          Stops inactive workspaces and clears sessions
   └── HTTP/WS proxy         Routes requests to the right container

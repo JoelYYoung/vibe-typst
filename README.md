@@ -63,6 +63,44 @@ A `.mcp.json` is generated automatically when you open a project. To drive Claud
 
 ---
 
+### Connecting a remote AI agent
+
+In server mode, Vibe Typst also exposes an authenticated project-level MCP at
+`https://<your-host>/mcp`. This lets an AI agent running on another machine create or open a
+project, update slides and files, read rendered pages, and share a normal browser link with a
+human. PDF projects support embedded-text reading, rendered page previews, per-page transcripts,
+and versioned PDF replacement; comments remain a Typst-only workflow.
+
+1. Sign in, open the account menu, and choose **Personal access tokens**.
+2. Create an **Editor** token and copy the secret when it is shown. It cannot be displayed again.
+3. Configure the remote MCP URL and keep the secret in the client’s secret store.
+4. Call `list_projects` or create a project, then call `open_project`.
+5. Keep the returned `project_handle` for project-scoped calls.
+6. Give the returned `web_url` to the human. They sign in through the normal web login; the URL
+   contains neither the token nor the project handle.
+7. Revoke the token from the account menu when it is no longer needed.
+
+Generic Streamable HTTP client configuration:
+
+```json
+{
+  "type": "streamable-http",
+  "url": "https://slides.example.com/mcp",
+  "headers": {
+    "Authorization": "Bearer ${VIBE_TYPST_TOKEN}"
+  }
+}
+```
+
+```bash
+export VIBE_TYPST_TOKEN="vbt_..."
+```
+
+Environment-variable expansion differs between MCP clients. Do not paste a token into source
+control, a project URL, or ordinary client logs.
+
+---
+
 ### Presenting
 
 Click **Present** to open the presenter console. Click **Open projection** to open the audience screen in a second window — it follows your page automatically.
@@ -77,10 +115,10 @@ Speaker notes live inline in the source as `#speaker-note["…"]`, so Claude can
 
 ## Other features
 
-- **Projects** — create, rename, duplicate, delete; per-project git versioning (save and restore named versions)
+- **Projects** — create immutable Typst or single-PDF project types, rename, duplicate, delete; per-project git versioning
 - **File manager** — multi-select, rename, duplicate, delete files; supports images and data files alongside `.typ`
 - **Comment history** — each comment has a full append-only log; Pending / Done / All views
-- **User accounts** (server mode) — invite-only admin panel, lock/force-offline controls, per-user isolated workspace, idle auto-stop
+- **User accounts** (server mode) — invite-only admin panel, personal Viewer/Editor tokens, lock/force-offline controls, per-user isolated workspace, idle auto-stop
 
 ---
 

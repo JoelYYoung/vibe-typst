@@ -116,6 +116,8 @@ internet without opening firewall ports.
 internet
   └── Cloudflare tunnel → control plane (port 8090)
                               ├── /login   static auth page
+                              ├── /mcp     bearer-authenticated project MCP
+                              ├── /mcp-upload/* and /mcp-download/* one-time transfers
                               ├── /api/*   container lifecycle, user mgmt
                               └── /{path}  reverse-proxy → user's container (port 9001+)
                                                └── Vibe Typst app (FastAPI + resolver)
@@ -181,6 +183,7 @@ Environment variables read by `start.sh` / `main.py`:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PORT` | `8090` | Control plane listen port |
+| `PUBLIC_BASE_URL` | `http://localhost:$PORT` | Public HTTP(S) origin used in MCP URLs |
 | `CONTROL_DATA` | `control/data/` | SQLite DB, session secret, logs |
 | `WORKSPACE_BASE` | `/workspaces` | Where per-user workspace dirs live |
 | `PODMAN_ENV` | — | Path to a shell script that sets Podman env vars (rootless) |
@@ -190,6 +193,18 @@ Environment variables read by `start.sh` / `main.py`:
 | `IDLE_STOP_SECONDS` | `1800` | Stop a user's workspace and clear sessions after this many idle seconds; set `0` to disable |
 | `IDLE_SWEEP_SECONDS` | `60` | How often the control plane scans for idle workspaces |
 | `ANTHROPIC_API_KEY` | — | Passed into workspace containers for Claude |
+
+For a public deployment, set the externally reachable origin before starting control:
+
+```bash
+export PUBLIC_BASE_URL="https://slides.example.com"
+bash control/start.sh
+```
+
+The value must be an HTTP(S) origin with a host and no path. The control plane fails at startup
+if it is invalid. Remote clients connect to `${PUBLIC_BASE_URL}/mcp` with
+`Authorization: Bearer ${VIBE_TYPST_TOKEN}`. Store that token in the client’s secret facility;
+client-specific environment expansion syntax varies.
 
 ### 4. Create the first admin user
 
@@ -281,6 +296,32 @@ sleep 1
 setsid nohup bash /path/to/vibe-typst/control/start.sh \
   >> /path/to/vibe-typst/control/data/control.log 2>&1 &
 ```
+
+`init_db()` performs additive migrations for PAT, project-handle, audit, and transfer tables. For
+a controlled deployment, copy `control.db`, run the new migration against that copy, and confirm
+the existing `users` and `sessions` counts before restarting production.
+
+Before recreating any workspace container, record the exact bind-mount source, destination, and
+read/write flag, then hash every project’s `.vibe-typst.json` and primary `main.typ` or
+`document.pdf` (plus PDF `transcript.json`). Recreate with the same mount and loopback-only port
+binding, never `rm -v`. After health checks, compare the hashes byte-for-byte. A rollback
+container may be retained stopped until verification is complete, but the workspace directory
+must never be copied over or deleted during rollback.
+
+### Remote MCP verification
+
+After deployment:
+
+1. Create a short-lived Editor token under **Personal access tokens**.
+2. Initialize `${PUBLIC_BASE_URL}/mcp` with its bearer header and call `tools/list`.
+3. Open an existing PDF, check page count/transcripts, then fetch a page preview.
+4. Open a Typst project, fetch a preview, and verify a browser project switch invalidates the old
+   handle.
+5. Revoke the token and confirm the next MCP request is unauthorized.
+6. Confirm `/?openProject=<stable-id>` passes through login and opens the correct project.
+
+The local terminal and project-local MCP remain independent and should be smoke-tested after any
+workspace image update.
 
 ### Server data locations
 
