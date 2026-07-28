@@ -37,6 +37,7 @@ from starlette.background import BackgroundTask
 from starlette.responses import StreamingResponse
 
 import pat_store
+import mcp_store
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,7 @@ SESSION_DAYS   = 30
 SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 IDLE_STOP_SECONDS = int(os.environ.get("IDLE_STOP_SECONDS", "1800"))
 IDLE_SWEEP_SECONDS = int(os.environ.get("IDLE_SWEEP_SECONDS", "60"))
+MCP_SWEEP_SECONDS = int(os.environ.get("MCP_SWEEP_SECONDS", "60"))
 
 LOGIN_HTML = HERE / "login.html"
 
@@ -104,6 +106,7 @@ def init_db():
             if row:
                 db.execute("UPDATE users SET role='admin', locked=0 WHERE id=?", (row[0],))
     pat_store.migrate(DB_PATH)
+    mcp_store.migrate(DB_PATH)
 
 def _user_by_name(username: str) -> Optional[dict]:
     with _db() as db:
@@ -369,6 +372,17 @@ async def _idle_sweeper():
                     file=sys.stderr,
                 )
 
+
+async def _mcp_sweeper():
+    interval = max(10, MCP_SWEEP_SECONDS)
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(mcp_store.sweep_expired, DB_PATH)
+        except Exception as exc:
+            print(f"[mcp] cleanup failed: {exc}", file=sys.stderr)
+
+
 async def _ensure_workspace(user: dict):
     """Start workspace if needed; wait up to 20 s for the backend to be ready."""
     loop = asyncio.get_event_loop()
@@ -520,12 +534,19 @@ p{{font-size:.85rem;opacity:.6;color:#c9c9e3}}
 async def lifespan(app):
     global _client
     init_db()
+    mcp_store.sweep_expired(DB_PATH)
     _client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0))
     app.state.idle_task = asyncio.create_task(_idle_sweeper())
+    app.state.mcp_sweep_task = asyncio.create_task(_mcp_sweeper())
     yield
     app.state.idle_task.cancel()
+    app.state.mcp_sweep_task.cancel()
     try:
         await app.state.idle_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await app.state.mcp_sweep_task
     except asyncio.CancelledError:
         pass
     await _client.aclose()
@@ -659,6 +680,7 @@ async def account_revoke_token(token_id: str, request: Request):
     user = _require_user(request)
     if not pat_store.revoke_token(DB_PATH, user["id"], token_id):
         raise HTTPException(404, "token not found")
+    mcp_store.invalidate_token_leases(DB_PATH, token_id)
     return {"ok": True}
 
 
@@ -741,6 +763,7 @@ async def admin_set_locked(uid: str, request: Request):
     with _db() as db:
         db.execute("UPDATE users SET locked=? WHERE id=?", (1 if locked else 0, uid))
     if locked:
+        mcp_store.invalidate_user_leases(DB_PATH, uid)
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, _force_user_offline, target)
     return {"ok": True}
@@ -772,6 +795,7 @@ async def admin_delete_user(uid: str, request: Request):
             raise HTTPException(400, "can't delete the last admin")
     try: _container("rm", "-f", _cname(target["username"]))
     except Exception: pass
+    mcp_store.invalidate_user_leases(DB_PATH, uid)
     with _db() as db:
         db.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
         db.execute("DELETE FROM users WHERE id=?", (uid,))
