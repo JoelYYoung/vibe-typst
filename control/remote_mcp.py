@@ -265,6 +265,32 @@ class _RemoteProjectService:
         return lease, project, context
 
     @staticmethod
+    def _public_project(project: dict) -> dict:
+        """Return only stable project metadata, never workspace paths."""
+        if (
+            not isinstance(project, dict)
+            or not isinstance(project.get("id"), str)
+            or not isinstance(project.get("name"), str)
+            or project.get("type", "typst") not in {"typst", "pdf"}
+        ):
+            raise McpServiceError(
+                "BACKEND_ERROR",
+                "workspace returned invalid project metadata",
+            )
+        return {
+            key: project.get(key)
+            for key in (
+                "id",
+                "name",
+                "created",
+                "type",
+                "main_file",
+                "original_filename",
+            )
+            if project.get(key) is not None
+        }
+
+    @staticmethod
     def _relative_path(path: str) -> str:
         if (
             not isinstance(path, str)
@@ -318,7 +344,13 @@ class _RemoteProjectService:
     async def list_projects(self) -> RemoteToolResult:
         async def operation(identity):
             projects = await self.gateway.list_projects(identity)
-            return {"ok": True, "projects": projects}
+            return {
+                "ok": True,
+                "projects": [
+                    self._public_project(project)
+                    for project in projects
+                ],
+            }
 
         return await self._run(
             "list_projects", "projects:read", operation
@@ -331,7 +363,10 @@ class _RemoteProjectService:
             project = await self.gateway.create_typst_project(identity, name)
             audit_context["project_id"] = project["id"]
             audit_context["targets"] = (f"project:{project['id']}",)
-            return {"ok": True, "project": project}
+            return {
+                "ok": True,
+                "project": self._public_project(project),
+            }
 
         return await self._run(
             "create_typst_project",
@@ -353,7 +388,7 @@ class _RemoteProjectService:
             )
             return {
                 "ok": True,
-                "project": project,
+                "project": self._public_project(project),
                 "project_handle": raw_handle,
                 "capabilities": capabilities_for(
                     project.get("type", "typst")
@@ -377,7 +412,7 @@ class _RemoteProjectService:
             )
             return {
                 "ok": True,
-                "project": project,
+                "project": self._public_project(project),
                 "project_id": context["project_id"],
                 "context_version": context["context_version"],
             }
@@ -403,7 +438,10 @@ class _RemoteProjectService:
                 f"/api/projects/{quote(lease.project_id, safe='')}",
                 json={"name": name},
             )
-            return {"ok": True, "project": project}
+            return {
+                "ok": True,
+                "project": self._public_project(project),
+            }
 
         return await self._run(
             "rename_project",
@@ -1152,9 +1190,36 @@ class _RemoteProjectService:
         self, project_handle: str
     ) -> RemoteToolResult:
         async def operation(identity):
-            lease, _ = await self._typed_project(
-                identity, project_handle, "typst"
+            lease, project, _ = await self._handled_project(
+                identity, project_handle
             )
+            project_type = project.get("type", "typst")
+            if project_type not in {"typst", "pdf"}:
+                raise McpServiceError(
+                    "CAPABILITY_NOT_AVAILABLE",
+                    "transcripts are unavailable for this project type",
+                )
+            if project_type == "pdf":
+                body = await self.gateway.request(
+                    identity, "GET", "/api/pdf/transcripts"
+                )
+                pages = body.get("pages")
+                orphans = body.get("orphans")
+                if not isinstance(pages, dict) or not isinstance(
+                    orphans, dict
+                ):
+                    raise McpServiceError(
+                        "BACKEND_ERROR",
+                        "workspace returned invalid transcripts",
+                    )
+                await self._confirm_project_context(
+                    identity, project_handle, lease
+                )
+                return {
+                    "ok": True,
+                    "pages": pages,
+                    "orphans": orphans,
+                }
             body = await self.gateway.request(
                 identity, "GET", "/api/slide-map"
             )
@@ -1189,6 +1254,208 @@ class _RemoteProjectService:
 
         return await self._run(
             "get_transcripts", "transcripts:read", operation
+        )
+
+    async def get_pdf_info(
+        self, project_handle: str
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, project = await self._typed_project(
+                identity, project_handle, "pdf"
+            )
+            body = await self.gateway.request(
+                identity, "GET", "/api/state"
+            )
+            pages = body.get("pages")
+            if (
+                body.get("project_type") != "pdf"
+                or not isinstance(pages, list)
+                or not all(isinstance(item, str) for item in pages)
+            ):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned invalid PDF metadata",
+                )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                "project_type": "pdf",
+                "name": project.get("name"),
+                "filename": project.get(
+                    "original_filename", project.get("main_file")
+                ),
+                "main_file": project.get("main_file"),
+                "page_count": len(pages),
+                "version": body.get("version"),
+                "generation": body.get("generation"),
+            }
+
+        return await self._run(
+            "get_pdf_info", "projects:read", operation
+        )
+
+    async def get_pdf_text(
+        self, project_handle: str, page: int
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "pdf"
+            )
+            safe_page = self._page_number(page)
+            body = await self.gateway.request(
+                identity,
+                "GET",
+                f"/api/pdf/text?page={safe_page}",
+            )
+            if (
+                body.get("page") != safe_page
+                or not isinstance(body.get("text"), str)
+            ):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned invalid PDF text",
+                )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                "page": safe_page,
+                "text": body["text"],
+                "ocr": body.get("ocr") is True,
+            }
+
+        return await self._run(
+            "get_pdf_text", "files:read", operation
+        )
+
+    @staticmethod
+    def _page_number(page: int) -> int:
+        if (
+            isinstance(page, bool)
+            or not isinstance(page, int)
+            or page < 1
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", "page must be positive"
+            )
+        return page
+
+    async def set_transcript(
+        self, project_handle: str, page: int, text: str
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "pdf"
+            )
+            safe_page = self._page_number(page)
+            if not isinstance(text, str) or len(text) > 1024 * 1024:
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "transcript text must be at most 1 MiB",
+                )
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"transcript:page-{safe_page}",),
+            })
+            body = await self.gateway.request(
+                identity,
+                "PATCH",
+                f"/api/pdf/transcripts/{safe_page}",
+                json={"text": text},
+            )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                **{
+                    key: value
+                    for key, value in body.items()
+                    if key not in {"project_id", "context_version", "ok"}
+                },
+            }
+
+        return await self._run(
+            "set_transcript",
+            "transcripts:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def set_transcripts(
+        self, project_handle: str, updates: list
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "pdf"
+            )
+            if (
+                not isinstance(updates, list)
+                or not updates
+                or len(updates) > 400
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "updates must contain 1 to 400 transcripts",
+                )
+            clean_updates = []
+            targets = []
+            for update in updates:
+                if not isinstance(update, dict) or set(update) != {
+                    "page", "text"
+                }:
+                    raise McpServiceError(
+                        "PATH_NOT_ALLOWED",
+                        "each update must contain only page and text",
+                    )
+                safe_page = self._page_number(update.get("page"))
+                text = update.get("text")
+                if not isinstance(text, str) or len(text) > 1024 * 1024:
+                    raise McpServiceError(
+                        "PATH_NOT_ALLOWED",
+                        "transcript text must be at most 1 MiB",
+                    )
+                clean_updates.append({
+                    "page": safe_page,
+                    "text": text,
+                })
+                targets.append(f"transcript:page-{safe_page}")
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": tuple(targets),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/pdf/transcripts/batch",
+                json={"updates": clean_updates},
+            )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                **{
+                    key: value
+                    for key, value in body.items()
+                    if key not in {"project_id", "context_version", "ok"}
+                },
+            }
+
+        return await self._run(
+            "set_transcripts",
+            "transcripts:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
         )
 
     @staticmethod
@@ -1359,6 +1626,63 @@ class _RemoteProjectService:
             "get_slide_preview", "slides:read", operation
         )
 
+    async def get_page_preview(
+        self, project_handle: str, page: int
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, project, _ = await self._handled_project(
+                identity, project_handle
+            )
+            project_type = project.get("type", "typst")
+            if project_type not in {"typst", "pdf"}:
+                raise McpServiceError(
+                    "CAPABILITY_NOT_AVAILABLE",
+                    "page previews are unavailable for this project type",
+                )
+            safe_page = self._page_number(page)
+            data, headers = await self.gateway.read_bytes(
+                identity,
+                f"/api/agent/preview/{safe_page}",
+                8 * 1024 * 1024,
+            )
+            if (
+                headers.get("x-project-id") != lease.project_id
+                or headers.get("x-context-version")
+                != lease.context_version
+            ):
+                raise McpServiceError(
+                    "PROJECT_CONTEXT_CHANGED",
+                    "the active project context changed; open the project again",
+                )
+            if (
+                headers.get("content-type", "").split(";", 1)[0]
+                != "image/png"
+                or not data.startswith(b"\x89PNG\r\n\x1a\n")
+            ):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned an invalid preview",
+                )
+            try:
+                page_count = int(headers.get("x-page-count", ""))
+            except ValueError as exc:
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned invalid preview metadata",
+                ) from exc
+            return {
+                "ok": True,
+                "project_type": project_type,
+                "page": safe_page,
+                "page_count": page_count,
+                "media_type": "image/png",
+                "_image_data": data,
+            }
+
+        return await self._run(
+            "get_page_preview", "slides:read", operation
+        )
+
     async def export_pdf(
         self, project_handle: str
     ) -> RemoteToolResult:
@@ -1412,6 +1736,243 @@ class _RemoteProjectService:
             }
 
         return await self._run("export_pdf", "slides:read", operation)
+
+    @staticmethod
+    def _pdf_upload_inputs(name: str, filename: str) -> tuple[str, str]:
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name.strip()) > 200
+            or "\x00" in name
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED",
+                "project name must contain 1 to 200 characters",
+            )
+        if (
+            not isinstance(filename, str)
+            or not filename
+            or len(filename) > 255
+            or PurePosixPath(filename).name != filename
+            or not filename.lower().endswith(".pdf")
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED",
+                "filename must be a plain PDF filename",
+            )
+        return name.strip(), filename
+
+    @staticmethod
+    def _upload_result(
+        public_base_url: str, public: dict, capability: str
+    ) -> RemoteToolResult:
+        return {
+            "ok": True,
+            "upload_id": public["id"],
+            "upload_url": (
+                f"{public_base_url}/mcp-upload/{public['id']}"
+            ),
+            "authorization": f"Upload {capability}",
+            "expires_at": public["expires_at"],
+            "size": public["size"],
+            "sha256": public["sha256"],
+        }
+
+    async def begin_pdf_project_upload(
+        self,
+        name: str,
+        filename: str,
+        size: int,
+        sha256: str,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            safe_name, safe_filename = self._pdf_upload_inputs(
+                name, filename
+            )
+            public, capability = mcp_store.begin_upload(
+                self.db_path,
+                identity,
+                "pdf_project",
+                "",
+                safe_name,
+                size,
+                sha256,
+                safe_filename,
+            )
+            return self._upload_result(
+                self.gateway.public_base_url, public, capability
+            )
+
+        return await self._run(
+            "begin_pdf_project_upload",
+            "projects:write",
+            operation,
+        )
+
+    async def finish_pdf_project_upload(
+        self, upload_id: str
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            safe_upload_id = self._opaque_id(upload_id, "upload id")
+            session = mcp_store.complete_upload(
+                self.db_path,
+                safe_upload_id,
+                identity,
+                expected_kind="pdf_project",
+                expected_project_id="",
+            )
+            try:
+                body = await self.gateway.request(
+                    identity,
+                    "POST",
+                    "/api/agent/projects/pdf-from-upload",
+                    json={
+                        "upload_id": session.id,
+                        "name": session.destination,
+                        "filename": session.filename,
+                        "size": session.size,
+                        "sha256": session.sha256,
+                    },
+                )
+                project = body.get("project")
+                if (
+                    not isinstance(project, dict)
+                    or project.get("type") != "pdf"
+                    or not isinstance(project.get("id"), str)
+                ):
+                    raise McpServiceError(
+                        "BACKEND_ERROR",
+                        "workspace returned invalid project metadata",
+                    )
+                mcp_store.finish_upload(self.db_path, session.id)
+                audit_context.update({
+                    "project_id": project["id"],
+                    "targets": (f"project:{project['id']}",),
+                })
+                return {
+                    "ok": True,
+                    "project": self._public_project(project),
+                }
+            except Exception:
+                mcp_store.fail_upload(
+                    self.db_path, session.id, "BACKEND_ERROR"
+                )
+                raise
+
+        return await self._run(
+            "finish_pdf_project_upload",
+            "projects:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def begin_pdf_replacement(
+        self,
+        project_handle: str,
+        filename: str,
+        size: int,
+        sha256: str,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, project = await self._typed_project(
+                identity, project_handle, "pdf"
+            )
+            _, safe_filename = self._pdf_upload_inputs(
+                project.get("name") or "PDF project", filename
+            )
+            public, capability = mcp_store.begin_upload(
+                self.db_path,
+                identity,
+                "pdf_replacement",
+                lease.project_id,
+                "document.pdf",
+                size,
+                sha256,
+                safe_filename,
+            )
+            return self._upload_result(
+                self.gateway.public_base_url, public, capability
+            )
+
+        return await self._run(
+            "begin_pdf_replacement",
+            "documents:write",
+            operation,
+        )
+
+    async def finish_pdf_replacement(
+        self,
+        project_handle: str,
+        upload_id: str,
+        message: str = "",
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "pdf"
+            )
+            safe_upload_id = self._opaque_id(upload_id, "upload id")
+            if not isinstance(message, str) or len(message) > 4096:
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "replacement message is invalid",
+                )
+            session = mcp_store.complete_upload(
+                self.db_path,
+                safe_upload_id,
+                identity,
+                expected_kind="pdf_replacement",
+                expected_project_id=lease.project_id,
+            )
+            try:
+                current, _ = await self._typed_project(
+                    identity, project_handle, "pdf"
+                )
+                if (
+                    current.project_id != lease.project_id
+                    or current.context_version != lease.context_version
+                ):
+                    raise McpServiceError(
+                        "PROJECT_CONTEXT_CHANGED",
+                        "the active project context changed; open the project again",
+                    )
+                audit_context.update({
+                    "project_id": lease.project_id,
+                    "targets": ("document:document.pdf",),
+                })
+                body = await self.gateway.request(
+                    identity,
+                    "POST",
+                    "/api/agent/pdf/replace-from-upload",
+                    json={
+                        "upload_id": session.id,
+                        "filename": session.filename,
+                        "size": session.size,
+                        "sha256": session.sha256,
+                        "message": message,
+                    },
+                    timeout=120,
+                )
+                result = self._checked_backend_result(lease, body)
+                mcp_store.finish_upload(self.db_path, session.id)
+                return result
+            except Exception:
+                mcp_store.fail_upload(
+                    self.db_path, session.id, "BACKEND_ERROR"
+                )
+                raise
+
+        return await self._run(
+            "finish_pdf_replacement",
+            "documents:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
 
 
 def create_remote_mcp(
@@ -1689,6 +2250,46 @@ def create_remote_mcp(
         )
 
     @server.tool()
+    async def get_pdf_info(
+        project_handle: str,
+    ) -> CallToolResult:
+        """Read bounded metadata and page count for the handled PDF project."""
+        return _protocol_result(
+            await service.get_pdf_info(project_handle)
+        )
+
+    @server.tool()
+    async def get_pdf_text(
+        project_handle: str, page: int
+    ) -> CallToolResult:
+        """Extract embedded text from one page of the handled PDF project."""
+        return _protocol_result(
+            await service.get_pdf_text(project_handle, page)
+        )
+
+    @server.tool()
+    async def set_transcript(
+        project_handle: str, page: int, text: str
+    ) -> CallToolResult:
+        """Set the speaker transcript for one page of the handled PDF project."""
+        return _protocol_result(
+            await service.set_transcript(
+                project_handle, page, text
+            )
+        )
+
+    @server.tool()
+    async def set_transcripts(
+        project_handle: str, updates: list
+    ) -> CallToolResult:
+        """Atomically set speaker transcripts for multiple handled PDF pages."""
+        return _protocol_result(
+            await service.set_transcripts(
+                project_handle, updates
+            )
+        )
+
+    @server.tool()
     async def get_pending_comments(
         project_handle: str,
     ) -> CallToolResult:
@@ -1742,12 +2343,71 @@ def create_remote_mcp(
         )
 
     @server.tool()
+    async def get_page_preview(
+        project_handle: str, page: int
+    ) -> CallToolResult:
+        """Return one handled Typst or PDF rendered page as bounded PNG MCP image content."""
+        return _image_protocol_result(
+            await service.get_page_preview(project_handle, page)
+        )
+
+    @server.tool()
     async def export_pdf(
         project_handle: str,
     ) -> CallToolResult:
         """Compile the handled live Typst deck and return a five-minute one-time PDF download."""
         return _protocol_result(
             await service.export_pdf(project_handle)
+        )
+
+    @server.tool()
+    async def begin_pdf_project_upload(
+        name: str,
+        filename: str,
+        size: int,
+        sha256: str,
+    ) -> CallToolResult:
+        """Begin a one-PDF project upload; PUT once with the returned Upload authorization, then finish_pdf_project_upload."""
+        return _protocol_result(
+            await service.begin_pdf_project_upload(
+                name, filename, size, sha256
+            )
+        )
+
+    @server.tool()
+    async def finish_pdf_project_upload(
+        upload_id: str,
+    ) -> CallToolResult:
+        """Validate a completed staged PDF upload and atomically create its immutable-type project."""
+        return _protocol_result(
+            await service.finish_pdf_project_upload(upload_id)
+        )
+
+    @server.tool()
+    async def begin_pdf_replacement(
+        project_handle: str,
+        filename: str,
+        size: int,
+        sha256: str,
+    ) -> CallToolResult:
+        """Begin a versioned replacement upload for the handled PDF project."""
+        return _protocol_result(
+            await service.begin_pdf_replacement(
+                project_handle, filename, size, sha256
+            )
+        )
+
+    @server.tool()
+    async def finish_pdf_replacement(
+        project_handle: str,
+        upload_id: str,
+        message: str = "",
+    ) -> CallToolResult:
+        """Validate and install a staged PDF through the existing locked, transcript-preserving version flow."""
+        return _protocol_result(
+            await service.finish_pdf_replacement(
+                project_handle, upload_id, message
+            )
         )
 
     return server

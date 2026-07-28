@@ -50,6 +50,10 @@ class _FileGateway:
                 "rev": 7,
             },
         }]
+        self.pdf_transcripts = {
+            "pages": {"1": {"text": ""}},
+            "orphans": {},
+        }
 
     async def read_bytes(self, identity, path, max_bytes):
         self.calls.append((identity.token_id, "GET_BYTES", path, None))
@@ -124,6 +128,80 @@ class _FileGateway:
                 }],
                 "total": 1,
                 "orphans": [],
+            }
+        if method == "GET" and parsed.path == "/api/state":
+            return {
+                "project_type": self.active["type"],
+                "main": self.active["main_file"],
+                "project_name": self.active["name"],
+                "pages": ["page-1.png"],
+                "version": 3,
+                "generation": "pdf-generation-1",
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if method == "GET" and parsed.path == "/api/pdf/text":
+            return {
+                "page": int(parse_qs(parsed.query)["page"][0]),
+                "text": "PDF page text",
+                "ocr": False,
+            }
+        if method == "GET" and parsed.path == "/api/pdf/transcripts":
+            return {
+                **self.pdf_transcripts,
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "PATCH"
+            and parsed.path.startswith("/api/pdf/transcripts/")
+        ):
+            page = parsed.path.rsplit("/", 1)[1]
+            self.pdf_transcripts["pages"][page] = {
+                "text": json["text"],
+            }
+            return {
+                **self.pdf_transcripts,
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "POST"
+            and parsed.path == "/api/pdf/transcripts/batch"
+        ):
+            for update in json["updates"]:
+                self.pdf_transcripts["pages"][str(update["page"])] = {
+                    "text": update["text"],
+                }
+            return {
+                **self.pdf_transcripts,
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "POST"
+            and parsed.path == "/api/agent/projects/pdf-from-upload"
+        ):
+            return {
+                "project": {
+                    "id": "pdf-new",
+                    "name": json["name"],
+                    "type": "pdf",
+                    "main_file": "document.pdf",
+                    "original_filename": json["filename"],
+                },
+            }
+        if (
+            method == "POST"
+            and parsed.path == "/api/agent/pdf/replace-from-upload"
+        ):
+            return {
+                "ok": True,
+                "page_count": 1,
+                "pages": ["page-1.png"],
+                "transcripts": self.pdf_transcripts,
+                "project_id": "p1",
+                "context_version": "ctx-1",
             }
         if (
             method == "POST"
@@ -296,6 +374,7 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             username="alice",
             port=9101,
             scopes=frozenset({
+                "projects:read",
                 "files:read",
                 "slides:read",
                 "transcripts:read",
@@ -309,11 +388,14 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             username="alice",
             port=9101,
             scopes=frozenset({
+                "projects:read",
+                "projects:write",
                 "files:read",
                 "files:write",
                 "slides:read",
                 "documents:write",
                 "transcripts:read",
+                "transcripts:write",
                 "comments:read",
                 "comments:write",
             }),
@@ -350,6 +432,20 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             return_value=self._access(identity),
         ):
             return await getattr(self.service, method)(*args, **kwargs)
+
+    def _receive_upload(self, begun, content):
+        capability = begun["authorization"].removeprefix("Upload ")
+        session = mcp_store.authorize_upload(
+            self.db_path, begun["upload_id"], capability
+        )
+        upload_dir = (
+            self.workspace_base / "alice" / ".tcb" / "uploads"
+        )
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        (upload_dir / f"{session.id}.ready").write_bytes(content)
+        mcp_store.mark_upload_received(
+            self.db_path, session.id, len(content)
+        )
 
     async def test_viewer_reads_but_cannot_write_and_editor_uses_hash(self):
         listed = await self._call(
@@ -581,6 +677,134 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
                     self.editor if method == "apply_edits" else self.viewer,
                     method,
                     *args,
+                )
+                self.assertEqual(
+                    result["error"]["code"],
+                    "CAPABILITY_NOT_AVAILABLE",
+                )
+
+    async def test_pdf_info_text_transcripts_preview_and_replacement(self):
+        self.gateway.active = {
+            **self.gateway.active,
+            "type": "pdf",
+            "main_file": "document.pdf",
+            "original_filename": "paper.pdf",
+        }
+
+        info = await self._call(
+            self.viewer, "get_pdf_info", self.viewer_handle
+        )
+        self.assertEqual(info["project_type"], "pdf")
+        self.assertEqual(info["page_count"], 1)
+        self.assertNotIn("file", info)
+        text = await self._call(
+            self.viewer, "get_pdf_text", self.viewer_handle, 1
+        )
+        self.assertEqual(text["text"], "PDF page text")
+        transcripts = await self._call(
+            self.viewer, "get_transcripts", self.viewer_handle
+        )
+        self.assertEqual(transcripts["pages"]["1"]["text"], "")
+        saved = await self._call(
+            self.editor,
+            "set_transcript",
+            self.editor_handle,
+            1,
+            "Opening",
+        )
+        self.assertEqual(saved["pages"]["1"]["text"], "Opening")
+        batch = await self._call(
+            self.editor,
+            "set_transcripts",
+            self.editor_handle,
+            [{"page": 1, "text": "Batch opening"}],
+        )
+        self.assertEqual(
+            batch["pages"]["1"]["text"], "Batch opening"
+        )
+        preview = await self._call(
+            self.viewer, "get_page_preview", self.viewer_handle, 1
+        )
+        self.assertTrue(preview["_image_data"].startswith(b"\x89PNG"))
+
+        candidate = b"%PDF remote replacement"
+        begun = await self._call(
+            self.editor,
+            "begin_pdf_replacement",
+            self.editor_handle,
+            "candidate.pdf",
+            len(candidate),
+            hashlib.sha256(candidate).hexdigest(),
+        )
+        self._receive_upload(begun, candidate)
+        replaced = await self._call(
+            self.editor,
+            "finish_pdf_replacement",
+            self.editor_handle,
+            begun["upload_id"],
+            "remote update",
+        )
+        self.assertTrue(replaced["ok"])
+        self.assertEqual(
+            replaced["transcripts"]["pages"]["1"]["text"],
+            "Batch opening",
+        )
+
+    async def test_pdf_project_upload_and_write_scope_enforcement(self):
+        content = b"%PDF remote project"
+        denied = await self._call(
+            self.viewer,
+            "begin_pdf_project_upload",
+            "Remote paper",
+            "paper.pdf",
+            len(content),
+            hashlib.sha256(content).hexdigest(),
+        )
+        self.assertEqual(denied["error"]["code"], "SCOPE_DENIED")
+
+        begun = await self._call(
+            self.editor,
+            "begin_pdf_project_upload",
+            "Remote paper",
+            "paper.pdf",
+            len(content),
+            hashlib.sha256(content).hexdigest(),
+        )
+        self._receive_upload(begun, content)
+        created = await self._call(
+            self.editor,
+            "finish_pdf_project_upload",
+            begun["upload_id"],
+        )
+        self.assertEqual(created["project"]["id"], "pdf-new")
+        self.assertEqual(created["project"]["type"], "pdf")
+
+    async def test_typst_handle_rejects_pdf_only_tools(self):
+        for method, args in (
+            ("get_pdf_info", (self.viewer_handle,)),
+            ("get_pdf_text", (self.viewer_handle, 1)),
+            (
+                "set_transcript",
+                (self.editor_handle, 1, "not available"),
+            ),
+            (
+                "begin_pdf_replacement",
+                (
+                    self.editor_handle,
+                    "candidate.pdf",
+                    4,
+                    hashlib.sha256(b"data").hexdigest(),
+                ),
+            ),
+        ):
+            with self.subTest(method=method):
+                identity = (
+                    self.editor
+                    if method in {"set_transcript", "begin_pdf_replacement"}
+                    else self.viewer
+                )
+                result = await self._call(
+                    identity, method, *args
                 )
                 self.assertEqual(
                     result["error"]["code"],

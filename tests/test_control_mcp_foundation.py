@@ -72,8 +72,18 @@ class _FakeProjectGateway:
 
     def __init__(self):
         self.projects = [
-            {"id": "p1", "name": "One", "type": "typst"},
-            {"id": "pdf-1", "name": "PDF", "type": "pdf"},
+            {
+                "id": "p1",
+                "name": "One",
+                "type": "typst",
+                "path": "/workspace/projects/p1",
+            },
+            {
+                "id": "pdf-1",
+                "name": "PDF",
+                "type": "pdf",
+                "path": "/workspace/projects/pdf-1",
+            },
         ]
         self.active = None
         self.context_version = "ctx-empty"
@@ -87,6 +97,7 @@ class _FakeProjectGateway:
             "id": "created",
             "name": name,
             "type": "typst",
+            "path": "/workspace/projects/created",
         }
         self.projects.append(project)
         return dict(project)
@@ -686,12 +697,21 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                             "locate",
                             "apply_edits",
                             "get_transcripts",
+                            "get_pdf_info",
+                            "get_pdf_text",
+                            "set_transcript",
+                            "set_transcripts",
                             "get_pending_comments",
                             "get_comment",
                             "mark_comment_done",
                             "mark_comment_dismissed",
                             "get_slide_preview",
+                            "get_page_preview",
                             "export_pdf",
+                            "begin_pdf_project_upload",
+                            "finish_pdf_project_upload",
+                            "begin_pdf_replacement",
+                            "finish_pdf_replacement",
                         },
                     )
 
@@ -702,12 +722,18 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(
                         listed.structuredContent["projects"][0]["id"], "p1"
                     )
+                    self.assertNotIn(
+                        "path", listed.structuredContent["projects"][0]
+                    )
                     created = await session.call_tool(
                         "create_typst_project", {"name": "Remote Deck"}
                     )
                     self.assertEqual(
                         created.structuredContent["project"]["name"],
                         "Remote Deck",
+                    )
+                    self.assertNotIn(
+                        "path", created.structuredContent["project"]
                     )
                     opened_pdf = await session.call_tool(
                         "open_project", {"project_id": "pdf-1"}
@@ -739,6 +765,9 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                     )
                     self.assertEqual(
                         got.structuredContent["project"]["id"], "p1"
+                    )
+                    self.assertNotIn(
+                        "path", got.structuredContent["project"]
                     )
                     remote_files = await session.call_tool(
                         "list_files", {"project_handle": handle}

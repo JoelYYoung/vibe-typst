@@ -1299,20 +1299,8 @@ async def restore_pdf_orphan_transcript(request: Request):
         raise HTTPException(400, str(exc)) from exc
 
 
-@app.post("/api/pdf/replace")
-async def replace_pdf(request: Request):
-    """Replace the active immutable PDF with durable before/after version snapshots."""
-    body = await _json_object(request)
-    if set(body) != {"candidate", "message"}:
-        raise HTTPException(400, "body must contain only candidate and message")
-    candidate = body.get("candidate")
-    message = body.get("message")
-    if (not isinstance(candidate, str) or not candidate.strip()
-            or not isinstance(message, str)):
-        raise HTTPException(400, "candidate and message must be strings")
-    candidate = candidate.strip()
-    if Path(candidate).suffix.lower() != ".pdf":
-        raise HTTPException(400, "candidate must be a PDF")
+async def _replace_pdf_candidate(candidate: str, message: str) -> dict:
+    """Run the authoritative locked/versioned PDF replacement transaction."""
     try:
         expected = _capture_pdf_identity()
     except ValueError as exc:
@@ -1410,6 +1398,23 @@ async def replace_pdf(request: Request):
                 "candidate_recovery_path": transaction.preserved_candidate.name,
             }
     return await asyncio.to_thread(replace_sync)
+
+
+@app.post("/api/pdf/replace")
+async def replace_pdf(request: Request):
+    """Replace the active immutable PDF with durable before/after version snapshots."""
+    body = await _json_object(request)
+    if set(body) != {"candidate", "message"}:
+        raise HTTPException(400, "body must contain only candidate and message")
+    candidate = body.get("candidate")
+    message = body.get("message")
+    if (not isinstance(candidate, str) or not candidate.strip()
+            or not isinstance(message, str)):
+        raise HTTPException(400, "candidate and message must be strings")
+    candidate = candidate.strip()
+    if Path(candidate).suffix.lower() != ".pdf":
+        raise HTTPException(400, "candidate must be a PDF")
+    return await _replace_pdf_candidate(candidate, message)
 
 
 @app.get("/api/pdf/text")
@@ -2164,6 +2169,166 @@ async def agent_install_upload(request: Request):
     except Exception as exc:
         _raise_remote_file_error(exc)
     return _with_active_context(result)
+
+
+def _copy_verified_staged_pdf(
+    staged: Path,
+    destination_dir: Path,
+    *,
+    prefix: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> Path:
+    """Copy one pinned staged upload to a private PDF candidate and reverify it."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    source_fd = os.open(staged, flags)
+    destination_fd = None
+    candidate = None
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        source_info = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(source_info.st_mode)
+            or source_info.st_size != expected_size
+        ):
+            raise ValueError("staged upload metadata does not match")
+        destination_fd, raw_candidate = tempfile.mkstemp(
+            prefix=prefix,
+            suffix=".pdf",
+            dir=destination_dir,
+        )
+        candidate = Path(raw_candidate)
+        with (
+            os.fdopen(source_fd, "rb") as source,
+            os.fdopen(destination_fd, "wb") as output,
+        ):
+            source_fd = -1
+            destination_fd = None
+            while chunk := source.read(_PDF_UPLOAD_CHUNK_BYTES):
+                copied += len(chunk)
+                if copied > expected_size:
+                    raise ValueError(
+                        "staged upload metadata does not match"
+                    )
+                digest.update(chunk)
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if (
+            copied != expected_size
+            or digest.hexdigest() != expected_sha256.lower()
+        ):
+            raise ValueError("staged upload metadata does not match")
+        return candidate
+    except Exception:
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
+        raise
+    finally:
+        if source_fd >= 0:
+            os.close(source_fd)
+        if destination_fd is not None:
+            os.close(destination_fd)
+
+
+@app.post("/api/agent/projects/pdf-from-upload")
+async def agent_create_pdf_project_from_upload(request: Request):
+    body = await _json_object(request)
+    if set(body) != {
+        "upload_id", "name", "filename", "size", "sha256"
+    }:
+        raise HTTPException(
+            400,
+            "body must contain upload_id, name, filename, size, and sha256",
+        )
+    filename = body.get("filename")
+    if (
+        not isinstance(filename, str)
+        or Path(filename).name != filename
+        or Path(filename).suffix.lower() != ".pdf"
+    ):
+        raise HTTPException(400, "filename must be a PDF filename")
+    projects_root = projects_mod._projects_root()
+    candidate = None
+    try:
+        staged = remote_files.resolve_staged_upload(
+            projects_root,
+            body.get("upload_id"),
+            body.get("size"),
+            body.get("sha256"),
+        )
+        candidate = _copy_verified_staged_pdf(
+            staged,
+            projects_root,
+            prefix=".pdf-project-upload-",
+            expected_size=body["size"],
+            expected_sha256=body["sha256"],
+        )
+        project = await asyncio.to_thread(
+            projects_mod.create_pdf_project_from_file,
+            body.get("name"),
+            filename,
+            candidate,
+        )
+        staged.unlink()
+        return {"project": project}
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    finally:
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
+
+
+@app.post("/api/agent/pdf/replace-from-upload")
+async def agent_replace_pdf_from_upload(request: Request):
+    project = _active_agent_project()
+    if project.get("type", "typst") != "pdf":
+        raise HTTPException(400, "endpoint requires an active PDF project")
+    body = await _json_object(request)
+    if set(body) != {
+        "upload_id", "filename", "size", "sha256", "message"
+    }:
+        raise HTTPException(
+            400,
+            "body must contain upload_id, filename, size, sha256, and message",
+        )
+    filename = body.get("filename")
+    message = body.get("message")
+    if (
+        not isinstance(filename, str)
+        or Path(filename).name != filename
+        or Path(filename).suffix.lower() != ".pdf"
+        or not isinstance(message, str)
+    ):
+        raise HTTPException(
+            400, "filename must be a PDF filename and message a string"
+        )
+    candidate = None
+    try:
+        staged = remote_files.resolve_staged_upload(
+            Path(project["path"]).resolve().parent,
+            body.get("upload_id"),
+            body.get("size"),
+            body.get("sha256"),
+        )
+        candidate = _copy_verified_staged_pdf(
+            staged,
+            Path(project["path"]),
+            prefix=".pdf-replacement-remote-",
+            expected_size=body["size"],
+            expected_sha256=body["sha256"],
+        )
+        result = await _replace_pdf_candidate(candidate.name, message)
+        staged.unlink()
+        return _with_active_context(result)
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    finally:
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
 
 
 @app.post("/api/agent/files/delete")

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import multiprocessing
 import os
@@ -443,6 +444,87 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typst_state["project_type"], "typst")
         self.assertEqual(typst_state["main"], "main.typ")
         self.assertIn("Original Typst flow", typst_state["source"])
+
+    async def test_agent_staged_pdf_creation_and_replacement_are_atomic(self):
+        upload_dir = self.root / ".tcb" / "uploads"
+        upload_dir.mkdir(parents=True)
+        create_id = "a" * 32
+        original = _pdf_bytes("remote original")
+        create_ready = upload_dir / f"{create_id}.ready"
+        create_ready.write_bytes(original)
+
+        created_response = await self.client.post(
+            "/api/agent/projects/pdf-from-upload",
+            json={
+                "upload_id": create_id,
+                "name": "Remote paper",
+                "filename": "paper.pdf",
+                "size": len(original),
+                "sha256": hashlib.sha256(original).hexdigest(),
+            },
+        )
+
+        self.assertEqual(
+            created_response.status_code, 200, created_response.text
+        )
+        created = created_response.json()["project"]
+        self.assertEqual(created["type"], "pdf")
+        self.assertFalse(create_ready.exists())
+        opened = await self.client.post(
+            f"/api/projects/{created['id']}/open"
+        )
+        self.assertEqual(opened.status_code, 200, opened.text)
+        transcript = await self.client.patch(
+            "/api/pdf/transcripts/1",
+            json={"text": "Keep this transcript"},
+        )
+        self.assertEqual(transcript.status_code, 200, transcript.text)
+
+        replace_id = "b" * 32
+        replacement = _pdf_bytes("remote replacement", pages=2)
+        replace_ready = upload_dir / f"{replace_id}.ready"
+        replace_ready.write_bytes(replacement)
+        replaced = await self.client.post(
+            "/api/agent/pdf/replace-from-upload",
+            json={
+                "upload_id": replace_id,
+                "filename": "candidate.pdf",
+                "size": len(replacement),
+                "sha256": hashlib.sha256(replacement).hexdigest(),
+                "message": "remote update",
+            },
+        )
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual(replaced.json()["page_count"], 2)
+        self.assertEqual(
+            replaced.json()["transcripts"]["pages"]["1"]["text"],
+            "Keep this transcript",
+        )
+        self.assertFalse(replace_ready.exists())
+        versions = (await self.client.get("/api/git/versions")).json()
+        self.assertEqual(
+            [version["tag"] for version in versions], ["v2", "v1"]
+        )
+
+        invalid_id = "c" * 32
+        invalid = b"not a PDF"
+        invalid_ready = upload_dir / f"{invalid_id}.ready"
+        invalid_ready.write_bytes(invalid)
+        rejected = await self.client.post(
+            "/api/agent/pdf/replace-from-upload",
+            json={
+                "upload_id": invalid_id,
+                "filename": "broken.pdf",
+                "size": len(invalid),
+                "sha256": hashlib.sha256(invalid).hexdigest(),
+                "message": "must roll back",
+            },
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertTrue(invalid_ready.exists())
+        state = (await self.client.get("/api/state")).json()
+        self.assertEqual(len(state["pages"]), 2)
 
     async def test_generic_file_mutations_cannot_touch_pdf_managed_state(self):
         info = self.projects.create_pdf_project("Managed PDF", "paper.pdf", ONE_PAGE_PDF)
