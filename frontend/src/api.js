@@ -34,6 +34,15 @@ const JD = J
 const JSONHDR = { 'Content-Type': 'application/json' }
 export const changePassword = (current, neu) =>
   fetch('/account/password', { method: 'POST', headers: JSONHDR, body: JSON.stringify({ current, new: neu }) }).then(JD)
+export const listAccountTokens = () => fetch('/account/tokens').then(JD)
+export const createAccountToken = (name, preset, expiresAt) =>
+  fetch('/account/tokens', {
+    method: 'POST',
+    headers: JSONHDR,
+    body: JSON.stringify({ name, preset, expires_at: expiresAt }),
+  }).then(JD)
+export const revokeAccountToken = (id) =>
+  fetch(`/account/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(JD)
 export const adminListUsers = () => fetch('/admin/users').then(JD)
 export const adminCreateUser = (username, password, role) =>
   fetch('/admin/users', { method: 'POST', headers: JSONHDR, body: JSON.stringify({ username, password, role }) }).then(JD)
