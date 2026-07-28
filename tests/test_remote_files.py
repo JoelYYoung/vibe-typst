@@ -246,6 +246,129 @@ class RemoteFileServiceTest(unittest.TestCase):
                 expected_sha256=None,
             )
 
+    def test_delete_moves_payload_outside_project_and_restore_is_collision_safe(self):
+        original = self.project_dir / "assets" / "logo.svg"
+        original.parent.mkdir()
+        original.write_text("<svg/>", encoding="utf-8")
+
+        deleted = remote_files.trash_item(
+            self.project, "assets/logo.svg", "pat-1", now=100
+        )
+
+        self.assertFalse(original.exists())
+        listed = remote_files.list_trash(self.project, now=101)
+        self.assertEqual(listed[0]["id"], deleted["id"])
+        self.assertEqual(listed[0]["original_path"], "assets/logo.svg")
+        original.write_text("replacement", encoding="utf-8")
+        with self.assertRaises(FileExistsError):
+            remote_files.restore_trash(self.project, deleted["id"])
+        original.unlink()
+
+        restored = remote_files.restore_trash(
+            self.project, deleted["id"]
+        )
+
+        self.assertEqual(restored["path"], "assets/logo.svg")
+        self.assertEqual(original.read_text(encoding="utf-8"), "<svg/>")
+        self.assertEqual(remote_files.list_trash(self.project), [])
+
+    def test_recursive_trash_and_thirty_day_sweep(self):
+        directory = self.project_dir / "assets"
+        directory.mkdir()
+        (directory / "nested").mkdir()
+        (directory / "nested" / "data.txt").write_text(
+            "data", encoding="utf-8"
+        )
+        deleted = remote_files.trash_item(
+            self.project, "assets", "pat-1", now=100
+        )
+        self.assertEqual(deleted["kind"], "directory")
+
+        removed = remote_files.sweep_trash(
+            self.root, now=100 + 30 * 86400 - 1
+        )
+        self.assertEqual(removed, 0)
+        self.assertEqual(len(remote_files.list_trash(self.project)), 1)
+
+        removed = remote_files.sweep_trash(
+            self.root, now=100 + 30 * 86400
+        )
+
+        self.assertEqual(removed, 1)
+        self.assertEqual(remote_files.list_trash(self.project), [])
+
+    def test_trash_rejects_symlinks_main_and_pdf_managed_state(self):
+        (self.project_dir / "escape").symlink_to(
+            self.outside_dir, target_is_directory=True
+        )
+        with self.assertRaises(PermissionError):
+            remote_files.trash_item(
+                self.project, "escape", "pat-1"
+            )
+        with self.assertRaisesRegex(ValueError, "active Typst main"):
+            remote_files.trash_item(
+                self.project, "main.typ", "pat-1"
+            )
+
+        pdf_dir = self.root / "paper"
+        pdf_dir.mkdir()
+        (pdf_dir / ".vibe-typst.json").write_text(
+            json.dumps({
+                "name": "Paper",
+                "type": "pdf",
+                "main_file": "document.pdf",
+            }),
+            encoding="utf-8",
+        )
+        (pdf_dir / "document.pdf").write_bytes(b"%PDF fixture")
+        pdf_project = {
+            "id": "paper",
+            "type": "pdf",
+            "main_file": "document.pdf",
+            "path": str(pdf_dir),
+        }
+        with self.assertRaisesRegex(ValueError, "PDF managed state"):
+            remote_files.trash_item(
+                pdf_project, "document.pdf", "pat-1"
+            )
+
+    def test_sweep_never_follows_a_symlinked_private_root(self):
+        external = self.root / "external-private"
+        entry = external / "trash" / "typst-project" / ("a" * 32)
+        entry.mkdir(parents=True)
+        (entry / "payload").write_text("keep", encoding="utf-8")
+        (entry / "metadata.json").write_text(json.dumps({
+            "id": "a" * 32,
+            "project_id": "typst-project",
+            "original_path": "notes.md",
+            "kind": "file",
+            "deleted_at": 0,
+            "expires_at": 1,
+            "actor_token_id": "pat-1",
+        }), encoding="utf-8")
+        (self.root / ".tcb").symlink_to(
+            external, target_is_directory=True
+        )
+
+        self.assertEqual(remote_files.sweep_trash(self.root, now=2), 0)
+        self.assertTrue((entry / "payload").exists())
+
+    def test_failed_metadata_publication_restores_original_payload(self):
+        original = self.project_dir / "notes.md"
+        original.write_text("important", encoding="utf-8")
+
+        with patch.object(
+            remote_files,
+            "_publish_trash_metadata",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaises(OSError):
+                remote_files.trash_item(
+                    self.project, "notes.md", "pat-1", now=100
+                )
+
+        self.assertEqual(original.read_text(encoding="utf-8"), "important")
+
 
 class RemoteFileEndpointTest(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -335,6 +458,22 @@ class RemoteFileEndpointTest(unittest.IsolatedAsyncioTestCase):
             caught.exception.detail["current_sha256"],
             hashlib.sha256(b"old").hexdigest(),
         )
+
+    async def test_agent_trash_routes_round_trip(self):
+        deleted = await self.app.agent_delete_file(_Request({
+            "path": "notes.md",
+            "actor_token_id": "pat-1",
+        }))
+        self.assertEqual(deleted["project_id"], "p1")
+
+        listed = self.app.agent_list_deleted_files()
+        self.assertEqual(listed["items"][0]["id"], deleted["id"])
+
+        restored = await self.app.agent_restore_deleted_file(_Request({
+            "trash_id": deleted["id"],
+        }))
+        self.assertEqual(restored["path"], "notes.md")
+        self.assertTrue((self.project_dir / "notes.md").is_file())
 
 
 if __name__ == "__main__":

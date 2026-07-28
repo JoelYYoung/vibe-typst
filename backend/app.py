@@ -1981,6 +1981,44 @@ async def agent_move_file(request: Request):
     return _with_active_context(result)
 
 
+@app.post("/api/agent/files/delete")
+async def agent_delete_file(request: Request):
+    project = _active_agent_project()
+    body = await request.json() or {}
+    try:
+        result = remote_files.trash_item(
+            project,
+            body.get("path"),
+            body.get("actor_token_id"),
+        )
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
+@app.get("/api/agent/files/trash")
+def agent_list_deleted_files():
+    project = _active_agent_project()
+    try:
+        items = remote_files.list_trash(project)
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context({"items": items})
+
+
+@app.post("/api/agent/files/restore")
+async def agent_restore_deleted_file(request: Request):
+    project = _active_agent_project()
+    body = await request.json() or {}
+    try:
+        result = remote_files.restore_trash(
+            project, body.get("trash_id")
+        )
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return _with_active_context(result)
+
+
 @app.get("/api/project/files")
 def project_files():
     """List all files and directories in the active project."""
