@@ -181,6 +181,47 @@ class WorkspaceGateway:
         finally:
             await manager.__aexit__(None, None, None)
 
+    async def read_bytes(
+        self,
+        identity: PatIdentity,
+        path: str,
+        max_bytes: int,
+    ) -> tuple[bytes, dict[str, str]]:
+        if (
+            isinstance(max_bytes, bool)
+            or not isinstance(max_bytes, int)
+            or max_bytes < 1
+        ):
+            raise ValueError("max_bytes must be positive")
+        async with self.stream_response(identity, path) as response:
+            if response.status_code >= 400:
+                self._raise_backend_status(response.status_code, path)
+            declared = response.headers.get("content-length")
+            if declared is not None:
+                try:
+                    if int(declared) > max_bytes:
+                        raise McpServiceError(
+                            "FILE_TOO_LARGE",
+                            "workspace byte response is too large",
+                        )
+                except ValueError as exc:
+                    raise McpServiceError(
+                        "BACKEND_ERROR",
+                        "workspace returned invalid byte metadata",
+                    ) from exc
+            content = bytearray()
+            async for chunk in response.aiter_bytes():
+                content.extend(chunk)
+                if len(content) > max_bytes:
+                    raise McpServiceError(
+                        "FILE_TOO_LARGE",
+                        "workspace byte response is too large",
+                    )
+            return bytes(content), {
+                key.lower(): value
+                for key, value in response.headers.items()
+            }
+
     @staticmethod
     def _raise_backend_status(
         status_code: int,

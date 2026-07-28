@@ -23,6 +23,7 @@ import subprocess
 import tempfile
 import termios
 import threading
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,7 +31,7 @@ from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile as StarletteUploadFile
@@ -45,6 +46,7 @@ import notes as notes_mod
 import projects as projects_mod
 import pdf_service
 import pdf_transcript
+import preview_service
 import remote_files
 import resolver
 import runtime
@@ -1941,6 +1943,155 @@ def agent_list_files():
     return _with_active_context({"items": items})
 
 
+@app.get("/api/agent/preview/{page}")
+def agent_page_preview(page: int):
+    project = _active_agent_project()
+    try:
+        result = preview_service.get_page_png(project, page)
+    except Exception as exc:
+        _raise_remote_file_error(exc)
+    return Response(
+        content=result["data"],
+        media_type=result["media_type"],
+        headers={
+            "Cache-Control": "no-store",
+            "X-Project-Id": project["id"],
+            "X-Context-Version": _project_context_version,
+            "X-Page-Count": str(result["page_count"]),
+        },
+    )
+
+
+def _agent_exports_root(projects_root: Path, *, create: bool) -> Path:
+    root = Path(projects_root)
+    if root.is_symlink():
+        raise PermissionError("projects root may not be a symbolic link")
+    root = root.resolve(strict=True)
+    private_root = root / ".tcb"
+    exports = private_root / "exports"
+    if create:
+        for directory in (private_root, exports):
+            if directory.is_symlink():
+                raise PermissionError(
+                    "export directory may not be a symbolic link"
+                )
+            directory.mkdir(exist_ok=True)
+            if not directory.is_dir():
+                raise NotADirectoryError(str(directory))
+    elif (
+        private_root.is_symlink()
+        or exports.is_symlink()
+        or not exports.is_dir()
+    ):
+        raise FileNotFoundError("export not found")
+    return exports
+
+
+@app.post("/api/agent/export-pdf")
+async def agent_export_pdf():
+    project = _active_agent_project()
+    export_context = _active_context()
+    project_type, main = _project_document(project)
+    if project_type != "typst":
+        raise HTTPException(400, "export is unavailable for PDF projects")
+    await docstore.flush_now()
+    try:
+        exports = _agent_exports_root(
+            Path(project["path"]).resolve().parent, create=True
+        )
+    except (OSError, PermissionError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    cutoff = time.time() - 3600
+    for candidate in exports.iterdir():
+        try:
+            if (
+                not candidate.is_symlink()
+                and candidate.is_file()
+                and candidate.stat().st_mtime < cutoff
+            ):
+                candidate.unlink()
+        except OSError:
+            pass
+    export_id = secrets.token_hex(16)
+    output = exports / f"{export_id}.pdf"
+
+    def compile_export():
+        return subprocess.run(
+            [
+                "typst",
+                "compile",
+                "--root",
+                str(main.parent),
+                str(main),
+                str(output),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(main.parent),
+            timeout=120,
+        )
+
+    try:
+        process = await asyncio.to_thread(compile_export)
+        if process.returncode != 0 or output.is_symlink() or not output.is_file():
+            detail = (process.stderr or "unknown error")[:400]
+            raise HTTPException(400, f"compile failed: {detail}")
+        with output.open("rb") as stream:
+            os.fsync(stream.fileno())
+        size = output.stat().st_size
+        sha256 = remote_files.sha256_file(output)
+        if _active_context() != export_context:
+            raise HTTPException(409, "active project context changed")
+    except HTTPException:
+        output.unlink(missing_ok=True)
+        raise
+    except Exception as exc:
+        output.unlink(missing_ok=True)
+        raise HTTPException(500, "could not export PDF") from exc
+    return {
+        "export_id": export_id,
+        "filename": f"{main.stem}.pdf",
+        "size": size,
+        "sha256": sha256,
+        "download_path": f"/api/agent/exports/{export_id}",
+        **export_context,
+    }
+
+
+@app.get("/api/agent/exports/{export_id}")
+def agent_export_download(export_id: str):
+    if re.fullmatch(r"[0-9a-f]{32}", export_id) is None:
+        raise HTTPException(404, "export not found")
+    try:
+        exports = _agent_exports_root(
+            projects_mod._projects_root(), create=False
+        )
+        path = exports / f"{export_id}.pdf"
+        if path.is_symlink():
+            raise FileNotFoundError
+        flags = os.O_RDONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(path, flags)
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise FileNotFoundError
+        stream = os.fdopen(fd, "rb")
+    except (OSError, PermissionError, ValueError):
+        raise HTTPException(404, "export not found")
+
+    def close_and_remove():
+        stream.close()
+        path.unlink(missing_ok=True)
+
+    return StreamingResponse(
+        stream,
+        media_type="application/pdf",
+        headers={"Cache-Control": "no-store"},
+        background=BackgroundTask(close_and_remove),
+    )
+
+
 @app.get("/api/agent/files/read")
 def agent_read_file(path: str, offset: int = 1, limit: int = 120):
     project = _active_agent_project()
@@ -2482,6 +2633,92 @@ async def git_delete(request: Request):
 def _require_typst_comments() -> None:
     if runtime.document_type() == "pdf":
         raise HTTPException(400, "comments are unavailable for PDF projects")
+
+
+def _agent_public_comment(comment: dict) -> dict:
+    return {
+        "id": comment["id"],
+        "seq": comment["seq"],
+        "file": comment.get("file"),
+        "kind": comment.get("kind", "element"),
+        "page": comment.get("page"),
+        "anchor_text": comment.get("anchor_text", ""),
+        "anchor_context": comment.get("anchor_context", ""),
+        "region": comment.get("region"),
+        "raw_context": comment.get("raw_context", ""),
+        "comment": comment.get("body", ""),
+        "status": comment.get("status"),
+        "created_at": comment.get("created_at"),
+    }
+
+
+async def _agent_comment_with_location(comment: dict) -> dict:
+    public = _agent_public_comment(comment)
+    anchor = await comment_anchor(comment["id"])
+    if anchor.get("spans"):
+        public["location"] = {
+            "lines": anchor.get("lines"),
+            "current_text": anchor.get("texts"),
+            "rev": anchor.get("rev"),
+        }
+    else:
+        public["location"] = None
+    return public
+
+
+@app.get("/api/agent/comments/pending")
+async def agent_pending_comments():
+    _active_agent_project()
+    _require_typst_comments()
+    comments = [
+        await _agent_comment_with_location(comment)
+        for comment in store.list_comments("pending")
+    ]
+    return _with_active_context({"comments": comments})
+
+
+@app.get("/api/agent/comments/{cid}")
+async def agent_comment(cid: str):
+    _active_agent_project()
+    _require_typst_comments()
+    comment = store.get_comment(cid)
+    if comment is None:
+        raise HTTPException(404, "comment not found")
+    return _with_active_context({
+        "comment": await _agent_comment_with_location(comment)
+    })
+
+
+@app.post("/api/agent/comments/{cid}/done")
+async def agent_comment_done(cid: str, request: Request):
+    _active_agent_project()
+    _require_typst_comments()
+    body = await _json_object(request)
+    note = body.get("note", "")
+    if set(body) != {"note"} or not isinstance(note, str):
+        raise HTTPException(400, "body must contain only string note")
+    comment = store.set_status(cid, "done", note)
+    if comment is None:
+        raise HTTPException(404, "comment not found")
+    return _with_active_context({
+        "comment": _agent_public_comment(comment)
+    })
+
+
+@app.post("/api/agent/comments/{cid}/dismiss")
+async def agent_comment_dismiss(cid: str, request: Request):
+    _active_agent_project()
+    _require_typst_comments()
+    body = await _json_object(request)
+    note = body.get("note", "")
+    if set(body) != {"note"} or not isinstance(note, str):
+        raise HTTPException(400, "body must contain only string note")
+    comment = store.set_status(cid, "dismissed", note)
+    if comment is None:
+        raise HTTPException(404, "comment not found")
+    return _with_active_context({
+        "comment": _agent_public_comment(comment)
+    })
 
 
 @app.get("/api/comments")

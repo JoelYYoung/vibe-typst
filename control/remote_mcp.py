@@ -19,7 +19,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import CallToolResult, TextContent
+from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import AnyHttpUrl
 from typing_extensions import TypedDict
 
@@ -54,6 +54,30 @@ def _protocol_result(result: RemoteToolResult) -> CallToolResult:
         ],
         structuredContent=dict(result),
         isError=not bool(result.get("ok")),
+    )
+
+
+def _image_protocol_result(result: RemoteToolResult) -> CallToolResult:
+    if not result.get("ok"):
+        return _protocol_result(result)
+    data = result.get("_image_data")
+    if not isinstance(data, bytes):
+        return _protocol_result(McpServiceError(
+            "BACKEND_ERROR", "preview image was unavailable"
+        ).as_dict())
+    structured = {
+        key: value
+        for key, value in result.items()
+        if key != "_image_data"
+    }
+    return CallToolResult(
+        content=[ImageContent(
+            type="image",
+            data=base64.b64encode(data).decode("ascii"),
+            mimeType="image/png",
+        )],
+        structuredContent=structured,
+        isError=False,
     )
 
 
@@ -865,6 +889,530 @@ class _RemoteProjectService:
             audit_context=audit_context,
         )
 
+    async def _typed_project(
+        self,
+        identity: PatIdentity,
+        project_handle: str,
+        required_type: str,
+    ) -> tuple[mcp_store.Lease, dict]:
+        lease, project, _ = await self._handled_project(
+            identity, project_handle
+        )
+        if project.get("type", "typst") != required_type:
+            raise McpServiceError(
+                "CAPABILITY_NOT_AVAILABLE",
+                f"tool is unavailable for {project.get('type', 'unknown')} projects",
+            )
+        return lease, project
+
+    async def _confirm_project_context(
+        self,
+        identity: PatIdentity,
+        project_handle: str,
+        lease: mcp_store.Lease,
+    ) -> None:
+        current, _, _ = await self._handled_project(
+            identity, project_handle
+        )
+        if (
+            current.project_id != lease.project_id
+            or current.context_version != lease.context_version
+        ):
+            raise McpServiceError(
+                "PROJECT_CONTEXT_CHANGED",
+                "the active project context changed; open the project again",
+            )
+
+    async def get_document(
+        self,
+        project_handle: str,
+        offset: int = 1,
+        limit: int = 120,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            body = await self.gateway.request(
+                identity, "GET", "/api/document"
+            )
+            source = body.get("source")
+            rev = body.get("rev")
+            if not isinstance(source, str) or not isinstance(rev, int):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned an invalid document",
+                )
+            if (
+                isinstance(offset, bool)
+                or not isinstance(offset, int)
+                or offset < 1
+                or isinstance(limit, bool)
+                or not isinstance(limit, int)
+                or limit < 1
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "offset and limit must be positive integers",
+                )
+            lines = source.split("\n")
+            start = min(offset - 1, len(lines))
+            count = min(limit, 400)
+            end = min(start + count, len(lines))
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                "file": body.get("file"),
+                "rev": rev,
+                "chars": len(source),
+                "total_lines": len(lines),
+                "shown": (
+                    f"{start + 1}-{end}" if end > start else None
+                ),
+                "text": "\n".join(
+                    f"{number:>5}\t{line}"
+                    for number, line in zip(
+                        range(start + 1, end + 1), lines[start:end]
+                    )
+                ),
+                "truncated": end < len(lines),
+                "next": end + 1 if end < len(lines) else None,
+            }
+
+        return await self._run(
+            "get_document", "files:read", operation
+        )
+
+    async def find_in_document(
+        self,
+        project_handle: str,
+        query: str,
+        max_hits: int = 40,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            if (
+                not isinstance(query, str)
+                or not query
+                or len(query) > 512
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "query must contain 1 to 512 characters",
+                )
+            if (
+                isinstance(max_hits, bool)
+                or not isinstance(max_hits, int)
+                or max_hits < 1
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED", "max_hits must be positive"
+                )
+            body = await self.gateway.request(
+                identity, "GET", "/api/document"
+            )
+            source = body.get("source")
+            if not isinstance(source, str):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned an invalid document",
+                )
+            lines = source.split("\n")
+            hits = [
+                {"line": number, "text": line}
+                for number, line in enumerate(lines, 1)
+                if query in line
+            ]
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                "file": body.get("file"),
+                "rev": body.get("rev"),
+                "total_lines": len(lines),
+                "query": query,
+                "matches": len(hits),
+                "shown": min(len(hits), min(max_hits, 40)),
+                "hits": hits[:min(max_hits, 40)],
+            }
+
+        return await self._run(
+            "find_in_document", "files:read", operation
+        )
+
+    async def locate(
+        self,
+        project_handle: str,
+        page: int = 0,
+        slide: int = 0,
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            if (
+                isinstance(page, bool)
+                or not isinstance(page, int)
+                or isinstance(slide, bool)
+                or not isinstance(slide, int)
+                or bool(page) == bool(slide)
+                or page < 0
+                or slide < 0
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "pass exactly one positive page or slide number",
+                )
+            query = f"page={page}" if page else f"slide={slide}"
+            body = await self.gateway.request(
+                identity, "GET", f"/api/locate?{query}"
+            )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            if body.get("ok") is not True:
+                raise McpServiceError(
+                    "FILE_NOT_FOUND",
+                    "the requested rendered page or slide was not found",
+                )
+            return {"ok": True, **{
+                key: value for key, value in body.items() if key != "ok"
+            }}
+
+        return await self._run("locate", "slides:read", operation)
+
+    async def apply_edits(
+        self,
+        project_handle: str,
+        edits: list,
+        base_rev: int | None = None,
+    ) -> RemoteToolResult:
+        audit_context = {}
+
+        async def operation(identity):
+            lease, project = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            if (
+                not isinstance(edits, list)
+                or not edits
+                or len(edits) > 100
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "edits must contain 1 to 100 operations",
+                )
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (
+                    f"document:{project.get('main_file', 'main.typ')}",
+                ),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                "/api/edit",
+                json={
+                    "op": "apply_edits",
+                    "edits": edits,
+                    "base_rev": base_rev,
+                    "file": project.get("main_file"),
+                },
+            )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            if body.get("ok") is not True:
+                if body.get("conflict") is True:
+                    raise McpServiceError(
+                        "REVISION_CONFLICT",
+                        "document revision changed; read and retry",
+                    )
+                raise McpServiceError(
+                    "BACKEND_ERROR", "document edits were rejected"
+                )
+            return {"ok": True, **{
+                key: value for key, value in body.items() if key != "ok"
+            }}
+
+        return await self._run(
+            "apply_edits",
+            "documents:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def get_transcripts(
+        self, project_handle: str
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            body = await self.gateway.request(
+                identity, "GET", "/api/slide-map"
+            )
+            pages = body.get("pages")
+            if not isinstance(pages, list):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned invalid transcripts",
+                )
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {
+                "ok": True,
+                "pages": [{
+                    key: row.get(key)
+                    for key in (
+                        "page",
+                        "slide_no",
+                        "slide_line",
+                        "sub_index",
+                        "sub_total",
+                        "section",
+                        "note",
+                        "note_raw",
+                        "note_line",
+                    )
+                } for row in pages if isinstance(row, dict)],
+                "total": body.get("total", len(pages)),
+                "orphans": body.get("orphans") or [],
+            }
+
+        return await self._run(
+            "get_transcripts", "transcripts:read", operation
+        )
+
+    @staticmethod
+    def _comment_id(comment_id: str) -> str:
+        if (
+            not isinstance(comment_id, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", comment_id) is None
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED", "comment id is invalid"
+            )
+        return comment_id
+
+    async def get_pending_comments(
+        self, project_handle: str
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            body = await self.gateway.request(
+                identity, "GET", "/api/agent/comments/pending"
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "get_pending_comments", "comments:read", operation
+        )
+
+    async def get_comment(
+        self, project_handle: str, comment_id: str
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            safe_id = self._comment_id(comment_id)
+            body = await self.gateway.request(
+                identity,
+                "GET",
+                f"/api/agent/comments/{quote(safe_id, safe='')}",
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            "get_comment", "comments:read", operation
+        )
+
+    async def mark_comment_done(
+        self,
+        project_handle: str,
+        comment_id: str,
+        note: str = "",
+    ) -> RemoteToolResult:
+        return await self._set_comment_status(
+            project_handle, comment_id, "done", note
+        )
+
+    async def mark_comment_dismissed(
+        self,
+        project_handle: str,
+        comment_id: str,
+        reason: str = "",
+    ) -> RemoteToolResult:
+        return await self._set_comment_status(
+            project_handle, comment_id, "dismiss", reason
+        )
+
+    async def _set_comment_status(
+        self,
+        project_handle: str,
+        comment_id: str,
+        action: str,
+        note: str,
+    ) -> RemoteToolResult:
+        audit_context = {}
+        tool_name = (
+            "mark_comment_done"
+            if action == "done"
+            else "mark_comment_dismissed"
+        )
+
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            safe_id = self._comment_id(comment_id)
+            if not isinstance(note, str) or len(note) > 4096:
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED",
+                    "comment status note is invalid",
+                )
+            audit_context.update({
+                "project_id": lease.project_id,
+                "targets": (f"comment:{safe_id}",),
+            })
+            body = await self.gateway.request(
+                identity,
+                "POST",
+                (
+                    f"/api/agent/comments/{quote(safe_id, safe='')}"
+                    f"/{action}"
+                ),
+                json={"note": note},
+            )
+            return self._checked_backend_result(lease, body)
+
+        return await self._run(
+            tool_name,
+            "comments:write",
+            operation,
+            mutating=True,
+            audit_context=audit_context,
+        )
+
+    async def get_slide_preview(
+        self, project_handle: str, page: int
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            if (
+                isinstance(page, bool)
+                or not isinstance(page, int)
+                or page < 1
+            ):
+                raise McpServiceError(
+                    "PATH_NOT_ALLOWED", "page must be positive"
+                )
+            data, headers = await self.gateway.read_bytes(
+                identity, f"/api/agent/preview/{page}", 8 * 1024 * 1024
+            )
+            if (
+                headers.get("x-project-id") != lease.project_id
+                or headers.get("x-context-version")
+                != lease.context_version
+            ):
+                raise McpServiceError(
+                    "PROJECT_CONTEXT_CHANGED",
+                    "the active project context changed; open the project again",
+                )
+            if (
+                headers.get("content-type", "").split(";", 1)[0]
+                != "image/png"
+                or not data.startswith(b"\x89PNG\r\n\x1a\n")
+            ):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned an invalid preview",
+                )
+            try:
+                page_count = int(headers.get("x-page-count", ""))
+            except ValueError as exc:
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned invalid preview metadata",
+                ) from exc
+            return {
+                "ok": True,
+                "page": page,
+                "page_count": page_count,
+                "media_type": "image/png",
+                "_image_data": data,
+            }
+
+        return await self._run(
+            "get_slide_preview", "slides:read", operation
+        )
+
+    async def export_pdf(
+        self, project_handle: str
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            body = await self.gateway.request(
+                identity, "POST", "/api/agent/export-pdf"
+            )
+            result = self._checked_backend_result(lease, body)
+            export_id = result.get("export_id")
+            download_path = result.get("download_path")
+            filename = result.get("filename")
+            size = result.get("size")
+            sha256 = result.get("sha256")
+            if (
+                not isinstance(export_id, str)
+                or re.fullmatch(r"[0-9a-f]{32}", export_id) is None
+                or not isinstance(download_path, str)
+                or not isinstance(filename, str)
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+                or not isinstance(sha256, str)
+            ):
+                raise McpServiceError(
+                    "BACKEND_ERROR",
+                    "workspace returned invalid export metadata",
+                )
+            public, capability = mcp_store.begin_download(
+                self.db_path,
+                identity,
+                lease.project_id,
+                download_path,
+                filename=filename,
+                size=size,
+                sha256=sha256,
+            )
+            return {
+                "ok": True,
+                "download_id": public["id"],
+                "download_url": (
+                    f"{self.gateway.public_base_url}"
+                    f"/mcp-download/{public['id']}"
+                ),
+                "authorization": f"Download {capability}",
+                "filename": filename,
+                "size": size,
+                "sha256": sha256,
+                "expires_at": public["expires_at"],
+            }
+
+        return await self._run("export_pdf", "slides:read", operation)
+
 
 def create_remote_mcp(
     db_path: Path,
@@ -1079,6 +1627,127 @@ def create_remote_mcp(
             await service.restore_deleted_file(
                 project_handle, trash_id
             )
+        )
+
+    @server.tool()
+    async def get_document(
+        project_handle: str,
+        offset: int = 1,
+        limit: int = 120,
+    ) -> CallToolResult:
+        """Read a bounded line-numbered window from the handled live Typst CRDT document."""
+        return _protocol_result(
+            await service.get_document(
+                project_handle, offset, limit
+            )
+        )
+
+    @server.tool()
+    async def find_in_document(
+        project_handle: str,
+        query: str,
+        max_hits: int = 40,
+    ) -> CallToolResult:
+        """Find up to 40 literal case-sensitive matches in the handled live Typst document."""
+        return _protocol_result(
+            await service.find_in_document(
+                project_handle, query, max_hits
+            )
+        )
+
+    @server.tool()
+    async def locate(
+        project_handle: str,
+        page: int = 0,
+        slide: int = 0,
+    ) -> CallToolResult:
+        """Map exactly one rendered page or logical slide to current Typst source lines."""
+        return _protocol_result(
+            await service.locate(project_handle, page, slide)
+        )
+
+    @server.tool()
+    async def apply_edits(
+        project_handle: str,
+        edits: list,
+        base_rev: int | None = None,
+    ) -> CallToolResult:
+        """Atomically apply an edit batch through the handled live Typst CRDT, guarded by base_rev."""
+        return _protocol_result(
+            await service.apply_edits(
+                project_handle, edits, base_rev
+            )
+        )
+
+    @server.tool()
+    async def get_transcripts(
+        project_handle: str,
+    ) -> CallToolResult:
+        """Read per-page speaker transcripts for the handled project."""
+        return _protocol_result(
+            await service.get_transcripts(project_handle)
+        )
+
+    @server.tool()
+    async def get_pending_comments(
+        project_handle: str,
+    ) -> CallToolResult:
+        """List pending human Typst comments with their current CRDT-resolved locations."""
+        return _protocol_result(
+            await service.get_pending_comments(project_handle)
+        )
+
+    @server.tool()
+    async def get_comment(
+        project_handle: str, comment_id: str
+    ) -> CallToolResult:
+        """Read one human Typst comment and its current CRDT-resolved location."""
+        return _protocol_result(
+            await service.get_comment(project_handle, comment_id)
+        )
+
+    @server.tool()
+    async def mark_comment_done(
+        project_handle: str,
+        comment_id: str,
+        note: str = "",
+    ) -> CallToolResult:
+        """Mark one handled Typst comment done after applying its requested change."""
+        return _protocol_result(
+            await service.mark_comment_done(
+                project_handle, comment_id, note
+            )
+        )
+
+    @server.tool()
+    async def mark_comment_dismissed(
+        project_handle: str,
+        comment_id: str,
+        reason: str = "",
+    ) -> CallToolResult:
+        """Dismiss one handled Typst comment as unclear, obsolete, or already resolved."""
+        return _protocol_result(
+            await service.mark_comment_dismissed(
+                project_handle, comment_id, reason
+            )
+        )
+
+    @server.tool()
+    async def get_slide_preview(
+        project_handle: str, page: int
+    ) -> CallToolResult:
+        """Return one handled Typst rendered page as bounded PNG MCP image content."""
+        return _image_protocol_result(
+            await service.get_slide_preview(project_handle, page)
+        )
+
+    @server.tool()
+    async def export_pdf(
+        project_handle: str,
+    ) -> CallToolResult:
+        """Compile the handled live Typst deck and return a five-minute one-time PDF download."""
+        return _protocol_result(
+            await service.export_pdf(project_handle)
         )
 
     return server

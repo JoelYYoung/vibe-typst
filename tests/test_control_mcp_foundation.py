@@ -681,6 +681,17 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                             "delete_file",
                             "list_deleted_files",
                             "restore_deleted_file",
+                            "get_document",
+                            "find_in_document",
+                            "locate",
+                            "apply_edits",
+                            "get_transcripts",
+                            "get_pending_comments",
+                            "get_comment",
+                            "mark_comment_done",
+                            "mark_comment_dismissed",
+                            "get_slide_preview",
+                            "export_pdf",
                         },
                     )
 

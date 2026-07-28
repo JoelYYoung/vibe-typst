@@ -4,7 +4,8 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -526,6 +527,135 @@ class RemoteFileEndpointTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             (self.project_dir / "assets" / "bad.bin").exists()
         )
+
+    async def test_agent_comment_wrappers_return_public_live_context(self):
+        stored = {
+            "id": "abcd1234",
+            "seq": 1,
+            "file": "main.typ",
+            "kind": "element",
+            "page": 1,
+            "anchor_text": "Title",
+            "anchor_context": "= Title",
+            "region": None,
+            "raw_context": "context",
+            "body": "Improve it",
+            "status": "pending",
+            "created_at": 1,
+            "rel_anchors": ["private-anchor"],
+        }
+        location = {
+            "id": "abcd1234",
+            "spans": [[0, 5]],
+            "texts": ["Title"],
+            "lines": [1],
+            "rev": 7,
+        }
+        with (
+            patch.object(
+                self.app.store,
+                "list_comments",
+                return_value=[stored],
+            ),
+            patch.object(
+                self.app.store, "get_comment", return_value=stored
+            ),
+            patch.object(
+                self.app.store,
+                "set_status",
+                side_effect=lambda cid, status, note: {
+                    **stored,
+                    "status": status,
+                },
+            ),
+            patch.object(
+                self.app,
+                "comment_anchor",
+                new=AsyncMock(return_value=location),
+            ),
+        ):
+            pending = await self.app.agent_pending_comments()
+            detail = await self.app.agent_comment("abcd1234")
+            done = await self.app.agent_comment_done(
+                "abcd1234", _Request({"note": "fixed"})
+            )
+            dismissed = await self.app.agent_comment_dismiss(
+                "abcd1234", _Request({"note": "obsolete"})
+            )
+
+        self.assertEqual(
+            pending["comments"][0]["location"]["lines"], [1]
+        )
+        self.assertNotIn("rel_anchors", pending["comments"][0])
+        self.assertEqual(detail["comment"]["comment"], "Improve it")
+        self.assertEqual(done["comment"]["status"], "done")
+        self.assertEqual(dismissed["comment"]["status"], "dismissed")
+
+    async def test_agent_export_prepares_fixed_private_download(self):
+        def compile_pdf(command, **kwargs):
+            Path(command[-1]).write_bytes(b"compiled pdf")
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with (
+            patch.object(
+                self.app.docstore,
+                "flush_now",
+                new=AsyncMock(),
+            ),
+            patch.object(
+                self.app.subprocess,
+                "run",
+                side_effect=compile_pdf,
+            ),
+        ):
+            exported = await self.app.agent_export_pdf()
+
+        self.assertEqual(exported["project_id"], "p1")
+        self.assertRegex(exported["export_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(exported["size"], len(b"compiled pdf"))
+        self.assertEqual(
+            exported["sha256"],
+            hashlib.sha256(b"compiled pdf").hexdigest(),
+        )
+        self.assertEqual(
+            exported["download_path"],
+            f"/api/agent/exports/{exported['export_id']}",
+        )
+
+    async def test_agent_export_discards_result_if_project_switches(self):
+        other_dir = self.project_dir.parent / "other"
+        other_dir.mkdir()
+        (other_dir / "main.typ").write_text("= Other", encoding="utf-8")
+        other = {
+            "id": "p2",
+            "name": "Other",
+            "type": "typst",
+            "main_file": "main.typ",
+            "path": str(other_dir),
+        }
+
+        def compile_and_switch(command, **kwargs):
+            Path(command[-1]).write_bytes(b"wrong context")
+            self.app._set_active_project(other)
+            return SimpleNamespace(returncode=0, stderr="")
+
+        with (
+            patch.object(
+                self.app.docstore,
+                "flush_now",
+                new=AsyncMock(),
+            ),
+            patch.object(
+                self.app.subprocess,
+                "run",
+                side_effect=compile_and_switch,
+            ),
+            self.assertRaises(Exception),
+        ):
+            await self.app.agent_export_pdf()
+
+        exports = self.project_dir.parent / ".tcb" / "exports"
+        self.assertEqual(list(exports.glob("*.pdf")), [])
 
 
 if __name__ == "__main__":

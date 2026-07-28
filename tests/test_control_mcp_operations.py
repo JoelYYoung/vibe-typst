@@ -36,6 +36,32 @@ class _FileGateway:
         }
         self.trash = {}
         self.calls = []
+        self.source = "= Old title\n#slide[\n  Body\n]\n"
+        self.rev = 7
+        self.comments = [{
+            "id": "abcd1234",
+            "seq": 1,
+            "comment": "Improve the title",
+            "status": "pending",
+            "page": 1,
+            "location": {
+                "lines": [1],
+                "current_text": ["= Old title"],
+                "rev": 7,
+            },
+        }]
+
+    async def read_bytes(self, identity, path, max_bytes):
+        self.calls.append((identity.token_id, "GET_BYTES", path, None))
+        return (
+            b"\x89PNG\r\n\x1a\npreview",
+            {
+                "x-project-id": "p1",
+                "x-context-version": "ctx-1",
+                "x-page-count": "1",
+                "content-type": "image/png",
+            },
+        )
 
     async def active_context(self, identity):
         return {
@@ -61,6 +87,96 @@ class _FileGateway:
                     }
                     for name, content in sorted(self.files.items())
                 ],
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if method == "GET" and parsed.path == "/api/document":
+            return {
+                "file": "main.typ",
+                "source": self.source,
+                "rev": self.rev,
+            }
+        if method == "POST" and parsed.path == "/api/edit":
+            self.source = self.source.replace("Old title", "New title")
+            self.rev += 1
+            return {"ok": True, "rev": self.rev, "applied": 1}
+        if method == "GET" and parsed.path == "/api/locate":
+            return {
+                "ok": True,
+                "kind": "page",
+                "page": 1,
+                "slide_no": 1,
+                "slide_line": 2,
+                "slide_end": 4,
+            }
+        if method == "GET" and parsed.path == "/api/slide-map":
+            return {
+                "pages": [{
+                    "page": 1,
+                    "slide_no": 1,
+                    "slide_line": 2,
+                    "sub_index": 1,
+                    "sub_total": 1,
+                    "section": "",
+                    "note": "Opening",
+                    "note_raw": "Opening",
+                    "note_line": 2,
+                }],
+                "total": 1,
+                "orphans": [],
+            }
+        if (
+            method == "POST"
+            and parsed.path == "/api/agent/export-pdf"
+        ):
+            return {
+                "export_id": "e" * 32,
+                "filename": "main.pdf",
+                "size": 12,
+                "sha256": "a" * 64,
+                "download_path": (
+                    "/api/agent/exports/" + "e" * 32
+                ),
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "GET"
+            and parsed.path == "/api/agent/comments/pending"
+        ):
+            return {
+                "comments": [dict(item) for item in self.comments],
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "GET"
+            and parsed.path.startswith("/api/agent/comments/")
+        ):
+            return {
+                "comment": dict(self.comments[0]),
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "POST"
+            and parsed.path.endswith("/done")
+            and parsed.path.startswith("/api/agent/comments/")
+        ):
+            self.comments[0]["status"] = "done"
+            return {
+                "comment": dict(self.comments[0]),
+                "project_id": "p1",
+                "context_version": "ctx-1",
+            }
+        if (
+            method == "POST"
+            and parsed.path.endswith("/dismiss")
+            and parsed.path.startswith("/api/agent/comments/")
+        ):
+            self.comments[0]["status"] = "dismissed"
+            return {
+                "comment": dict(self.comments[0]),
                 "project_id": "p1",
                 "context_version": "ctx-1",
             }
@@ -179,7 +295,12 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             user_id="user-a",
             username="alice",
             port=9101,
-            scopes=frozenset({"files:read"}),
+            scopes=frozenset({
+                "files:read",
+                "slides:read",
+                "transcripts:read",
+                "comments:read",
+            }),
             expires_at=None,
         )
         self.editor = PatIdentity(
@@ -187,7 +308,15 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             user_id="user-a",
             username="alice",
             port=9101,
-            scopes=frozenset({"files:read", "files:write"}),
+            scopes=frozenset({
+                "files:read",
+                "files:write",
+                "slides:read",
+                "documents:write",
+                "transcripts:read",
+                "comments:read",
+                "comments:write",
+            }),
             expires_at=None,
         )
         _, self.viewer_handle = mcp_store.issue_lease(
@@ -346,6 +475,117 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             "1" * 32,
         )
         self.assertEqual(restored["path"], "notes.md")
+
+    async def test_typst_document_transcript_and_comment_flow(self):
+        document = await self._call(
+            self.viewer,
+            "get_document",
+            self.viewer_handle,
+            1,
+            2,
+        )
+        self.assertEqual(document["shown"], "1-2")
+        self.assertEqual(document["rev"], 7)
+        found = await self._call(
+            self.viewer,
+            "find_in_document",
+            self.viewer_handle,
+            "Old title",
+        )
+        self.assertEqual(found["hits"][0]["line"], 1)
+        located = await self._call(
+            self.viewer,
+            "locate",
+            self.viewer_handle,
+            1,
+            0,
+        )
+        self.assertEqual(located["slide_line"], 2)
+        transcripts = await self._call(
+            self.viewer,
+            "get_transcripts",
+            self.viewer_handle,
+        )
+        self.assertEqual(transcripts["pages"][0]["note"], "Opening")
+        preview = await self._call(
+            self.viewer,
+            "get_slide_preview",
+            self.viewer_handle,
+            1,
+        )
+        self.assertTrue(preview["_image_data"].startswith(b"\x89PNG"))
+        exported = await self._call(
+            self.viewer,
+            "export_pdf",
+            self.viewer_handle,
+        )
+        self.assertTrue(exported["download_url"].endswith(
+            f"/mcp-download/{exported['download_id']}"
+        ))
+        self.assertTrue(
+            exported["authorization"].startswith("Download ")
+        )
+
+        edited = await self._call(
+            self.editor,
+            "apply_edits",
+            self.editor_handle,
+            [{"selector": {
+                "by": "anchor",
+                "text": "Old title",
+            }, "text": "New title"}],
+            document["rev"],
+        )
+        self.assertTrue(edited["ok"])
+        self.assertIn("New title", self.gateway.source)
+
+        pending = await self._call(
+            self.viewer,
+            "get_pending_comments",
+            self.viewer_handle,
+        )
+        self.assertEqual(pending["comments"][0]["status"], "pending")
+        comment = await self._call(
+            self.viewer,
+            "get_comment",
+            self.viewer_handle,
+            "abcd1234",
+        )
+        self.assertEqual(comment["comment"]["seq"], 1)
+        done = await self._call(
+            self.editor,
+            "mark_comment_done",
+            self.editor_handle,
+            "abcd1234",
+            "updated",
+        )
+        self.assertEqual(done["comment"]["status"], "done")
+
+    async def test_pdf_handle_rejects_typst_and_comment_tools(self):
+        self.gateway.active = {
+            **self.gateway.active,
+            "type": "pdf",
+            "main_file": "document.pdf",
+        }
+
+        for method, args in (
+            ("get_document", (self.viewer_handle, 1, 20)),
+            ("get_pending_comments", (self.viewer_handle,)),
+            (
+                "apply_edits",
+                (self.editor_handle, [], None),
+            ),
+        ):
+            with self.subTest(method=method):
+                result = await self._call(
+                    self.editor if method == "apply_edits" else self.viewer,
+                    method,
+                    *args,
+                )
+                self.assertEqual(
+                    result["error"]["code"],
+                    "CAPABILITY_NOT_AVAILABLE",
+                )
 
 
 if __name__ == "__main__":
