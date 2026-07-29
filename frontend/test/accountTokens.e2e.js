@@ -9,6 +9,27 @@ after(async () => {
   await browser.close()
 })
 
+async function installEmptyAccountMocks(page) {
+  await page.setRequestInterception(true)
+  page.on('request', (request) => {
+    const path = new URL(request.url()).pathname
+    const responses = {
+      '/whoami': { username: 'alice', role: 'user' },
+      '/api/app/state': { configured: true, mode: 'server' },
+      '/api/projects': { projects: [] },
+      '/account/tokens': { tokens: [] },
+    }
+    if (responses[path]) {
+      return request.respond({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(responses[path]),
+      })
+    }
+    return request.continue()
+  })
+}
+
 test('account tokens are created once, hidden after dismissal, and explicitly revoked', async () => {
   const page = await browser.newPage()
   await page.setViewport({ width: 1100, height: 820, deviceScaleFactor: 1 })
@@ -110,42 +131,50 @@ test('account tokens are created once, hidden after dismissal, and explicitly re
   assert.equal(deleteCount, 1)
 })
 
+test('desktop token creation layout keeps its title and controls aligned', async () => {
+  const page = await browser.newPage()
+  await page.setViewport({ width: 900, height: 800, deviceScaleFactor: 1 })
+  await installEmptyAccountMocks(page)
+  await page.goto(baseUrl, { waitUntil: 'networkidle0' })
+  await page.click('button[title="Account"]')
+  await page.click('button[data-action="manage-tokens"]')
+
+  const geometry = await page.evaluate(() => {
+    const form = document.querySelector('.token-create-form')
+    const title = form.querySelector('.token-section-title').getBoundingClientRect()
+    const labels = [...form.querySelectorAll('label')]
+      .map((node) => node.getBoundingClientRect())
+    const controls = [
+      form.querySelector('input[name="token-name"]'),
+      form.querySelector('select[name="token-preset"]'),
+      form.querySelector('select[name="token-expiry"]'),
+      form.querySelector('button[type="submit"]'),
+    ].map((node) => node.getBoundingClientRect())
+    return {
+      pageWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+      titleBottom: title.bottom,
+      firstLabelTop: Math.min(...labels.map((rect) => rect.top)),
+      controlTops: controls.map((rect) => rect.top),
+      controlLefts: controls.map((rect) => rect.left),
+    }
+  })
+
+  assert.ok(geometry.titleBottom <= geometry.firstLabelTop)
+  assert.ok(
+    Math.max(...geometry.controlTops) - Math.min(...geometry.controlTops) <= 1,
+  )
+  assert.deepEqual(
+    [...geometry.controlLefts].sort((left, right) => left - right),
+    geometry.controlLefts,
+  )
+  assert.equal(geometry.pageWidth, geometry.viewportWidth)
+})
+
 test('token settings stack without horizontal page overflow on narrow screens', async () => {
   const page = await browser.newPage()
   await page.setViewport({ width: 390, height: 760, deviceScaleFactor: 1 })
-  await page.setRequestInterception(true)
-  page.on('request', (request) => {
-    const path = new URL(request.url()).pathname
-    if (path === '/whoami') {
-      return request.respond({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ username: 'alice', role: 'user' }),
-      })
-    }
-    if (path === '/api/app/state') {
-      return request.respond({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ configured: true, mode: 'server' }),
-      })
-    }
-    if (path === '/api/projects') {
-      return request.respond({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ projects: [] }),
-      })
-    }
-    if (path === '/account/tokens') {
-      return request.respond({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({ tokens: [] }),
-      })
-    }
-    return request.continue()
-  })
+  await installEmptyAccountMocks(page)
   await page.goto(baseUrl, { waitUntil: 'networkidle0' })
   await page.click('button[title="Account"]')
   await page.click('button[data-action="manage-tokens"]')
