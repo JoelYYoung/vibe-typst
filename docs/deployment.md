@@ -183,7 +183,7 @@ Environment variables read by `start.sh` / `main.py`:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PORT` | `8090` | Control plane listen port |
-| `PUBLIC_BASE_URL` | `http://localhost:$PORT` | Public HTTP(S) origin used in MCP URLs |
+| `PUBLIC_BASE_URL` | data file, then `http://localhost:$PORT` | Public HTTP(S) origin used in MCP URLs |
 | `CONTROL_DATA` | `control/data/` | SQLite DB, session secret, logs |
 | `WORKSPACE_BASE` | `/workspaces` | Where per-user workspace dirs live |
 | `PODMAN_ENV` | — | Path to a shell script that sets Podman env vars (rootless) |
@@ -200,6 +200,18 @@ For a public deployment, set the externally reachable origin before starting con
 export PUBLIC_BASE_URL="https://slides.example.com"
 bash control/start.sh
 ```
+
+For a service manager that cannot conveniently inject environment variables, write the same
+single origin to `$CONTROL_DATA/public-base-url` instead:
+
+```bash
+printf '%s\n' 'https://slides.example.com' > control/data/public-base-url
+bash control/start.sh
+```
+
+An explicitly exported `PUBLIC_BASE_URL` takes precedence over this file. The file is local
+runtime configuration under the ignored control data directory, so repository updates do not
+overwrite it.
 
 The value must be an HTTP(S) origin with a host and no path. The control plane fails at startup
 if it is invalid. Remote clients connect to `${PUBLIC_BASE_URL}/mcp` with

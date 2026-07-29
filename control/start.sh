@@ -54,7 +54,6 @@ if ! "$VENV/bin/python" -c \
 fi
 
 export PORT="${PORT:-8090}"
-export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://localhost:$PORT}"
 export CONTROL_DATA="${CONTROL_DATA:-$CTRL_DIR/data}"
 export PODMAN_ENV="${PODMAN_ENV:-}"
 if [ -z "${WORKSPACE_BASE:-}" ]; then

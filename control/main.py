@@ -42,6 +42,7 @@ from starlette.routing import Route
 import pat_store
 import mcp_store
 from mcp_transfer import create_transfer_router
+from public_origin import resolve_public_base_url
 from remote_mcp import create_remote_mcp
 from workspace_gateway import WorkspaceGateway
 
@@ -62,9 +63,7 @@ if VOLUME_SUFFIX is None:
     VOLUME_SUFFIX = ":Z" if CONTAINER_RUNTIME == "podman" else ""
 BASE_PORT      = int(os.environ.get("BASE_PORT",  "9001"))
 PORT           = int(os.environ.get("PORT", "8090"))
-PUBLIC_BASE_URL = os.environ.get(
-    "PUBLIC_BASE_URL", f"http://localhost:{PORT}"
-).rstrip("/")
+PUBLIC_BASE_URL = resolve_public_base_url(DATA_DIR, PORT)
 SESSION_DAYS   = 30
 SESSION_SECRET = os.environ.get("SESSION_SECRET") or secrets.token_hex(32)
 IDLE_STOP_SECONDS = int(os.environ.get("IDLE_STOP_SECONDS", "1800"))
