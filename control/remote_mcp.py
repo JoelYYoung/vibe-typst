@@ -32,6 +32,37 @@ from pat_store import PatIdentity
 from workspace_gateway import WorkspaceGateway
 
 
+REMOTE_MCP_INSTRUCTIONS = """\
+Use this server to work on Vibe Typst projects through their live web workspace.
+
+Start with list_projects, then call open_project for the project you will change. Keep using the
+returned project_handle until a tool reports PROJECT_CONTEXT_CHANGED or PROJECT_HANDLE_EXPIRED.
+Those errors mean a human or another client changed the active project/file context: do not force
+an overwrite; call open_project again and re-read the document before continuing.
+
+For a Typst project, the current active shared .typ returned by get_document.file is the
+authoritative live document. open_project selects the project's primary document, normally
+main.typ. Read it with get_document or find_in_document and modify it only with apply_edits,
+passing the latest rev when available. Never use generic file writes to replace the active
+document or bypass its shared CRDT state.
+
+Large decks may use auxiliary .typ files for themes, components, and slide sections. Create or
+update those ordinary project files with the file tools, but then update the active entry document
+with apply_edits so it imports/includes and invokes them. Merely uploading auxiliary files does
+not change the rendered slides. Keep presentation source in Touying form and preserve or add its
+speaker transcripts. After meaningful Typst changes, inspect the rendered result with
+get_slide_preview; fix compile or layout problems before declaring the work complete.
+
+For human Typst comments, call get_pending_comments, read the requested change and its live
+location, apply the change, verify the preview, and only then call mark_comment_done with a short
+note. Use mark_comment_dismissed only when a comment is unclear, obsolete, or already resolved.
+
+PDF projects follow a separate workflow. They have page previews and per-page transcripts but no
+comment workflow or editable Typst document. Do not overwrite document.pdf with generic file
+tools; use the staged PDF replacement tools, then verify pages and transcripts.
+"""
+
+
 class RemoteToolResult(TypedDict, total=False):
     ok: bool
     error: dict[str, Any]
@@ -1995,6 +2026,7 @@ def create_remote_mcp(
 
     server = FastMCP(
         "vibe-typst-projects",
+        instructions=REMOTE_MCP_INSTRUCTIONS,
         token_verifier=PatTokenVerifier(db_path),
         auth=AuthSettings(
             issuer_url=AnyHttpUrl(public_base_url),

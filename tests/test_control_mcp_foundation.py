@@ -29,7 +29,11 @@ import mcp_store
 from mcp_errors import ERROR_CODES, McpServiceError
 from pat_store import PatIdentity
 import pat_store
-from remote_mcp import PatTokenVerifier, create_remote_mcp
+from remote_mcp import (
+    REMOTE_MCP_INSTRUCTIONS,
+    PatTokenVerifier,
+    create_remote_mcp,
+)
 from workspace_gateway import WorkspaceGateway
 
 
@@ -667,7 +671,24 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                 self.endpoint, http_client=http_client
             ) as (read, write, _):
                 async with ClientSession(read, write) as session:
-                    await session.initialize()
+                    initialized = await session.initialize()
+                    self.assertEqual(
+                        initialized.instructions,
+                        REMOTE_MCP_INSTRUCTIONS,
+                    )
+                    for required in (
+                        "current active shared .typ",
+                        "apply_edits",
+                        "auxiliary .typ files",
+                        "get_slide_preview",
+                        "get_pending_comments",
+                        "mark_comment_done",
+                        "PDF projects",
+                        "open_project again",
+                    ):
+                        self.assertIn(
+                            required, initialized.instructions
+                        )
                     names = {
                         tool.name
                         for tool in (await session.list_tools()).tools
