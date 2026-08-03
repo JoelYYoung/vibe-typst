@@ -9,6 +9,7 @@ connected browsers automatically and debounced-persisted to the .typ on disk.
 Verified against pycrdt 0.14.1 / pycrdt-websocket 0.16.3 (import path `pycrdt.websocket`).
 """
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -21,12 +22,63 @@ import runtime
 # Shared-type key. MUST equal the frontend's ydoc.getText(TEXT_KEY).
 TEXT_KEY = "source"
 WRITE_DELAY = 0.2  # seconds to debounce Doc -> .typ writes (then typst watch ~12ms)
+_LOCAL_TYPST_SOURCE_DIRECTIVE = re.compile(
+    r'''#\s*(?:include|import)\s*(?:\(\s*)?["'](?!@)[^"']+\.typ["']''',
+    re.IGNORECASE,
+)
 # Per-file Yjs state is persisted here so a restart RESUMES THE SAME CRDT lineage.
 # This is critical: re-seeding a fresh doc from the .typ on every restart creates a NEW
 # lineage, and a browser reconnecting with the old lineage makes Yjs *concatenate* the
 # two identical copies (O + O = OO) instead of deduping — which once ballooned a deck to
 # 512x. Same lineage merges cleanly.
 CACHE_DIR = Path.home() / ".tcb" / "docs"
+
+
+def _has_local_typst_source_directive(source: str) -> bool:
+    """Find executable local .typ directives while ignoring comments, strings, and raw text."""
+    i = 0
+    size = len(source)
+    while i < size:
+        if source.startswith("//", i):
+            newline = source.find("\n", i + 2)
+            i = size if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", i):
+            i += 2
+            depth = 1
+            while i < size and depth:
+                if source.startswith("/*", i):
+                    depth += 1
+                    i += 2
+                elif source.startswith("*/", i):
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            continue
+        if source[i] == '"':
+            i += 1
+            while i < size:
+                if source[i] == "\\":
+                    i += 2
+                elif source[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            continue
+        if source[i] == "`":
+            end = i + 1
+            while end < size and source[end] == "`":
+                end += 1
+            delimiter = source[i:end]
+            closing = source.find(delimiter, end)
+            i = size if closing < 0 else closing + len(delimiter)
+            continue
+        if source[i] == "#" and _LOCAL_TYPST_SOURCE_DIRECTIVE.match(source, i):
+            return True
+        i += 1
+    return False
 
 
 def _sidecar(key: str) -> Path:
@@ -626,7 +678,13 @@ def _spans_overlap(a1: int, b1: int, a2: int, b2: int) -> bool:
     return max(a1, a2) < min(b1, b2)
 
 
-async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> dict:
+async def apply_edits(
+    edits: list,
+    file=None,
+    base_rev: int | None = None,
+    *,
+    require_single_file_typst: bool = False,
+) -> dict:
     """Apply a BATCH of edits atomically (all-or-nothing) against the current room text. Each
     edit = {"selector": <Selector>, "text": str, "expect"?: str}. On any unresolved selector,
     `expect` mismatch, or intra-batch overlap, NOTHING is applied and a conflict (with the live
@@ -687,6 +745,23 @@ async def apply_edits(edits: list, file=None, base_rev: int | None = None) -> di
         if _spans_overlap(a1, b1, a2, b2):
             return {"ok": False, "conflict": True, "error": "overlapping edits in batch",
                     "rev": cur_rev, "room": st["key"]}
+    if require_single_file_typst:
+        candidate = s
+        for frm, to, txt, _idx in sorted(
+            resolved, key=lambda r: (r[0], r[3]), reverse=True
+        ):
+            candidate = f"{candidate[:frm]}{txt}{candidate[to:]}"
+        if _has_local_typst_source_directive(candidate):
+            return {
+                "ok": False,
+                "policy_violation": True,
+                "error": (
+                    "local .typ imports/includes are forbidden; "
+                    "keep all Typst source in main.typ"
+                ),
+                "rev": cur_rev,
+                "room": st["key"],
+            }
     if resolved:
         # Apply highest-offset-first so the earlier (lower-offset) byte positions stay valid.
         # For edits at the SAME offset, apply LAST input first so their text ends up in input

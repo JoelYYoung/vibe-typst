@@ -11,8 +11,10 @@
 ## Global Constraints
 
 - The authoritative Typst target is the current active shared `.typ`, normally `main.typ` after `open_project`.
-- Live Typst edits use `get_document`/`find_in_document` plus `apply_edits`; generic writes may create auxiliary files but may not replace the active document.
-- Auxiliary Typst files affect slides only after the active entry document imports/includes and invokes them.
+- Live Typst edits use `get_document`/`find_in_document` plus `apply_edits`; generic writes may
+  manage only non-Typst assets and may not replace the active document.
+- All Typst presentation source must remain in `main.typ`; auxiliary `.typ` files and local
+  `.typ` imports/includes are forbidden.
 - Typst comments are read, applied, preview-verified, then marked done.
 - PDF projects have transcripts but no comment workflow.
 - Initialization and verification must not open or start a workspace.
@@ -43,9 +45,11 @@ self.assertEqual(
     REMOTE_MCP_INSTRUCTIONS,
 )
 for required in (
-    "current active shared .typ",
+    "MUST be main.typ",
+    "ALL Typst presentation source in main.typ",
+    "NEVER create, upload, generate, import, include",
+    "Every presentation MUST remain in Touying form",
     "apply_edits",
-    "auxiliary .typ files",
     "get_slide_preview",
     "get_pending_comments",
     "mark_comment_done",
@@ -80,7 +84,9 @@ server = FastMCP(
 )
 ```
 
-Do not add a guide tool/resource and do not change any tool schema, permission, or service method.
+Do not add a guide tool/resource or change tool parameters or permissions. Keep the single-file
+contract in the initialization instructions and reject generic `.typ` mutations with one shared
+remote-service path guard.
 
 - [ ] **Step 4: Run the targeted and complete control tests**
 

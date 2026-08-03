@@ -27,10 +27,12 @@ The server instructions must tell the agent to:
    active project/file context and the handle is rejected, call `open_project` again.
 3. Read the active document with `get_document` or `find_in_document` and edit it only with
    `apply_edits`. Never use generic file writes to bypass the live CRDT document.
-4. Allow auxiliary `.typ` files, but require the active entry document to import/include and
-   invoke them. Files that are merely uploaded do not affect the rendered deck.
-5. Keep Typst presentations in Touying form, preserve speaker transcripts, and verify rendered
-   output with preview tools after meaningful changes.
+4. Require every part of the Typst presentation to remain in `main.typ`, including themes,
+   components, helpers, slides, and inline speaker notes. Forbid auxiliary `.typ` files and local
+   `.typ` imports/includes; ordinary mutation tools reject `.typ` paths and are only for
+   non-Typst assets.
+5. Require Typst presentations to use Touying, preserve speaker transcripts inline in `main.typ`,
+   and verify rendered output with preview tools after meaningful changes.
 6. For Typst comments, read pending comments, apply and verify the requested change, then call
    `mark_comment_done`; dismiss only when the request is unclear, obsolete, or already resolved.
 7. Keep PDF behavior separate: PDF projects use page previews and per-page transcripts, expose
@@ -41,14 +43,21 @@ The server instructions must tell the agent to:
 ## Data and Security
 
 The instructions are static and contain no tokens, usernames, project paths, or user content.
-They do not change authorization, scopes, tool behavior, project handles, or workspace
-lifecycle. MCP initialization and `tools/list` must not open or start a workspace.
+They do not change authorization, scopes, project handles, or workspace lifecycle. A separate
+remote-service path guard rejects ordinary `.typ` writes, uploads, moves, staged installs, and
+restores for Typst projects. Remote CRDT edits validate the complete post-edit source and reject
+local `.typ` imports/includes before mutation. MCP initialization and `tools/list` must not open
+or start a workspace.
 
 ## Verification and Deployment
 
 - A protocol-level test must initialize through the official MCP client and assert the returned
-  instructions contain the active-document, `apply_edits`, auxiliary-entry, preview, comment,
-  PDF, and reopen guidance.
+  instructions contain the main-only Typst, Touying, `apply_edits`, preview, comment, PDF, and
+  reopen guidance.
+- An operations test must prove generic Typst-project writes, uploads, moves, and restores reject
+  auxiliary `.typ` paths with `PATH_NOT_ALLOWED`.
+- A document-store test must prove local `.typ` imports/includes are rejected atomically while
+  Touying package imports and consolidation edits remain allowed.
 - The complete control-plane test suite must remain green.
 - Deploy by restarting only the control plane after merging and pushing.
 - Verify the public authenticated MCP initialization returns the instructions and comment tools

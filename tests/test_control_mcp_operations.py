@@ -101,6 +101,19 @@ class _FileGateway:
                 "rev": self.rev,
             }
         if method == "POST" and parsed.path == "/api/edit":
+            if (
+                json.get("require_single_file_typst") is True
+                and any(
+                    ".typ" in edit.get("text", "")
+                    for edit in json.get("edits", [])
+                    if isinstance(edit, dict)
+                )
+            ):
+                return {
+                    "ok": False,
+                    "policy_violation": True,
+                    "error": "local .typ imports/includes are forbidden",
+                }
             self.source = self.source.replace("Old title", "New title")
             self.rev += 1
             return {"ok": True, "rev": self.rev, "applied": 1}
@@ -549,6 +562,110 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(finished["ok"])
         self.assertIn("assets/image.bin", self.gateway.files)
+
+    async def test_typst_generic_mutations_reject_auxiliary_source(self):
+        content = b"#let helper = none"
+        digest = hashlib.sha256(content).hexdigest()
+        cases = (
+            (
+                "write_text_file",
+                (
+                    self.editor_handle,
+                    "theme.typ",
+                    content.decode(),
+                    hashlib.sha256(b"").hexdigest(),
+                ),
+            ),
+            (
+                "upload_file",
+                (
+                    self.editor_handle,
+                    "slides/section.typ",
+                    base64.b64encode(content).decode(),
+                    len(content),
+                    digest,
+                    False,
+                    None,
+                ),
+            ),
+            (
+                "begin_file_upload",
+                (
+                    self.editor_handle,
+                    "components.typ",
+                    "components.typ",
+                    len(content),
+                    digest,
+                    False,
+                    None,
+                ),
+            ),
+            (
+                "move_file",
+                (self.editor_handle, "notes.md", "notes.typ"),
+            ),
+        )
+
+        for method, args in cases:
+            with self.subTest(method=method):
+                result = await self._call(
+                    self.editor,
+                    method,
+                    *args,
+                )
+                self.assertEqual(
+                    result["error"]["code"],
+                    "PATH_NOT_ALLOWED",
+                )
+                self.assertIn("main.typ", result["error"]["message"])
+
+        self.assertNotIn("theme.typ", self.gateway.files)
+        self.assertNotIn("slides/section.typ", self.gateway.files)
+        self.assertNotIn("components.typ", self.gateway.files)
+        self.assertNotIn("notes.typ", self.gateway.files)
+
+        self.gateway.trash["2" * 32] = ("legacy.typ", content)
+        restored = await self._call(
+            self.editor,
+            "restore_deleted_file",
+            self.editor_handle,
+            "2" * 32,
+        )
+        self.assertEqual(restored["error"]["code"], "PATH_NOT_ALLOWED")
+        self.assertNotIn("legacy.typ", self.gateway.files)
+
+        included = await self._call(
+            self.editor,
+            "apply_edits",
+            self.editor_handle,
+            [{
+                "selector": {"by": "lines", "start": 1},
+                "text": '#include "legacy.typ"',
+            }],
+            self.gateway.rev,
+        )
+        self.assertEqual(included["error"]["code"], "PATH_NOT_ALLOWED")
+        self.assertNotIn("legacy.typ", self.gateway.source)
+
+    async def test_typst_tools_require_main_typ_as_primary_document(self):
+        self.gateway.active = {
+            **self.gateway.active,
+            "main_file": "deck.typ",
+        }
+
+        result = await self._call(
+            self.viewer,
+            "get_document",
+            self.viewer_handle,
+            1,
+            20,
+        )
+
+        self.assertEqual(
+            result["error"]["code"],
+            "CAPABILITY_NOT_AVAILABLE",
+        )
+        self.assertIn("main.typ", result["error"]["message"])
 
     async def test_delete_list_and_restore_round_trip(self):
         deleted = await self._call(

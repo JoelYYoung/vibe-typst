@@ -53,8 +53,10 @@ Create `docs/remote-mcp-agent-guide.md` with these sections:
    an existing project or create the requested project type.
 3. **Project handles** — call `open_project`, retain the returned opaque `project_handle`, pass
    it to every project-scoped tool, and share only the returned `web_url` with the human.
-4. **Typst workflow** — read and search the live document, use structured edit tools instead of
-   overwriting `main.typ`, inspect previews, process Typst comments, and export when requested.
+4. **Typst workflow** — require Touying and keep all Typst presentation source in `main.typ`;
+   forbid auxiliary `.typ` files and local `.typ` imports/includes; read and search the live
+   document, use structured edit tools instead of overwriting it, inspect previews, process Typst
+   comments, and export when requested.
 5. **PDF workflow** — inspect PDF metadata and extracted text, read or update per-page
    transcripts, inspect rendered pages, and use the managed PDF replacement flow. Explicitly
    state that PDF projects have no comment workflow and that the agent must not edit managed PDF

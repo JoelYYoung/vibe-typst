@@ -99,6 +99,10 @@ export VIBE_TYPST_TOKEN="vbt_..."
 Environment-variable expansion differs between MCP clients. Do not paste a token into source
 control, a project URL, or ordinary client logs.
 
+For a ready-to-give agent contract that covers MCP setup, reusable skill creation, the mandatory
+Touying workflow, and the single-file `main.typ` rule, see the
+[Remote MCP agent setup and operating guide](docs/remote-mcp-agent-guide.md).
+
 ---
 
 ### Presenting

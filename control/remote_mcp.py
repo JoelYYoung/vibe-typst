@@ -41,17 +41,18 @@ Those errors mean a human or another client changed the active project/file cont
 an overwrite; call open_project again and re-read the document before continuing.
 
 For a Typst project, the current active shared .typ returned by get_document.file is the
-authoritative live document. open_project selects the project's primary document, normally
-main.typ. Read it with get_document or find_in_document and modify it only with apply_edits,
-passing the latest rev when available. Never use generic file writes to replace the active
-document or bypass its shared CRDT state.
+authoritative live document and MUST be main.typ. Keep ALL Typst presentation source in main.typ,
+including theme and style definitions, helper functions, components, slide content, and inline
+speaker notes. NEVER create, upload, generate, import, include, or depend on auxiliary .typ files.
+Local .typ imports/includes are forbidden; package imports such as Touying are allowed. Ordinary
+file tools may be used only for non-Typst assets such as images, fonts, and data.
 
-Large decks may use auxiliary .typ files for themes, components, and slide sections. Create or
-update those ordinary project files with the file tools, but then update the active entry document
-with apply_edits so it imports/includes and invokes them. Merely uploading auxiliary files does
-not change the rendered slides. Keep presentation source in Touying form and preserve or add its
-speaker transcripts. After meaningful Typst changes, inspect the rendered result with
-get_slide_preview; fix compile or layout problems before declaring the work complete.
+Read main.typ with get_document or find_in_document and modify it only with apply_edits, passing
+the latest rev when available. Never use generic file writes to replace main.typ or bypass its
+shared CRDT state. Every presentation MUST remain in Touying form: preserve or add the Touying
+package import, use its slide/theme model, and keep speaker transcripts inline in main.typ. After
+meaningful Typst changes, inspect the rendered result with get_slide_preview; fix compile or
+layout problems before declaring the work complete.
 
 For human Typst comments, call get_pending_comments, read the requested change and its live
 location, apply the change, verify the preview, and only then call mark_comment_done with a short
@@ -340,6 +341,20 @@ class _RemoteProjectService:
             )
         return parsed.as_posix()
 
+    @classmethod
+    def _ordinary_mutation_path(cls, project: dict, path: str) -> str:
+        safe_path = cls._relative_path(path)
+        if (
+            project.get("type", "typst") == "typst"
+            and PurePosixPath(safe_path).suffix.lower() == ".typ"
+        ):
+            raise McpServiceError(
+                "PATH_NOT_ALLOWED",
+                "all Typst source must remain in main.typ; "
+                "edit main.typ with apply_edits",
+            )
+        return safe_path
+
     @staticmethod
     def _opaque_id(value: str, label: str) -> str:
         if (
@@ -581,10 +596,10 @@ class _RemoteProjectService:
         audit_context = {}
 
         async def operation(identity):
-            lease, _, _ = await self._handled_project(
+            lease, project, _ = await self._handled_project(
                 identity, project_handle
             )
-            safe_path = self._relative_path(path)
+            safe_path = self._ordinary_mutation_path(project, path)
             audit_context.update({
                 "project_id": lease.project_id,
                 "targets": (f"file:{safe_path}",),
@@ -648,11 +663,11 @@ class _RemoteProjectService:
         audit_context = {}
 
         async def operation(identity):
-            lease, _, _ = await self._handled_project(
+            lease, project, _ = await self._handled_project(
                 identity, project_handle
             )
-            safe_old = self._relative_path(old_path)
-            safe_new = self._relative_path(new_path)
+            safe_old = self._ordinary_mutation_path(project, old_path)
+            safe_new = self._ordinary_mutation_path(project, new_path)
             audit_context.update({
                 "project_id": lease.project_id,
                 "targets": (
@@ -687,10 +702,10 @@ class _RemoteProjectService:
         expected_sha256: str | None = None,
     ) -> RemoteToolResult:
         async def operation(identity):
-            lease, _, _ = await self._handled_project(
+            lease, project, _ = await self._handled_project(
                 identity, project_handle
             )
-            safe_path = self._relative_path(path)
+            safe_path = self._ordinary_mutation_path(project, path)
             public, capability = mcp_store.begin_upload(
                 self.db_path,
                 identity,
@@ -726,7 +741,7 @@ class _RemoteProjectService:
         project_handle: str,
         upload_id: str,
     ) -> RemoteToolResult:
-        lease, _, _ = await self._handled_project(
+        lease, project, _ = await self._handled_project(
             identity, project_handle
         )
         session = mcp_store.complete_upload(
@@ -737,6 +752,7 @@ class _RemoteProjectService:
             expected_project_id=lease.project_id,
         )
         try:
+            self._ordinary_mutation_path(project, session.destination)
             body = await self.gateway.request(
                 identity,
                 "POST",
@@ -799,10 +815,10 @@ class _RemoteProjectService:
         audit_context = {}
 
         async def operation(identity):
-            lease, _, _ = await self._handled_project(
+            lease, project, _ = await self._handled_project(
                 identity, project_handle
             )
-            safe_path = self._relative_path(path)
+            safe_path = self._ordinary_mutation_path(project, path)
             if (
                 isinstance(size, bool)
                 or not isinstance(size, int)
@@ -934,10 +950,21 @@ class _RemoteProjectService:
         audit_context = {}
 
         async def operation(identity):
-            lease, _, _ = await self._handled_project(
+            lease, project, _ = await self._handled_project(
                 identity, project_handle
             )
             safe_trash_id = self._opaque_id(trash_id, "trash id")
+            if project.get("type", "typst") == "typst":
+                trash = await self.gateway.request(
+                    identity, "GET", "/api/agent/files/trash"
+                )
+                trash = self._checked_backend_result(lease, trash)
+                for item in trash.get("items", []):
+                    if item.get("id") != safe_trash_id:
+                        continue
+                    original_path = item.get("original_path")
+                    self._ordinary_mutation_path(project, original_path)
+                    break
             audit_context.update({
                 "project_id": lease.project_id,
                 "targets": (f"trash:{safe_trash_id}",),
@@ -971,6 +998,14 @@ class _RemoteProjectService:
             raise McpServiceError(
                 "CAPABILITY_NOT_AVAILABLE",
                 f"tool is unavailable for {project.get('type', 'unknown')} projects",
+            )
+        if (
+            required_type == "typst"
+            and project.get("main_file", "main.typ") != "main.typ"
+        ):
+            raise McpServiceError(
+                "CAPABILITY_NOT_AVAILABLE",
+                "remote Typst tools require main.typ as the primary document",
             )
         return lease, project
 
@@ -1191,12 +1226,19 @@ class _RemoteProjectService:
                     "edits": edits,
                     "base_rev": base_rev,
                     "file": project.get("main_file"),
+                    "require_single_file_typst": True,
                 },
             )
             await self._confirm_project_context(
                 identity, project_handle, lease
             )
             if body.get("ok") is not True:
+                if body.get("policy_violation") is True:
+                    raise McpServiceError(
+                        "PATH_NOT_ALLOWED",
+                        "local .typ imports/includes are forbidden; "
+                        "keep all Typst source in main.typ",
+                    )
                 if body.get("conflict") is True:
                     raise McpServiceError(
                         "REVISION_CONFLICT",
@@ -2114,7 +2156,7 @@ def create_remote_mcp(
         content: str,
         expected_sha256: str,
     ) -> CallToolResult:
-        """Replace an ordinary text file only at expected_sha256; Typst main and PDF-managed files are protected."""
+        """Replace an ordinary text file at expected_sha256; Typst projects reject .typ paths because all source belongs in main.typ."""
         return _protocol_result(
             await service.write_text_file(
                 project_handle, path, content, expected_sha256
@@ -2136,7 +2178,7 @@ def create_remote_mcp(
         old_path: str,
         new_path: str,
     ) -> CallToolResult:
-        """Move one ordinary file/directory without overwriting; protected project state cannot move."""
+        """Move an ordinary file/directory without overwriting; Typst projects reject .typ paths and protected state cannot move."""
         return _protocol_result(
             await service.move_file(
                 project_handle, old_path, new_path
@@ -2153,7 +2195,7 @@ def create_remote_mcp(
         overwrite: bool = False,
         expected_sha256: str | None = None,
     ) -> CallToolResult:
-        """Upload at most 1 MiB inline to an ordinary path; overwrite is off unless paired with the current SHA-256."""
+        """Upload at most 1 MiB inline to an ordinary asset path; Typst projects reject auxiliary .typ source."""
         return _protocol_result(
             await service.upload_file(
                 project_handle,
@@ -2176,7 +2218,7 @@ def create_remote_mcp(
         overwrite: bool = False,
         expected_sha256: str | None = None,
     ) -> CallToolResult:
-        """Begin a 100 MiB maximum staged upload; PUT once with the returned Upload authorization, then finish_file_upload."""
+        """Begin a 100 MiB asset upload; Typst projects reject .typ paths. PUT once, then call finish_file_upload."""
         return _protocol_result(
             await service.begin_file_upload(
                 project_handle,
@@ -2272,7 +2314,7 @@ def create_remote_mcp(
         edits: list,
         base_rev: int | None = None,
     ) -> CallToolResult:
-        """Atomically apply an edit batch through the handled live Typst CRDT, guarded by base_rev."""
+        """Atomically edit main.typ through the live CRDT; keep all source inline, Touying-based, and free of local .typ imports/includes."""
         return _protocol_result(
             await service.apply_edits(
                 project_handle, edits, base_rev

@@ -746,6 +746,48 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(r["ok"], r)
         self.assertEqual(self._doc(), "01ABCD6789\n")
 
+    async def test_single_file_policy_rejects_local_typst_dependencies(self):
+        self._seed("= Deck\n")
+        before = self._doc()
+        rejected = await self.docstore.apply_edits(
+            [{
+                "selector": {"by": "lines", "start": 1},
+                "text": '#include "slides/intro.typ"',
+            }],
+            "main.typ",
+            require_single_file_typst=True,
+        )
+        self.assertFalse(rejected["ok"], rejected)
+        self.assertTrue(rejected["policy_violation"], rejected)
+        self.assertEqual(self._doc(), before)
+
+        package = await self.docstore.apply_edits(
+            [{
+                "selector": {"by": "lines", "start": 1},
+                "text": (
+                    '`#include "example.typ"`\n'
+                    '// #import "ignored.typ": *\n'
+                    '#import "@preview/touying:0.6.1": *'
+                ),
+            }],
+            "main.typ",
+            require_single_file_typst=True,
+        )
+        self.assertTrue(package["ok"], package)
+        self.assertIn("@preview/touying", self._doc())
+
+        self._seed('#import "theme.typ": *\n= Deck\n')
+        consolidated = await self.docstore.apply_edits(
+            [{
+                "selector": {"by": "lines", "start": 1, "end": 1},
+                "text": "#let theme = none",
+            }],
+            "main.typ",
+            require_single_file_typst=True,
+        )
+        self.assertTrue(consolidated["ok"], consolidated)
+        self.assertNotIn("theme.typ", self._doc())
+
     async def test_delete_and_insert_in_one_batch(self):
         self._seed("keep DELETE keep2\n")
         r = await self._edits([

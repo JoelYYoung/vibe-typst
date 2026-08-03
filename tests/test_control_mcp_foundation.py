@@ -677,9 +677,11 @@ class RemoteMcpProtocolTest(unittest.IsolatedAsyncioTestCase):
                         REMOTE_MCP_INSTRUCTIONS,
                     )
                     for required in (
-                        "current active shared .typ",
+                        "MUST be main.typ",
+                        "ALL Typst presentation source in main.typ",
+                        "NEVER create, upload, generate, import, include",
+                        "Every presentation MUST remain in Touying form",
                         "apply_edits",
-                        "auxiliary .typ files",
                         "get_slide_preview",
                         "get_pending_comments",
                         "mark_comment_done",

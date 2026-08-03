@@ -1563,7 +1563,14 @@ async def edit(request: Request):
     elif kind == "insert_at_line":
         r = await docstore.insert_at_line(op["line"], op["text"], rel)
     elif kind == "apply_edits":
-        r = await docstore.apply_edits(op["edits"], rel, op.get("base_rev"))
+        r = await docstore.apply_edits(
+            op["edits"],
+            rel,
+            op.get("base_rev"),
+            require_single_file_typst=(
+                op.get("require_single_file_typst") is True
+            ),
+        )
     else:
         raise HTTPException(400, f"unknown op {kind!r}")
     return r
