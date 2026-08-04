@@ -36,6 +36,7 @@ _PDF_PRIVATE_PREFIXES = (
     ".pdf-render-",
     ".transcript-",
 )
+_PROJECT_COPY_EXCLUDED_NAMES = {".git"}
 MAX_PDF_UPLOAD_BYTES = 100 * 1024 * 1024
 _PDF_COPY_CHUNK_BYTES = 1024 * 1024
 
@@ -297,12 +298,32 @@ def copy_project(project_id: str, new_name: str) -> dict:
     while dst.exists():
         dir_id = uuid.uuid4().hex[:12]
         dst = root / dir_id
-    shutil.copytree(src, dst)
-    meta = _read_meta(dst)
-    meta["name"] = new_name
-    meta["created"] = datetime.now(timezone.utc).isoformat()
-    _write_meta(dst, meta)
-    return _project_info(dst)
+
+    # Copy the complete current working tree, including nested assets, data files, empty
+    # directories, and changes that have not been saved as a version.  Git metadata is storage
+    # for the source project's Versions UI, not project content: excluding every `.git` entry
+    # gives the duplicate a fresh, empty version history while retaining `.gitignore` and all
+    # other user files.
+    staging = root / f".copy-{dir_id}-{uuid.uuid4().hex[:8]}"
+
+    def ignore_version_history(_directory: str, names: list[str]) -> set[str]:
+        return _PROJECT_COPY_EXCLUDED_NAMES.intersection(names)
+
+    published = False
+    try:
+        shutil.copytree(src, staging, ignore=ignore_version_history)
+        meta = _read_meta(staging)
+        meta["name"] = new_name
+        meta["created"] = datetime.now(timezone.utc).isoformat()
+        _write_meta(staging, meta)
+        staging.rename(dst)
+        published = True
+        return _project_info(dst)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        if published:
+            shutil.rmtree(dst, ignore_errors=True)
+        raise
 
 
 # ── path safety ──────────────────────────────────────────────────────────────

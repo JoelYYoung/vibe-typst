@@ -119,7 +119,7 @@ Speaker notes live inline in the source as `#speaker-note["…"]`, so Claude can
 
 ## Other features
 
-- **Projects** — create immutable Typst or single-PDF project types, rename, duplicate, delete; per-project git versioning
+- **Projects** — create immutable Typst or single-PDF project types, rename, duplicate every current project file into a fresh version history, delete; per-project git versioning
 - **File manager** — multi-select, rename, duplicate, delete files; supports images and data files alongside `.typ`
 - **Comment history** — each comment has a full append-only log; Pending / Done / All views
 - **User accounts** (server mode) — invite-only admin panel, personal Viewer/Editor tokens, lock/force-offline controls, per-user isolated workspace, idle auto-stop
