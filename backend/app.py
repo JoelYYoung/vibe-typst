@@ -1680,10 +1680,10 @@ async def set_app_config(request: Request):
 
 # ---------------------------------------------------------------- projects CRUD
 @app.get("/api/projects")
-def list_projects():
+def list_projects(archived: bool = False):
     if not app_config.is_configured():
         raise HTTPException(400, "app not configured — set projects_root first")
-    return {"projects": projects_mod.list_projects()}
+    return {"projects": projects_mod.list_projects(archived=archived)}
 
 
 @app.post("/api/projects")
@@ -1819,6 +1819,22 @@ def delete_project(project_id: str):
     return {"ok": True}
 
 
+@app.post("/api/projects/{project_id:path}/archive")
+def archive_project(project_id: str):
+    try:
+        return projects_mod.set_project_archived(project_id, True)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@app.post("/api/projects/{project_id:path}/restore")
+def restore_project(project_id: str):
+    try:
+        return projects_mod.set_project_archived(project_id, False)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
 @app.post("/api/projects/{project_id:path}/copy")
 async def copy_project(project_id: str, request: Request):
     body = await request.json() or {}
@@ -1841,6 +1857,8 @@ async def open_project(project_id: str):
         info = projects_mod.get_project(project_id)
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
+    if info.get("archived"):
+        raise HTTPException(409, "Project is archived; restore it before opening")
     try:
         project_type, main_path = _project_document(info)
     except ValueError as e:

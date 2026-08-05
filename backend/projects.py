@@ -2,7 +2,7 @@
 Project management: CRUD operations on the projects root directory.
 
 A project is a subdirectory of the projects root containing:
-  .vibe-typst.json  — metadata (name, created, type, main_file)
+  .vibe-typst.json  — metadata (name, created, type, main_file, archived)
   main.typ or document.pdf — its immutable primary document
 
 The directory name is a short UUID hex string, decoupled from the display name.
@@ -111,20 +111,24 @@ def _project_info(project_dir: Path) -> dict:
         "type": meta.get("type", "typst"),
         "main_file": main_file,
         "original_filename": meta.get("original_filename"),
+        "archived": meta.get("archived") is True,
+        "archived_at": meta.get("archived_at"),
         "path": str(project_dir),
     }
 
 
 # ── public API ───────────────────────────────────────────────────────────────
 
-def list_projects() -> list[dict]:
+def list_projects(*, archived: bool = False) -> list[dict]:
     root = _projects_root()
     root.mkdir(parents=True, exist_ok=True)
     _sweep_trash(root)  # clean up any leftover .trash-* dirs whose handles have closed
     projects = []
     for d in sorted(root.iterdir()):
         if d.is_dir() and not d.name.startswith("."):
-            projects.append(_project_info(d))
+            info = _project_info(d)
+            if info["archived"] is archived:
+                projects.append(info)
     return projects
 
 
@@ -257,6 +261,24 @@ def rename_project(project_id: str, new_name: str) -> dict:
     return _project_info(project_dir)
 
 
+def set_project_archived(project_id: str, archived: bool) -> dict:
+    """Archive or restore a project without moving or changing any project content."""
+    root = _projects_root()
+    project_dir = (root / project_id).resolve()
+    if not project_dir.is_dir() or project_dir.parent != root:
+        raise FileNotFoundError(f"Project not found: {project_id!r}")
+    meta = _read_meta(project_dir)
+    was_archived = meta.get("archived") is True
+    meta["archived"] = archived
+    if archived:
+        if not was_archived or not meta.get("archived_at"):
+            meta["archived_at"] = datetime.now(timezone.utc).isoformat()
+    else:
+        meta.pop("archived_at", None)
+    _write_meta(project_dir, meta)
+    return _project_info(project_dir)
+
+
 def _sweep_trash(root: Path) -> None:
     """Best-effort removal of leftover `.trash-*` dirs (e.g. ones that still held NFS .nfs*
     files at delete time; the handles have since closed)."""
@@ -315,6 +337,9 @@ def copy_project(project_id: str, new_name: str) -> dict:
         meta = _read_meta(staging)
         meta["name"] = new_name
         meta["created"] = datetime.now(timezone.utc).isoformat()
+        # A duplicate is always a new active project, even when the source was archived.
+        meta["archived"] = False
+        meta.pop("archived_at", None)
         _write_meta(staging, meta)
         staging.rename(dst)
         published = True

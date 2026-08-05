@@ -13,6 +13,7 @@
     "test:versioning-e2e": "node test/versioning.e2e.js",
     "test:tokens-e2e": "node test/accountTokens.e2e.js",
     "test:direct-project-e2e": "node test/directProjectUrl.e2e.js",
+    "test:archive-e2e": "node test/projectArchiveUi.e2e.js",
     "preview": "vite preview"
   },
   "dependencies": {

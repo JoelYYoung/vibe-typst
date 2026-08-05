@@ -431,6 +431,10 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .projects-main { flex: 1; max-width: 900px; margin: 0 auto; padding: 36px 32px; width: 100%; }
 .projects-title-row { display: flex; align-items: baseline; gap: 16px; margin-bottom: 24px; }
 .projects-title-row h1 { margin: 0; font-size: 24px; font-weight: 700; flex: 1; }
+.projects-view-toggle { display: inline-flex; gap: 4px; padding: 3px; margin: -10px 0 20px; border: 1px solid var(--line); border-radius: 9px; background: #edf1f5; }
+.projects-view-toggle button { height: 30px; padding: 0 14px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12.5px; }
+.projects-view-toggle button:hover { color: var(--ink); background: rgba(255,255,255,.55); }
+.projects-view-toggle button.selected { color: var(--ink); background: var(--panel); box-shadow: 0 1px 3px rgba(20,28,38,.12); font-weight: 600; }
 .projects-error { color: var(--warn); background: #fff5f5; border: 1px solid #f5c6c0; border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
 .projects-loading { color: var(--muted); padding: 32px; text-align: center; }
 .projects-empty { text-align: center; padding: 60px 0; color: var(--muted); }
@@ -461,6 +465,8 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
 .projects-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
 .project-card { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; display: flex; align-items: stretch; overflow: hidden; cursor: pointer; transition: box-shadow .15s, border-color .15s; }
 .project-card:hover { box-shadow: 0 4px 20px rgba(0,0,0,.09); border-color: #c0cbda; }
+.project-card.archived { cursor: default; background: #f7f8fa; }
+.project-card.archived .project-icon { color: #9aa6b2; }
 .project-card.interaction-disabled { cursor: default; }
 .project-card.opening { cursor: wait; border-color: #b8cce1; box-shadow: 0 4px 20px rgba(47,111,176,.12); }
 .project-card-body { display: flex; align-items: center; gap: 14px; padding: 18px 14px; flex: 1; min-width: 0; }

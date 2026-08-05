@@ -113,7 +113,8 @@ export const setAppConfig = (config) =>
   }).then(J)
 
 // ── projects ────────────────────────────────────────────────────────────────
-export const listProjects = () => fetch(workspacePath('/api/projects')).then(J)
+export const listProjects = (archived = false) =>
+  fetch(workspacePath(`/api/projects${archived ? '?archived=true' : ''}`)).then(J)
 export const createProject = (name) => POST('/api/projects', { name })
 export const createPdfProject = (name, file) => {
   const form = new FormData()
@@ -125,6 +126,8 @@ export const renameProject = (id, name) => PATCH(`/api/projects/${encodeURICompo
 export const deleteProject = (id) =>
   fetch(workspacePath(`/api/projects/${encodeURIComponent(id)}`), { method: 'DELETE' }).then(J)
 export const copyProject = (id, name) => POST(`/api/projects/${encodeURIComponent(id)}/copy`, { name })
+export const archiveProject = (id) => POST(`/api/projects/${encodeURIComponent(id)}/archive`)
+export const restoreProject = (id) => POST(`/api/projects/${encodeURIComponent(id)}/restore`)
 export const openProject = (id) => POST(`/api/projects/${encodeURIComponent(id)}/open`)
 export const closeProject = () => POST('/api/projects/close')
 

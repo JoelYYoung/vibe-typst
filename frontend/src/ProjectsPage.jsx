@@ -161,10 +161,13 @@ function ProjectCard({
   onRename,
   onDelete,
   onCopy,
+  onArchive,
+  onRestore,
   opening,
   interactionDisabled,
   allowWorkspaceTabs,
 }) {
+  const archived = Boolean(project.archived)
   const [menu, setMenu] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
   const [renaming, setRenaming] = useState(false)
@@ -207,14 +210,14 @@ function ProjectCard({
 
   return (
     <div
-      className={'project-card' + (opening ? ' opening' : '') + (interactionDisabled ? ' interaction-disabled' : '')}
+      className={'project-card' + (archived ? ' archived' : '') + (opening ? ' opening' : '') + (interactionDisabled ? ' interaction-disabled' : '')}
       aria-busy={opening ? 'true' : undefined}
     >
       <div
         className="project-card-body"
-        onClick={() => !renaming && !interactionDisabled && onOpen(project.id)}
-        title={opening ? 'Opening project' : 'Open project'}
-        aria-disabled={interactionDisabled}
+        onClick={() => !archived && !renaming && !interactionDisabled && onOpen(project.id)}
+        title={archived ? 'Restore this project before opening it' : (opening ? 'Opening project' : 'Open project')}
+        aria-disabled={archived || interactionDisabled}
       >
         <div className="project-icon">✦</div>
         {renaming ? (
@@ -234,7 +237,11 @@ function ProjectCard({
               <div className="project-name">{project.name}</div>
               <span className={`project-type-badge ${projectType(project)}`}>{projectType(project) === 'pdf' ? 'PDF' : 'Typst'}</span>
             </div>
-            {project.created && <div className="project-date">{fmtDate(project.created)}</div>}
+            {archived && project.archived_at ? (
+              <div className="project-date">Archived {fmtDate(project.archived_at)}</div>
+            ) : project.created ? (
+              <div className="project-date">{fmtDate(project.created)}</div>
+            ) : null}
           </div>
         )}
       </div>
@@ -253,7 +260,7 @@ function ProjectCard({
               className="project-dropdown"
               style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, left: 'auto', bottom: 'auto' }}
             >
-              {allowWorkspaceTabs && (
+              {!archived && allowWorkspaceTabs && (
                 <a
                   href={openProjectInNewTabUrl(project.id)}
                   target="_blank"
@@ -263,8 +270,10 @@ function ProjectCard({
                   Open in new tab
                 </a>
               )}
-              <button onClick={startRename}>Rename</button>
-              <button onClick={() => { setMenu(false); onCopy(project.id, project.name) }}>Duplicate</button>
+              {!archived && <button onClick={startRename}>Rename</button>}
+              {!archived && <button onClick={() => { setMenu(false); onCopy(project.id, project.name) }}>Duplicate</button>}
+              {!archived && <button onClick={() => { setMenu(false); onArchive(project.id, project.name) }}>Archive</button>}
+              {archived && <button onClick={() => { setMenu(false); onRestore(project.id, project.name) }}>Restore</button>}
               <button className="danger" onClick={() => { setMenu(false); onDelete(project.id, project.name) }}>Delete</button>
             </div>
           )}
@@ -282,6 +291,7 @@ function ProjectCard({
 
 export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs = false }) {
   const [projects, setProjects] = useState([])
+  const [view, setView] = useState('active')
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
@@ -294,17 +304,20 @@ export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs =
   const newInputRef = useRef(null)
   const pdfInputRef = useRef(null)
   const openingProjectRef = useRef(null)
+  const loadSequenceRef = useRef(0)
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequenceRef.current
+    setLoading(true)
     try {
-      const r = await api.listProjects()
-      setProjects(r.projects || [])
+      const r = await api.listProjects(view === 'archived')
+      if (sequence === loadSequenceRef.current) setProjects(r.projects || [])
     } catch (e) {
-      toast.error(e.message || 'Failed to load projects')
+      if (sequence === loadSequenceRef.current) toast.error(e.message || 'Failed to load projects')
     } finally {
-      setLoading(false)
+      if (sequence === loadSequenceRef.current) setLoading(false)
     }
-  }, [])
+  }, [view])
 
   useEffect(() => { load() }, [load])
   useEffect(() => { if (creating) newInputRef.current?.focus() }, [creating])
@@ -399,6 +412,33 @@ export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs =
     }
   }
 
+  async function handleArchive(id, name) {
+    try {
+      await api.archiveProject(id)
+      await load()
+      toast.success(`Archived "${name}"`)
+    } catch (err) {
+      toast.error(err.message || 'Failed to archive project')
+    }
+  }
+
+  async function handleRestore(id, name) {
+    try {
+      await api.restoreProject(id)
+      await load()
+      toast.success(`Restored "${name}"`)
+    } catch (err) {
+      toast.error(err.message || 'Failed to restore project')
+    }
+  }
+
+  function selectView(nextView) {
+    if (nextView === view) return
+    resetNewProject()
+    setProjects([])
+    setView(nextView)
+  }
+
   return (
     <div className="projects-bg">
       <header className="projects-header">
@@ -410,8 +450,27 @@ export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs =
       <main className="projects-main">
         <div className="projects-title-row">
           <h1>Projects</h1>
-          <button className="primary" onClick={() => { setCreating(true) }}
-            disabled={creating}>+ New project</button>
+          {view === 'active' && (
+            <button className="primary" onClick={() => { setCreating(true) }}
+              disabled={creating}>+ New project</button>
+          )}
+        </div>
+
+        <div className="projects-view-toggle" role="tablist" aria-label="Project view">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'active'}
+            className={view === 'active' ? 'selected' : ''}
+            onClick={() => selectView('active')}
+          >Projects</button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === 'archived'}
+            className={view === 'archived' ? 'selected' : ''}
+            onClick={() => selectView('archived')}
+          >Archived</button>
         </div>
 
         {creating && (
@@ -448,8 +507,10 @@ export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs =
           <div className="projects-loading">Loading…</div>
         ) : projects.length === 0 && !creating ? (
           <div className="projects-empty">
-            <p>No projects yet.</p>
-            <button className="primary" onClick={() => setCreating(true)}>Create your first project</button>
+            <p>{view === 'archived' ? 'No archived projects.' : 'No projects yet.'}</p>
+            {view === 'active' && (
+              <button className="primary" onClick={() => setCreating(true)}>Create your first project</button>
+            )}
           </div>
         ) : (
           <div className="projects-grid">
@@ -461,6 +522,8 @@ export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs =
                 onRename={handleRename}
                 onDelete={handleDelete}
                 onCopy={handleCopy}
+                onArchive={handleArchive}
+                onRestore={handleRestore}
                 opening={openingProjectId === p.id}
                 interactionDisabled={openingProjectId !== null}
                 allowWorkspaceTabs={allowWorkspaceTabs}
