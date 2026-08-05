@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import * as api from './api.js'
 import { sanitizePresentationPointer, slidePointToPixels } from './presentationPointer.js'
+import { workspaceChannelName } from './workspaceRouting.js'
 
 // The AUDIENCE screen: just the current slide, full-bleed. Opened as a second window and
 // dragged onto the projector; it follows the presenter window via a BroadcastChannel.
@@ -17,7 +18,7 @@ export default function Projection() {
     // so it never collides with a previously-cached project. Live updates arrive via the
     // BroadcastChannel below (the presenter window pushes its current pages/tokens/page).
     api.renderVersion().then((r) => { setPages(r.pages || []); setTokens(r.tokens || {}) }).catch(() => {})
-    const ch = new BroadcastChannel('tcb-present')
+    const ch = new BroadcastChannel(workspaceChannelName('tcb-present'))
     ch.onmessage = (e) => {
       const d = e.data || {}
       if (d.ping) { ch.postMessage({ pong: true }); return } // liveness heartbeat from the editor

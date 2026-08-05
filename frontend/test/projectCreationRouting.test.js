@@ -14,6 +14,15 @@ import {
   requestedProjectId,
   workspaceViewFor,
 } from '../src/projectRouting.js'
+import {
+  inProjectWorkspace,
+  openProjectInNewTabUrl,
+  projectWorkspaceId,
+  projectionUrl,
+  workspaceChannelName,
+  workspacePath,
+  workspaceWebSocketUrl,
+} from '../src/workspaceRouting.js'
 
 test('the canonical open result, rather than a stale card, selects PdfWorkspace', () => {
   const staleCard = { id: 'project-1', type: 'typst' }
@@ -34,6 +43,40 @@ test('openProject is distinct from the projection query', () => {
     '?theme=dark',
   )
   assert.equal(clearRequestedProject('?openProject=p1'), '')
+})
+
+test('project workspace routing scopes APIs, sockets, downloads, and projections', () => {
+  const workspace = '0123456789abcdef01234567'
+  const search = `?workspace=${workspace}&openProject=abc123def456`
+
+  assert.equal(projectWorkspaceId(search), workspace)
+  assert.equal(inProjectWorkspace(search), true)
+  assert.equal(
+    workspacePath('/api/state', search),
+    `/project-workspaces/${workspace}/api/state`,
+  )
+  assert.equal(
+    workspaceWebSocketUrl('/ws', search),
+    `/project-workspaces/${workspace}/ws`,
+  )
+  assert.equal(
+    workspaceChannelName('tcb-present', search),
+    `tcb-present:${workspace}`,
+  )
+  assert.equal(
+    projectionUrl(search),
+    `/?workspace=${workspace}&project=`,
+  )
+  assert.equal(
+    openProjectInNewTabUrl('a/b'),
+    '/project-workspaces/open?project_id=a%2Fb',
+  )
+})
+
+test('invalid workspace identifiers never change canonical routing', () => {
+  assert.equal(projectWorkspaceId('?workspace=../../admin'), null)
+  assert.equal(workspacePath('/api/state', '?workspace=bad'), '/api/state')
+  assert.equal(workspaceChannelName('tcb-present', '?workspace=bad'), 'tcb-present')
 })
 
 test('PDF creation only accepts one PDF file and switching away clears it', () => {

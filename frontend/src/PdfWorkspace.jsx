@@ -12,6 +12,7 @@ import {
   startPdfPresentationPage,
 } from './pdfWorkspace.js'
 import { shortPath, TerminalIcon } from './terminalUi.jsx'
+import { workspaceChannelName } from './workspaceRouting.js'
 
 export default function PdfWorkspace({ project, onBack }) {
   const [render, setRender] = useState({
@@ -70,7 +71,7 @@ export default function PdfWorkspace({ project, onBack }) {
     }
   }, [presentPage, render.pages, render.tokens])
   useEffect(() => {
-    const channel = new BroadcastChannel('tcb-present')
+    const channel = new BroadcastChannel(workspaceChannelName('tcb-present'))
     channelRef.current = channel
     channel.onmessage = (event) => {
       const message = event.data || {}

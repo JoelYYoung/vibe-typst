@@ -10,6 +10,7 @@ import {
   switchProjectCreationType,
 } from './projectCreation.js'
 import { canonicalProjectFromOpen } from './projectRouting.js'
+import { openProjectInNewTabUrl } from './workspaceRouting.js'
 
 function fmtDate(iso) {
   if (!iso) return ''
@@ -162,6 +163,7 @@ function ProjectCard({
   onCopy,
   opening,
   interactionDisabled,
+  allowWorkspaceTabs,
 }) {
   const [menu, setMenu] = useState(false)
   const [menuPos, setMenuPos] = useState({ top: 0, right: 0 })
@@ -251,6 +253,16 @@ function ProjectCard({
               className="project-dropdown"
               style={{ position: 'fixed', top: menuPos.top, right: menuPos.right, left: 'auto', bottom: 'auto' }}
             >
+              {allowWorkspaceTabs && (
+                <a
+                  href={openProjectInNewTabUrl(project.id)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => setMenu(false)}
+                >
+                  Open in new tab
+                </a>
+              )}
               <button onClick={startRename}>Rename</button>
               <button onClick={() => { setMenu(false); onCopy(project.id, project.name) }}>Duplicate</button>
               <button className="danger" onClick={() => { setMenu(false); onDelete(project.id, project.name) }}>Delete</button>
@@ -268,7 +280,7 @@ function ProjectCard({
   )
 }
 
-export default function ProjectsPage({ onOpen, onOpenAdmin }) {
+export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs = false }) {
   const [projects, setProjects] = useState([])
   const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
@@ -451,6 +463,7 @@ export default function ProjectsPage({ onOpen, onOpenAdmin }) {
                 onCopy={handleCopy}
                 opening={openingProjectId === p.id}
                 interactionDisabled={openingProjectId !== null}
+                allowWorkspaceTabs={allowWorkspaceTabs}
               />
             ))}
           </div>

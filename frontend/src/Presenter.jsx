@@ -7,6 +7,7 @@ import {
   presenterRenderIdentity,
   reconcilePresenterDraft,
 } from './presenterState.js'
+import { projectionUrl } from './workspaceRouting.js'
 
 // PowerPoint-style presenter view: big current slide, next-slide preview, the speaker note
 // ("script") for the current slide, a timer, and navigation. A second "projection" window
@@ -162,7 +163,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   const dirty = ready && script.draft !== script.base
   const editableTranscript = info.project_type === 'pdf' || info.slide_line || info.note_raw
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
-  const openProjection = () => window.open(location.pathname + '?project', 'tcb-projection', 'width=1280,height=720')
+  const openProjection = () => window.open(projectionUrl(), 'tcb-projection', 'width=1280,height=720')
 
   return (
     <div className="presenter">

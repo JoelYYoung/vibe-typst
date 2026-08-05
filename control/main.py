@@ -18,6 +18,7 @@ import hashlib
 import hmac
 import html
 import os
+import re
 import secrets
 import shlex
 import sqlite3
@@ -101,6 +102,16 @@ def init_db():
             user_id    TEXT NOT NULL,
             expires_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS project_workspaces (
+            id           TEXT PRIMARY KEY,
+            user_id      TEXT NOT NULL,
+            project_id   TEXT NOT NULL,
+            port         INTEGER UNIQUE NOT NULL,
+            container    TEXT UNIQUE NOT NULL,
+            created_at   REAL NOT NULL,
+            last_used_at REAL NOT NULL,
+            UNIQUE(user_id, project_id)
+        );
         """)
         # Migration: add role-based account management. Promote the `admin`
         # account and ensure at least one admin exists to avoid lockout.
@@ -133,8 +144,19 @@ def _create_user(username: str, password: str, role: str = "user") -> dict:
     if username == "admin":
         resolved_role = "admin"
     with _db() as db:
-        row = db.execute("SELECT MAX(port) FROM users").fetchone()
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            """
+            SELECT MAX(port) FROM (
+                SELECT port FROM users
+                UNION ALL
+                SELECT port FROM project_workspaces
+            )
+            """
+        ).fetchone()
         port = (row[0] or BASE_PORT - 1) + 1
+        if port > 65535:
+            raise RuntimeError("no workspace ports remain")
         db.execute(
             "INSERT INTO users (id,username,pw_hash,port,created_at,role) VALUES (?,?,?,?,?,?)",
             (uid, username, _hash_pw(password), port, time.time(), resolved_role),
@@ -211,6 +233,8 @@ def _unlocked_admin_count() -> int:
 
 _last_activity: dict[str, float] = {}
 _active_ws: dict[str, int] = {}
+_project_last_activity: dict[str, float] = {}
+_project_active_ws: dict[str, int] = {}
 
 def _touch_username(username: str):
     _last_activity[username] = time.time()
@@ -229,6 +253,20 @@ def _close_ws(username: str):
     else:
         _active_ws[username] = current - 1
 
+def _touch_project_workspace(workspace_id: str):
+    _project_last_activity[workspace_id] = time.time()
+
+def _open_project_ws(workspace_id: str):
+    _touch_project_workspace(workspace_id)
+    _project_active_ws[workspace_id] = _project_active_ws.get(workspace_id, 0) + 1
+
+def _close_project_ws(workspace_id: str):
+    current = _project_active_ws.get(workspace_id, 0)
+    if current <= 1:
+        _project_active_ws.pop(workspace_id, None)
+    else:
+        _project_active_ws[workspace_id] = current - 1
+
 # ── Orchestrator ───────────────────────────────────────────────────────────────
 
 def _container(*args) -> subprocess.CompletedProcess:
@@ -243,6 +281,9 @@ def _container(*args) -> subprocess.CompletedProcess:
 def _cname(username: str) -> str:
     safe = "".join(c for c in username if c.isalnum() or c in "-_")
     return f"tcb-ws-{safe}"
+
+def _project_cname(user_id: str, workspace_id: str) -> str:
+    return f"tcb-project-{user_id[:12]}-{workspace_id}"
 
 def _wsdir(username: str) -> Path:
     d = WORKSPACE_BASE / username
@@ -263,11 +304,174 @@ def _port_open(port: int) -> bool:
         return False
 
 def _is_running(username: str) -> bool:
-    r = _container("inspect", "--format", "{{.State.Running}}", _cname(username))
+    return _named_container_running(_cname(username))
+
+def _named_container_running(name: str) -> bool:
+    r = _container("inspect", "--format", "{{.State.Running}}", name)
     return r.returncode == 0 and r.stdout.strip() == "true"
 
 def _container_exists(username: str) -> bool:
     return _container("container", "inspect", _cname(username)).returncode == 0
+
+def _named_container_exists(name: str) -> bool:
+    return _container("container", "inspect", name).returncode == 0
+
+_PROJECT_ID = re.compile(r"^[a-f0-9]{12}$")
+_PROJECT_META = ".vibe-typst.json"
+
+def _project_exists_for_user(user: dict, project_id: str) -> bool:
+    if not isinstance(project_id, str) or not _PROJECT_ID.fullmatch(project_id):
+        return False
+    root = WORKSPACE_BASE / user["username"]
+    project = root / project_id
+    try:
+        return (
+            project.resolve().parent == root.resolve()
+            and project.is_dir()
+            and (project / _PROJECT_META).is_file()
+        )
+    except OSError:
+        return False
+
+def _project_workspace_by_id(workspace_id: str, user_id: str) -> Optional[dict]:
+    if not re.fullmatch(r"[a-f0-9]{24}", workspace_id or ""):
+        return None
+    with _db() as db:
+        row = db.execute(
+            "SELECT * FROM project_workspaces WHERE id=? AND user_id=?",
+            (workspace_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+def _project_workspace_for(user: dict, project_id: str) -> dict:
+    """Return the stable isolated workspace assigned to one user project."""
+    if not _project_exists_for_user(user, project_id):
+        raise FileNotFoundError(project_id)
+    now = time.time()
+    with _db() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT * FROM project_workspaces WHERE user_id=? AND project_id=?",
+            (user["id"], project_id),
+        ).fetchone()
+        if row:
+            db.execute(
+                "UPDATE project_workspaces SET last_used_at=? WHERE id=?",
+                (now, row["id"]),
+            )
+            result = dict(row)
+            result["last_used_at"] = now
+            return result
+        max_port = db.execute(
+            """
+            SELECT MAX(port) FROM (
+                SELECT port FROM users
+                UNION ALL
+                SELECT port FROM project_workspaces
+            )
+            """
+        ).fetchone()[0]
+        port = max(BASE_PORT - 1, max_port or BASE_PORT - 1) + 1
+        if port > 65535:
+            raise RuntimeError("no workspace ports remain")
+        workspace_id = secrets.token_hex(12)
+        container = _project_cname(user["id"], workspace_id)
+        db.execute(
+            """
+            INSERT INTO project_workspaces
+                (id,user_id,project_id,port,container,created_at,last_used_at)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (workspace_id, user["id"], project_id, port, container, now, now),
+        )
+    return _project_workspace_by_id(workspace_id, user["id"])
+
+def _project_workspace_running(workspace: dict) -> bool:
+    return _named_container_running(workspace["container"])
+
+def _project_workspace_up(workspace: dict) -> bool:
+    return _port_open(workspace["port"])
+
+def _start_project_workspace(user: dict, workspace: dict) -> bool:
+    name = workspace["container"]
+    if _project_workspace_running(workspace):
+        return False
+    if _named_container_exists(name):
+        r = _container("start", name)
+        if r.returncode == 0:
+            return True
+        _container("rm", "-f", name)
+    if not _image_exists():
+        print(f"[orchestrator] image {TCB_IMAGE!r} not ready yet", file=sys.stderr)
+        return False
+    wsdir = _wsdir(user["username"])
+    state_path = f"/workspace/.tcb/project-workspaces/{workspace['id']}/state.json"
+    env_args = [
+        "-e", "APP_MODE=server",
+        "-e", "PORT=8080",
+        "-e", "TCB_BROWSE_ROOT=/workspace",
+        "-e", "RENDER_DIR=/tmp/tcb-render",
+        "-e", f"TCB_STATE_PATH={state_path}",
+        "-e", "HOME=/root",
+    ]
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if api_key:
+        env_args += ["-e", f"ANTHROPIC_API_KEY={api_key}"]
+    r = _container(
+        "run", "-d",
+        "--name", name,
+        "-p", f"127.0.0.1:{workspace['port']}:8080",
+        *env_args,
+        "-v", f"{wsdir}:/workspace{VOLUME_SUFFIX}",
+        TCB_IMAGE,
+    )
+    if r.returncode != 0:
+        print(
+            f"[orchestrator] project workspace start failed for "
+            f"{user['username']}/{workspace['project_id']}: {r.stderr}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+def _stop_project_workspace(workspace: dict) -> bool:
+    if not _project_workspace_running(workspace):
+        return False
+    r = _container("stop", workspace["container"])
+    if r.returncode != 0:
+        print(
+            f"[orchestrator] failed to stop {workspace['container']}: {r.stderr}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+def _project_workspaces_for_user(user_id: str) -> list[dict]:
+    with _db() as db:
+        return [
+            dict(row) for row in db.execute(
+                "SELECT * FROM project_workspaces WHERE user_id=?",
+                (user_id,),
+            ).fetchall()
+        ]
+
+def _stop_user_project_workspaces(user: dict, *, remove: bool = False) -> bool:
+    changed = False
+    for workspace in _project_workspaces_for_user(user["id"]):
+        try:
+            if remove:
+                result = _container("rm", "-f", workspace["container"])
+                changed = changed or result.returncode == 0
+            else:
+                changed = _stop_project_workspace(workspace) or changed
+        except Exception as exc:
+            print(f"[orchestrator] project cleanup failed: {exc}", file=sys.stderr)
+        _project_last_activity.pop(workspace["id"], None)
+        _project_active_ws.pop(workspace["id"], None)
+    if remove:
+        with _db() as db:
+            db.execute("DELETE FROM project_workspaces WHERE user_id=?", (user["id"],))
+    return changed
 
 def _workspace_up(user: dict) -> bool:
     return _port_open(user["port"])
@@ -328,6 +532,7 @@ def _stop_workspace(user: dict) -> bool:
 
 def _force_user_offline(user: dict) -> bool:
     stopped = _stop_workspace(user)
+    stopped = _stop_user_project_workspaces(user) or stopped
     _del_sessions_for_user(user["id"])
     _last_activity.pop(user["username"], None)
     _active_ws.pop(user["username"], None)
@@ -381,6 +586,49 @@ async def _idle_sweeper():
                     file=sys.stderr,
                 )
 
+        try:
+            with _db() as db:
+                workspaces = [
+                    dict(row) for row in db.execute(
+                        "SELECT * FROM project_workspaces"
+                    ).fetchall()
+                ]
+        except Exception as exc:
+            print(f"[idle] failed to read project workspaces: {exc}", file=sys.stderr)
+            continue
+        for workspace in workspaces:
+            workspace_id = workspace["id"]
+            try:
+                running = await loop.run_in_executor(
+                    None, _project_workspace_running, workspace
+                )
+            except Exception as exc:
+                print(f"[idle] failed to inspect {workspace_id}: {exc}", file=sys.stderr)
+                continue
+            if not running:
+                _project_last_activity.pop(workspace_id, None)
+                continue
+            if _project_active_ws.get(workspace_id, 0) > 0:
+                _touch_project_workspace(workspace_id)
+                continue
+            last = _project_last_activity.get(workspace_id)
+            if last is None:
+                _touch_project_workspace(workspace_id)
+                continue
+            idle_for = now - last
+            if idle_for < IDLE_STOP_SECONDS:
+                continue
+            stopped = await loop.run_in_executor(
+                None, _stop_project_workspace, workspace
+            )
+            if stopped:
+                _project_last_activity.pop(workspace_id, None)
+                print(
+                    f"[idle] stopped project workspace {workspace_id} "
+                    f"after {int(idle_for)}s idle",
+                    file=sys.stderr,
+                )
+
 
 async def _mcp_sweeper():
     interval = max(10, MCP_SWEEP_SECONDS)
@@ -412,6 +660,23 @@ async def _ensure_workspace(user: dict):
                 pass
             await asyncio.sleep(0.5)
 
+async def _ensure_project_workspace(user: dict, workspace: dict):
+    """Start one isolated project workspace and wait for its backend."""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _start_project_workspace, user, workspace)
+    port = workspace["port"]
+    async with httpx.AsyncClient() as c:
+        for _ in range(40):
+            try:
+                response = await c.get(
+                    f"http://localhost:{port}/api/app/state", timeout=1.0
+                )
+                if response.status_code < 500:
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
 # ── Proxy helpers ──────────────────────────────────────────────────────────────
 
 _client: httpx.AsyncClient = None
@@ -424,9 +689,11 @@ class _SharedWorkspaceClient:
         return _client.stream(*args, **kwargs)
 
 
-async def _proxy_http(request: Request, port: int) -> Response:
+async def _proxy_http(
+    request: Request, port: int, target_path: str | None = None
+) -> Response:
     url = httpx.URL(
-        f"http://localhost:{port}{request.url.path}",
+        f"http://localhost:{port}{target_path or request.url.path}",
         query=request.url.query.encode("utf-8") if request.url.query else b"",
     )
     fwd_headers = {
@@ -459,7 +726,13 @@ async def _proxy_http(request: Request, port: int) -> Response:
     )
 
 
-async def _proxy_ws(client_ws: WebSocket, port: int, path: str, user: dict):
+async def _proxy_ws(
+    client_ws: WebSocket,
+    port: int,
+    path: str,
+    user: dict,
+    project_workspace_id: str | None = None,
+):
     """Bridge a browser WebSocket to the workspace container."""
     username = user["username"]
     query = str(client_ws.url.query)
@@ -468,6 +741,8 @@ async def _proxy_ws(client_ws: WebSocket, port: int, path: str, user: dict):
         uri += f"?{query}"
     await client_ws.accept()
     _open_ws(username)
+    if project_workspace_id:
+        _open_project_ws(project_workspace_id)
     try:
         async with websockets.client.connect(uri) as server_ws:
             async def c2s():
@@ -477,6 +752,8 @@ async def _proxy_ws(client_ws: WebSocket, port: int, path: str, user: dict):
                         if msg.get("type") == "websocket.disconnect":
                             break
                         _touch_username(username)
+                        if project_workspace_id:
+                            _touch_project_workspace(project_workspace_id)
                         if "bytes" in msg and msg["bytes"] is not None:
                             await server_ws.send(msg["bytes"])
                         elif "text" in msg and msg["text"] is not None:
@@ -490,6 +767,8 @@ async def _proxy_ws(client_ws: WebSocket, port: int, path: str, user: dict):
                 try:
                     async for msg in server_ws:
                         _touch_username(username)
+                        if project_workspace_id:
+                            _touch_project_workspace(project_workspace_id)
                         if isinstance(msg, bytes):
                             await client_ws.send_bytes(msg)
                         else:
@@ -506,6 +785,8 @@ async def _proxy_ws(client_ws: WebSocket, port: int, path: str, user: dict):
         except Exception:
             pass
         _close_ws(username)
+        if project_workspace_id:
+            _close_project_ws(project_workspace_id)
 
 
 _CARD_CSS = """
@@ -921,6 +1202,7 @@ async def admin_delete_user(uid: str, request: Request):
             raise HTTPException(400, "can't delete the last admin")
     try: _container("rm", "-f", _cname(target["username"]))
     except Exception: pass
+    _stop_user_project_workspaces(target, remove=True)
     mcp_store.invalidate_user_leases(DB_PATH, uid)
     with _db() as db:
         db.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
@@ -929,6 +1211,101 @@ async def admin_delete_user(uid: str, request: Request):
 
 
 # ── WebSocket proxy routes (declared before the catch-all) ────────────────────
+
+@app.get("/project-workspaces/open")
+async def open_project_workspace(request: Request, project_id: str):
+    user = _require_user(request)
+    try:
+        workspace = await asyncio.to_thread(
+            _project_workspace_for, user, project_id
+        )
+    except FileNotFoundError:
+        raise HTTPException(404, "project not found")
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    _touch_project_workspace(workspace["id"])
+    await _ensure_project_workspace(user, workspace)
+    if not _project_workspace_up(workspace):
+        return HTMLResponse(
+            _loading_html(
+                "Starting project workspace…",
+                "This project is getting its own isolated workspace.",
+            ),
+            status_code=503,
+        )
+    query = urlencode({"workspace": workspace["id"], "openProject": project_id})
+    return RedirectResponse(f"/?{query}", status_code=303)
+
+
+@app.websocket("/project-workspaces/{workspace_id}/ws/{path:path}")
+async def project_ws_room(websocket: WebSocket, workspace_id: str, path: str):
+    user = _current_user(websocket)
+    if not user:
+        await websocket.close(code=1008)
+        return
+    workspace = _project_workspace_by_id(workspace_id, user["id"])
+    if not workspace:
+        await websocket.close(code=1008)
+        return
+    _touch_user(user)
+    _touch_project_workspace(workspace_id)
+    if not _project_workspace_up(workspace):
+        asyncio.create_task(_ensure_project_workspace(user, workspace))
+        await websocket.close(code=1013)
+        return
+    await _proxy_ws(
+        websocket,
+        workspace["port"],
+        f"ws/{path}",
+        user,
+        workspace_id,
+    )
+
+
+@app.websocket("/project-workspaces/{workspace_id}/pty")
+async def project_ws_pty(websocket: WebSocket, workspace_id: str):
+    user = _current_user(websocket)
+    if not user:
+        await websocket.close(code=1008)
+        return
+    workspace = _project_workspace_by_id(workspace_id, user["id"])
+    if not workspace:
+        await websocket.close(code=1008)
+        return
+    _touch_user(user)
+    _touch_project_workspace(workspace_id)
+    if not _project_workspace_up(workspace):
+        asyncio.create_task(_ensure_project_workspace(user, workspace))
+        await websocket.close(code=1013)
+        return
+    await _proxy_ws(
+        websocket, workspace["port"], "pty", user, workspace_id
+    )
+
+
+@app.api_route(
+    "/project-workspaces/{workspace_id}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+)
+async def project_workspace_proxy(
+    request: Request, workspace_id: str, path: str
+):
+    user = _require_user(request)
+    workspace = _project_workspace_by_id(workspace_id, user["id"])
+    if not workspace:
+        raise HTTPException(404, "project workspace not found")
+    _touch_project_workspace(workspace_id)
+    if not _project_workspace_up(workspace):
+        await _ensure_project_workspace(user, workspace)
+    if not _project_workspace_up(workspace):
+        return HTMLResponse(
+            _loading_html(
+                "Starting project workspace…",
+                "This isolated project workspace is warming up.",
+            ),
+            status_code=503,
+        )
+    return await _proxy_http(request, workspace["port"], f"/{path}")
 
 @app.websocket("/ws/{path:path}")
 async def ws_room(websocket: WebSocket, path: str):

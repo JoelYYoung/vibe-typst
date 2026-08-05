@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { toast } from './Toaster.jsx'
 import { canSaveVersion } from './versioning.js'
+import { workspacePath } from './workspaceRouting.js'
 
 const VIEWABLE_EXTS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'])
@@ -72,14 +73,14 @@ function MdEditor({ item, onClose }) {
   const [orig, setOrig] = useState('')
 
   useEffect(() => {
-    fetch(`/api/project/files/view?path=${encodeURIComponent(item.path)}`)
+    fetch(workspacePath(`/api/project/files/view?path=${encodeURIComponent(item.path)}`))
       .then(r => r.text()).then(t => { setText(t); setOrig(t) }).catch(() => setText(''))
   }, [item.path])
 
   async function handleSave() {
     setSaving(true)
     try {
-      await fetch('/api/project/files/write', {
+      await fetch(workspacePath('/api/project/files/write'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: item.path, content: text }),
@@ -320,7 +321,7 @@ function TreeRow({ item, depth, activeFile, mainFile, onOpenFile, onViewFile, on
 
 function FileViewer({ item, onClose }) {
   const ext = fileExt(item.name)
-  const url = `/api/project/files/view?path=${encodeURIComponent(item.path)}`
+  const url = workspacePath(`/api/project/files/view?path=${encodeURIComponent(item.path)}`)
   const isImg = IMAGE_EXTS.has(ext)
   return (
     <div className="fm-viewer-overlay" onClick={onClose}>

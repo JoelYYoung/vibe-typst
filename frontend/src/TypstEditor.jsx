@@ -8,9 +8,9 @@ import { defaultKeymap, indentWithTab } from '@codemirror/commands'
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language'
 import { typst } from 'codemirror-lang-typst'
+import { workspaceWebSocketUrl } from './workspaceRouting.js'
 
-const wsBase = () =>
-  `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
+const wsBase = () => workspaceWebSocketUrl('/ws')
 
 // A CodeMirror 6 editor whose document IS a shared Yjs text (the CRDT room). The human
 // edits here; Claude edits the same room over the backend; both merge. Collaborative

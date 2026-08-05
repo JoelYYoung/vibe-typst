@@ -9,6 +9,7 @@ import FilePicker from './FilePicker.jsx'
 import TermPanel from './TermPanel.jsx'
 import { filterAndSortComments } from './commentOrdering.js'
 import { shortPath, TerminalIcon } from './terminalUi.jsx'
+import { workspaceChannelName, workspacePath } from './workspaceRouting.js'
 
 const FILTERS = ['pending', 'done', 'all']
 const selKey = (s) => (s.kind === 'page' ? `p${s.page_no}` : `${s.page}:${s.text}`)
@@ -275,7 +276,7 @@ export default function App({ onBackToProjects }) {
     presentStateRef.current = { page: presentPage, pages, tokens, pointer: presentPointerRef.current }
   }, [presentPage, pages, tokens])
   useEffect(() => {
-    const ch = new BroadcastChannel('tcb-present')
+    const ch = new BroadcastChannel(workspaceChannelName('tcb-present'))
     presentChRef.current = ch
     ch.onmessage = (e) => {
       const d = e.data || {}
@@ -308,7 +309,7 @@ export default function App({ onBackToProjects }) {
   async function exportPdf() {
     setPdfBusy(true); setMsg('compiling PDF…')
     try {
-      const r = await fetch('/api/export-pdf', { method: 'POST' })
+      const r = await fetch(workspacePath('/api/export-pdf'), { method: 'POST' })
       if (!r.ok) {
         let detail = ''
         try { detail = (await r.json()).detail || '' } catch {}

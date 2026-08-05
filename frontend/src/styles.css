@@ -483,8 +483,8 @@ button.wide { width: 100%; padding: 10px; font-size: 14px; border-radius: 9px; }
   .project-opening-spinner { animation: none; border-top-color: var(--accent2); }
 }
 .project-dropdown { min-width: 150px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.16); z-index: 50; overflow: hidden; padding: 4px; }
-.project-dropdown button { display: block; width: 100%; text-align: left; padding: 8px 12px; font-size: 13px; border: 0; border-radius: 7px; background: transparent; cursor: pointer; color: var(--ink); height: auto; }
-.project-dropdown button:hover { background: #f0f3f7; }
+.project-dropdown button, .project-dropdown a { display: block; width: 100%; text-align: left; padding: 8px 12px; font-size: 13px; line-height: normal; border: 0; border-radius: 7px; background: transparent; cursor: pointer; color: var(--ink); height: auto; text-decoration: none; font-family: inherit; }
+.project-dropdown button:hover, .project-dropdown a:hover { background: #f0f3f7; }
 .project-dropdown button.danger { color: var(--warn); }
 .project-dropdown button.danger:hover { background: #fff5f5; }
 

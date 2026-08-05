@@ -15,16 +15,19 @@ import {
   requestedProjectId,
   workspaceViewFor,
 } from './projectRouting.js'
+import { inProjectWorkspace, workspacePath } from './workspaceRouting.js'
 import './styles.css'
 
 function Root() {
   const [view, setView] = useState('loading')
   const [activeProject, setActiveProject] = useState(null)
+  const [serverMode, setServerMode] = useState(false)
 
   async function checkState() {
     try {
-      const r = await fetch('/api/app/state')
+      const r = await fetch(workspacePath('/api/app/state'))
       const s = await r.json()
+      setServerMode(s.mode === 'server')
       if (!s.configured && s.mode === 'local') {
         setView('onboarding')
         return
@@ -37,13 +40,15 @@ function Root() {
           if (!project) throw new Error('Workspace returned an invalid project')
           setActiveProject(project)
           setView('editor')
-          history.replaceState(
-            null,
-            '',
-            location.pathname
-              + clearRequestedProject(location.search)
-              + location.hash,
-          )
+          if (!inProjectWorkspace()) {
+            history.replaceState(
+              null,
+              '',
+              location.pathname
+                + clearRequestedProject(location.search)
+                + location.hash,
+            )
+          }
           return
         } catch (openError) {
           toast.error(
@@ -64,7 +69,11 @@ function Root() {
     setView('editor')
   }
   function goToProjects() {
-    fetch('/api/projects/close', { method: 'POST' }).catch(() => {})
+    if (inProjectWorkspace()) {
+      location.assign('/')
+      return
+    }
+    fetch(workspacePath('/api/projects/close'), { method: 'POST' }).catch(() => {})
     setActiveProject(null)
     setView('projects')
   }
@@ -75,7 +84,13 @@ function Root() {
   return (
     <>
       {view === 'onboarding' && <OnboardingPage onDone={() => setView('projects')} />}
-      {view === 'projects' && <ProjectsPage onOpen={goToEditor} onOpenAdmin={goToAdmin} />}
+      {view === 'projects' && (
+        <ProjectsPage
+          onOpen={goToEditor}
+          onOpenAdmin={goToAdmin}
+          allowWorkspaceTabs={serverMode}
+        />
+      )}
       {view === 'admin' && <AdminPage onBack={goToProjects} />}
       {view === 'editor' && workspaceView === 'App' && (
         <App project={activeProject} onBack={goToProjects} onBackToProjects={goToProjects} />

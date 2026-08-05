@@ -2,6 +2,7 @@ import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { workspaceWebSocketUrl } from './workspaceRouting.js'
 
 // A real shell over the backend PTY (WebSocket). Server-hosted, so it works the same
 // locally and from a remote browser. The backend starts it in the active project directory.
@@ -88,8 +89,7 @@ const TermPanel = forwardRef(function TermPanel(_props, ref) {
     // a dead terminal. (Ctrl-C interrupts the foreground command; it does not exit the shell.)
     const connect = () => {
       if (!alive) return
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws'
-      const ws = new WebSocket(`${proto}://${location.host}/pty`)
+      const ws = new WebSocket(workspaceWebSocketUrl('/pty'))
       ws.binaryType = 'arraybuffer'
       wsRef.current = ws
       // Fit on open, then again once layout/fonts have fully settled — an early fit can
