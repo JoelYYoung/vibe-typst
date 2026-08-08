@@ -317,10 +317,13 @@ def apply_edits(edits: list, base_rev: int | None = None, file: str = "") -> dic
     equals `expect`, else the whole batch is refused as a conflict — use it to guard against the
     human editing concurrently. Pass `base_rev` = the `rev` you got from get_document.
 
-    On success: {ok:true, rev, applied}. On conflict: {ok:false, conflict:true, index, error,
-    and the live `context` around the miss} — re-read with get_document (note the new `rev`) and
-    retry. Selectors are resolved against the CURRENT document, so a prior edit that removed your
-    target makes the next selector fail cleanly rather than hitting the wrong place.""" + " " + _GUARD
+    On success: {ok:true, rev, applied}. On refusal: {ok:false, conflict:true, reason, index,
+    error, and the live `context` around the miss}, where `reason` is "invalid_edit" (the edit is
+    malformed — fix it, re-reading changes nothing), "selector_missed" (well-formed but no longer
+    matches — re-read with get_document and re-aim), or "revision_conflict" (the document moved
+    under you — re-read, note the new `rev`, and retry). Selectors are resolved against the
+    CURRENT document, so a prior edit that removed your target makes the next selector fail
+    cleanly rather than hitting the wrong place.""" + " " + _GUARD
     return _backend("POST", "/api/edit", {
         "op": "apply_edits", "edits": edits, "base_rev": base_rev, "file": file or None,
     })

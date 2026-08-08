@@ -18,6 +18,7 @@ ERROR_CODES = frozenset(
         "PROJECT_CONTEXT_CHANGED",
         "PROJECT_HANDLE_EXPIRED",
         "REVISION_CONFLICT",
+        "EDIT_REJECTED",
         "PATH_NOT_ALLOWED",
         "FILE_NOT_FOUND",
         "DESTINATION_EXISTS",
@@ -38,6 +39,7 @@ class McpServiceError(Exception):
         message: str,
         retryable: bool = False,
         retry_after: float | None = None,
+        details: dict | None = None,
     ):
         if code not in ERROR_CODES:
             raise ValueError(f"unknown MCP error code: {code}")
@@ -46,6 +48,9 @@ class McpServiceError(Exception):
         self.message = message
         self.retryable = bool(retryable)
         self.retry_after = retry_after
+        # Curated, caller-actionable extras only (which edit failed, the live text around it).
+        # Raising sites build this explicitly; a backend body is never forwarded wholesale.
+        self.details = dict(details) if details else None
 
     def as_dict(self) -> dict:
         detail = {
@@ -55,4 +60,6 @@ class McpServiceError(Exception):
         }
         if self.retry_after is not None:
             detail["retry_after"] = self.retry_after
+        if self.details:
+            detail["details"] = dict(self.details)
         return {"ok": False, "error": detail}

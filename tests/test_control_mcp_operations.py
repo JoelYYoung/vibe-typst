@@ -54,6 +54,7 @@ class _FileGateway:
             "pages": {"1": {"text": ""}},
             "orphans": {},
         }
+        self.edit_response = None
 
     async def read_bytes(self, identity, path, max_bytes):
         self.calls.append((identity.token_id, "GET_BYTES", path, None))
@@ -101,6 +102,8 @@ class _FileGateway:
                 "rev": self.rev,
             }
         if method == "POST" and parsed.path == "/api/edit":
+            if self.edit_response is not None:
+                return self.edit_response
             if (
                 json.get("require_single_file_typst") is True
                 and any(
@@ -773,6 +776,112 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             "updated",
         )
         self.assertEqual(done["comment"]["status"], "done")
+
+    async def test_refused_edits_report_why_instead_of_a_blanket_conflict(self):
+        # A malformed edit used to come back as REVISION_CONFLICT, so agents re-read a document
+        # that had never moved and retried the same broken edit forever.
+        cases = (
+            (
+                "malformed",
+                {
+                    "ok": False,
+                    "conflict": True,
+                    "reason": "invalid_edit",
+                    "index": 0,
+                    "error": "edit uses old_text/new_text",
+                    "rev": 7,
+                },
+                "EDIT_REJECTED",
+            ),
+            (
+                "missed",
+                {
+                    "ok": False,
+                    "conflict": True,
+                    "reason": "selector_missed",
+                    "index": 1,
+                    "error": "anchor not found",
+                    "context": "= Old title",
+                    "rev": 7,
+                },
+                "EDIT_REJECTED",
+            ),
+            (
+                "raced",
+                {
+                    "ok": False,
+                    "conflict": True,
+                    "reason": "revision_conflict",
+                    "index": 0,
+                    "error": "expect mismatch",
+                    "rev": 9,
+                },
+                "REVISION_CONFLICT",
+            ),
+            (
+                "workspace without reason classification",
+                {"ok": False, "conflict": True},
+                "REVISION_CONFLICT",
+            ),
+        )
+
+        for label, body, expected_code in cases:
+            with self.subTest(label):
+                self.gateway.edit_response = body
+                result = await self._call(
+                    self.editor,
+                    "apply_edits",
+                    self.editor_handle,
+                    [{
+                        "selector": {"by": "anchor", "text": "Old title"},
+                        "text": "New title",
+                    }],
+                    None,
+                )
+                self.assertEqual(result["error"]["code"], expected_code)
+                if body.get("error"):
+                    self.assertIn(
+                        body["error"], result["error"]["message"]
+                    )
+                    details = result["error"]["details"]
+                    self.assertEqual(details["index"], body["index"])
+                    self.assertEqual(details["rev"], body["rev"])
+                if body.get("context"):
+                    self.assertEqual(
+                        result["error"]["details"]["context"],
+                        body["context"],
+                    )
+                if body.get("reason") == "invalid_edit":
+                    self.assertIn(
+                        '"by": "anchor"',
+                        result["error"]["details"]["expected_shape"],
+                    )
+        self.gateway.edit_response = None
+
+    async def test_refused_edits_bound_the_live_context_they_echo(self):
+        self.gateway.edit_response = {
+            "ok": False,
+            "conflict": True,
+            "reason": "selector_missed",
+            "index": 0,
+            "error": "anchor not found",
+            "context": "x" * 5000,
+            "rev": 7,
+        }
+
+        result = await self._call(
+            self.editor,
+            "apply_edits",
+            self.editor_handle,
+            [{
+                "selector": {"by": "anchor", "text": "Old title"},
+                "text": "New title",
+            }],
+            None,
+        )
+
+        self.gateway.edit_response = None
+        self.assertEqual(len(result["error"]["details"]["context"]), 400)
 
     async def test_pdf_handle_rejects_typst_and_comment_tools(self):
         self.gateway.active = {

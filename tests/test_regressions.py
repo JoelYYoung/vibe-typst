@@ -1009,6 +1009,44 @@ class ApplyEditsEdgeCaseTest(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(r["ok"], r)
                 self.assertEqual(self._doc(), before)
 
+    async def test_refusals_say_whether_the_edit_or_the_document_was_wrong(self):
+        """A refused batch must classify itself. Reporting a malformed edit as a revision
+        conflict sent callers into re-read/retry loops against an unchanged document."""
+        self._seed("= Title\nalpha\nbeta\n")
+        cases = (
+            # (edits, base_rev, reason)
+            ([{"old_text": "alpha", "new_text": "ALPHA"}], None, "invalid_edit"),
+            ([{"selector": {"by": "wat", "text": "alpha"}, "text": "x"}], None, "invalid_edit"),
+            ([{"selector": {"by": "anchor", "text": "alpha"}, "text": 7}], None, "invalid_edit"),
+            ([{"selector": {"by": "anchor", "text": "alpha"}, "text": "A"},
+              {"selector": {"by": "anchor", "text": "alph"}, "text": "B"}],
+             None, "invalid_edit"),
+            ([{"selector": {"by": "anchor", "text": "missing"}, "text": "x"}],
+             None, "selector_missed"),
+            ([{"selector": {"by": "lines", "start": 9, "end": 9}, "text": "x"}],
+             None, "selector_missed"),
+            ([{"selector": {"by": "anchor", "text": "alpha"}, "text": "x",
+               "expect": "beta"}], None, "revision_conflict"),
+            ([{"selector": {"by": "lines", "start": 1, "end": 1}, "text": "x"}],
+             99, "revision_conflict"),
+        )
+        before = self._doc()
+        for edits, base_rev, reason in cases:
+            with self.subTest(reason=reason, edits=edits):
+                r = await self._edits(edits, base_rev)
+                self.assertFalse(r["ok"], r)
+                self.assertTrue(r["conflict"], r)        # unchanged wire contract
+                self.assertEqual(r["reason"], reason, r)
+                self.assertEqual(self._doc(), before)   # atomic: nothing applied
+
+    async def test_find_replace_shaped_edits_name_the_selector_they_need(self):
+        self._seed("alpha\n")
+        r = await self._edits([{"old_text": "alpha", "new_text": "ALPHA"}])
+        self.assertFalse(r["ok"], r)
+        self.assertIn("old_text/new_text", r["error"])
+        self.assertIn('"by": "anchor"', r["error"])
+        self.assertEqual(r["index"], 0)
+
     async def test_comment_anchor_stays_in_bounds_after_delete_then_reinsert(self):
         self._seed("alpha beta gamma\n")
         rel = await self.docstore.make_rel_anchors([[6, 10]], "main.typ")   # "beta"

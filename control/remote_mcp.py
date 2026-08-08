@@ -48,8 +48,16 @@ Local .typ imports/includes are forbidden; package imports such as Touying are a
 file tools may be used only for non-Typst assets such as images, fonts, and data.
 
 Read main.typ with get_document or find_in_document and modify it only with apply_edits, passing
-the latest rev when available. Never use generic file writes to replace main.typ or bypass its
-shared CRDT state. Every presentation MUST remain in Touying form: preserve or add the Touying
+the latest rev when available. Every apply_edits item is
+{"selector": {"by": "anchor"|"lines"|"range", ...}, "text": "<replacement>"} — there is no
+old_text/new_text form; see the tool description for the full selector shape. A human may be
+editing the same document in the browser at the same time: the workspace merges both writers, so
+prefer anchor selectors over line or range numbers, re-read before a large rewrite, and add
+`expect` when a span must not have changed under you. EDIT_REJECTED means your edit was wrong and
+retrying it unchanged will fail again; only REVISION_CONFLICT means the document moved.
+Never use generic file writes to replace main.typ or bypass its shared CRDT state.
+
+Every presentation MUST remain in Touying form: preserve or add the Touying
 package import, use its slide/theme model, and keep speaker transcripts inline in main.typ. After
 meaningful Typst changes, inspect the rendered result with get_slide_preview; fix compile or
 layout problems before declaring the work complete.
@@ -111,6 +119,58 @@ def _image_protocol_result(result: RemoteToolResult) -> CallToolResult:
         structuredContent=structured,
         isError=False,
     )
+
+
+EDIT_SHAPE = (
+    'each edit is {"selector": {...}, "text": "<replacement>", "expect"?: "<current span>"}; '
+    'a selector is {"by": "anchor", "text": "<exact snippet>", "occurrence"?: 1, '
+    '"side"?: "in"|"before"|"after"}, {"by": "lines", "start": <1-based>, "end"?: <1-based>} '
+    'or {"by": "range", "from": <offset>, "to": <offset>}'
+)
+_MAX_EDIT_CONTEXT_CHARS = 400
+
+
+def _edit_refusal(body: dict) -> McpServiceError:
+    """Translate a refused edit batch into the error the caller can act on.
+
+    The workspace reports every refusal with `conflict: true` and says which KIND it was in
+    `reason`. Reporting all of them as REVISION_CONFLICT told agents to re-read a document that
+    had not moved, so a malformed edit looked exactly like a race and retried forever; only a
+    genuine race gets that code now.
+    """
+    reason = body.get("reason")
+    message = body.get("error")
+    if not isinstance(message, str) or not message:
+        message = "document edits were rejected"
+    details: dict[str, Any] = {}
+    for key in ("index", "rev"):
+        value = body.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            details[key] = value
+    context = body.get("context")
+    if isinstance(context, str) and context:
+        details["context"] = context[:_MAX_EDIT_CONTEXT_CHARS]
+    if reason == "revision_conflict":
+        return McpServiceError(
+            "REVISION_CONFLICT",
+            f"{message}; read the document again and retry",
+            details=details or None,
+        )
+    if reason == "selector_missed":
+        return McpServiceError(
+            "EDIT_REJECTED",
+            f"{message}; re-read the document and re-aim the selector",
+            details=details or None,
+        )
+    if reason == "invalid_edit":
+        details["expected_shape"] = EDIT_SHAPE
+        return McpServiceError("EDIT_REJECTED", message, details=details)
+    if body.get("conflict") is True:
+        # A workspace older than the `reason` classification: keep the previous mapping.
+        return McpServiceError(
+            "REVISION_CONFLICT", "document revision changed; read and retry"
+        )
+    return McpServiceError("BACKEND_ERROR", "document edits were rejected")
 
 
 class PatTokenVerifier(TokenVerifier):
@@ -1239,14 +1299,7 @@ class _RemoteProjectService:
                         "local .typ imports/includes are forbidden; "
                         "keep all Typst source in main.typ",
                     )
-                if body.get("conflict") is True:
-                    raise McpServiceError(
-                        "REVISION_CONFLICT",
-                        "document revision changed; read and retry",
-                    )
-                raise McpServiceError(
-                    "BACKEND_ERROR", "document edits were rejected"
-                )
+                raise _edit_refusal(body)
             return {"ok": True, **{
                 key: value for key, value in body.items() if key != "ok"
             }}
@@ -2311,10 +2364,28 @@ def create_remote_mcp(
     @server.tool()
     async def apply_edits(
         project_handle: str,
-        edits: list,
+        edits: list[dict],
         base_rev: int | None = None,
     ) -> CallToolResult:
-        """Atomically edit main.typ through the live CRDT; keep all source inline, Touying-based, and free of local .typ imports/includes."""
+        """Atomically edit main.typ through the live CRDT; keep all source inline, Touying-based, and free of local .typ imports/includes.
+
+        Each edit is an object `{"selector": <Selector>, "text": "<replacement>",
+        "expect"?: "<current span>"}` — `text` is what replaces the selected span ("" deletes)
+        and a Selector is exactly one of:
+          - {"by": "anchor", "text": "<exact snippet>", "occurrence"?: 1,
+             "side"?: "in"|"before"|"after"}   // "in" replaces the snippet; before/after insert
+          - {"by": "lines", "start": <1-based>, "end"?: <1-based inclusive>}  // end omitted inserts at that line
+          - {"by": "range", "from": <code point>, "to": <code point>}         // escape hatch
+        There is no old_text/new_text form. The anchor must be copied verbatim from
+        get_document / find_in_document and must match exactly once (extend it or pass
+        `occurrence`). Optional `expect` is a compare-and-swap against the selected span, and
+        `base_rev` is the `rev` from your last read — pass both when a human may be typing in
+        the browser at the same time.
+
+        The whole batch applies or none of it does. EDIT_REJECTED means the edit itself was
+        wrong (bad shape, or a selector that no longer matches — see `error.details`);
+        REVISION_CONFLICT means the document really moved, so re-read and retry.
+        """
         return _protocol_result(
             await service.apply_edits(
                 project_handle, edits, base_rev

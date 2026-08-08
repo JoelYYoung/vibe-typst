@@ -543,70 +543,86 @@ def _find(s: str, needle: str, occurrence: int) -> int:
 #   {"by":"lines","start":i,"end":j?}   # end omitted => insertion point at the start of line i
 #   {"by":"range","from":a,"to":b}      # code-point offsets (escape hatch)
 # The legacy single-edit tools below are thin sugar over this one primitive.
+#
+# A refused batch always reports `conflict: true` (long-standing wire contract), but WHY it was
+# refused decides what the caller should do next, so every refusal also carries a `reason`:
+#   MALFORMED — the request itself is wrong (bad shape, unknown selector kind, overlap). Re-reading
+#               the document changes nothing; the caller must fix the edit.
+#   MISSED    — the selector is well-formed but does not match the document (anchor absent or
+#               ambiguous, line/range out of bounds). Re-read and re-aim.
+#   RACE      — the document really did move under the caller (`expect` mismatch, stale base_rev).
+# Collapsing all three into "revision conflict" is what made a malformed edit look like a race and
+# sent callers into re-read/retry loops against a document that had never changed.
+MALFORMED = "invalid_edit"
+MISSED = "selector_missed"
+RACE = "revision_conflict"
+
+
 def _resolve_selector(sel: dict, s: str):
-    """Resolve a selector against snapshot `s` -> (from_cp, to_cp, kind, err). Insertion
+    """Resolve a selector against snapshot `s` -> (from_cp, to_cp, kind, err, reason). Insertion
     points return from_cp == to_cp."""
     kind = (sel or {}).get("by")
     if kind == "anchor":
         anchor = sel.get("text") or sel.get("anchor") or ""
         occ = sel.get("occurrence", 1)
         if isinstance(occ, bool) or not isinstance(occ, int):
-            return None, None, kind, "occurrence must be an integer >= 1"
+            return None, None, kind, "occurrence must be an integer >= 1", MALFORMED
         if not isinstance(anchor, str):
-            return None, None, kind, "anchor must be a string"
+            return None, None, kind, "anchor must be a string", MALFORMED
         if not anchor:
-            return None, None, kind, "empty anchor"
+            return None, None, kind, "empty anchor", MALFORMED
         n = s.count(anchor)
         if n == 0:
-            return None, None, kind, "anchor not found"
+            return None, None, kind, "anchor not found", MISSED
         if not 1 <= occ <= n:
-            return None, None, kind, f"occurrence out of bounds ({n} matches)"
+            return None, None, kind, f"occurrence out of bounds ({n} matches)", MISSED
         if occ == 1 and n > 1:
             return None, None, kind, (f"anchor is ambiguous ({n} matches); pass a longer "
-                                      "anchor or `occurrence`")
+                                      "anchor or `occurrence`"), MISSED
         idx = _find(s, anchor, occ)
         side = sel.get("side", "in")
         if not isinstance(side, str):
-            return None, None, kind, "anchor side must be a string"
+            return None, None, kind, "anchor side must be a string", MALFORMED
         if side not in {"in", "before", "after"}:
-            return None, None, kind, f"unknown anchor side {side!r}"
+            return None, None, kind, f"unknown anchor side {side!r}", MALFORMED
         if idx < 0:
-            return None, None, kind, "anchor occurrence not found"
+            return None, None, kind, "anchor occurrence not found", MISSED
         if side == "before":
-            return idx, idx, kind, None
+            return idx, idx, kind, None, None
         if side == "after":
-            return idx + len(anchor), idx + len(anchor), kind, None
-        return idx, idx + len(anchor), kind, None            # "in" = replace the anchor span
+            return idx + len(anchor), idx + len(anchor), kind, None, None
+        return idx, idx + len(anchor), kind, None, None      # "in" = replace the anchor span
     if kind == "lines":
         offs = _line_starts(s)
         total = len(offs)
         start = sel.get("start")
         end = sel.get("end")
         if isinstance(start, bool) or not isinstance(start, int):
-            return None, None, kind, "line must be an integer >= 1"
+            return None, None, kind, "line must be an integer >= 1", MALFORMED
         if end is not None and (isinstance(end, bool) or not isinstance(end, int)):
-            return None, None, kind, "line end must be an integer"
+            return None, None, kind, "line end must be an integer", MALFORMED
         if start < 1:
-            return None, None, kind, "line must be >= 1"
+            return None, None, kind, "line must be >= 1", MALFORMED
         if end is None:                                      # insertion point
             at = offs[start - 1] if start <= total else len(s)   # a line past EOF appends
-            return at, at, kind, None
+            return at, at, kind, None, None
         if not (start <= end <= total):
-            return None, None, kind, f"line range out of bounds (doc has {total} lines)"
+            return (None, None, kind,
+                    f"line range out of bounds (doc has {total} lines)", MISSED)
         frm = offs[start - 1]
         to = offs[end] if end < total else len(s)
-        return frm, to, kind, None
+        return frm, to, kind, None, None
     if kind == "range":
         frm = sel.get("from")
         to = sel.get("to")
         n = len(s)
         if (isinstance(frm, bool) or not isinstance(frm, int)
                 or isinstance(to, bool) or not isinstance(to, int)):
-            return None, None, kind, "range offsets must be integers"
+            return None, None, kind, "range offsets must be integers", MALFORMED
         if not (0 <= frm <= to <= n):
-            return None, None, kind, f"range out of bounds (doc len {n})"
-        return frm, to, kind, None
-    return None, None, kind, f"unknown selector {kind!r}"
+            return None, None, kind, f"range out of bounds (doc len {n})", MISSED
+        return frm, to, kind, None, None
+    return None, None, kind, f"unknown selector kind {kind!r}", MALFORMED
 
 
 def _neighborhood(s: str, frm: int, to: int, pad: int = 80) -> str:
@@ -661,6 +677,20 @@ def _selector_of(e: dict) -> dict:
                                   "start", "end", "from", "to") if k in e}
 
 
+EDIT_SHAPE = ('each edit is {"selector": {"by": "anchor", "text": "<exact snippet>"}, '
+              '"text": "<replacement>"}; selectors are {"by":"anchor","text",...}, '
+              '{"by":"lines","start","end"?} or {"by":"range","from","to"}')
+
+
+def _shape_error(e: dict) -> str:
+    """Explain a selector-less edit. Callers reaching for a familiar find/replace tool shape get
+    told the exact translation rather than a generic 'unknown selector'."""
+    if "old_text" in e or "new_text" in e:
+        return ('edit uses old_text/new_text, which this API does not accept: pass '
+                '{"selector": {"by": "anchor", "text": <old_text>}, "text": <new_text>}')
+    return f"edit has no selector: {EDIT_SHAPE}"
+
+
 def _spans_overlap(a1: int, b1: int, a2: int, b2: int) -> bool:
     """Whether two snapshot edit spans conflict.
 
@@ -687,52 +717,49 @@ async def apply_edits(
 ) -> dict:
     """Apply a BATCH of edits atomically (all-or-nothing) against the current room text. Each
     edit = {"selector": <Selector>, "text": str, "expect"?: str}. On any unresolved selector,
-    `expect` mismatch, or intra-batch overlap, NOTHING is applied and a conflict (with the live
-    neighborhood + current `rev`) is returned so the caller can re-read and retry. `base_rev`
-    is advisory (reported back as `rebased`); real safety comes from per-edit `expect`."""
+    `expect` mismatch, or intra-batch overlap, NOTHING is applied and a refusal (with `reason`,
+    the live neighborhood + current `rev`) is returned so the caller can fix the edit or re-read
+    and retry. `base_rev` is advisory (reported back as `rebased`); real safety comes from
+    per-edit `expect`."""
     st = await ensure_room(file)
     text = st["text"]
     s = str(text)
     cur_rev = st.get("rev", 0)
+
+    def refuse(reason: str, error: str, **extra) -> dict:
+        return {"ok": False, "conflict": True, "reason": reason, "error": error,
+                "rev": cur_rev, "room": st["key"], **extra}
+
     if not isinstance(edits, list):
-        return {"ok": False, "conflict": True, "error": "edits must be a list",
-                "rev": cur_rev, "room": st["key"]}
+        return refuse(MALFORMED, "edits must be a list")
     for i, edit in enumerate(edits):
         if not isinstance(edit, dict):
-            return {"ok": False, "conflict": True, "index": i,
-                    "error": "each edit must be an object", "rev": cur_rev, "room": st["key"]}
+            return refuse(MALFORMED, "each edit must be an object", index=i)
         selector = edit.get("selector")
         if selector is not None and not isinstance(selector, dict):
-            return {"ok": False, "conflict": True, "index": i,
-                    "error": "selector must be an object", "rev": cur_rev, "room": st["key"]}
+            return refuse(MALFORMED, "selector must be an object", index=i)
         if not isinstance(edit.get("text", ""), str):
-            return {"ok": False, "conflict": True, "index": i,
-                    "error": "replacement text must be a string",
-                    "rev": cur_rev, "room": st["key"]}
+            return refuse(MALFORMED, "replacement text must be a string", index=i)
         if "expect" in edit and not isinstance(edit["expect"], str):
-            return {"ok": False, "conflict": True, "index": i,
-                    "error": "expect must be a string",
-                    "rev": cur_rev, "room": st["key"]}
+            return refuse(MALFORMED, "expect must be a string", index=i)
 
     stale = base_rev is not None and base_rev != cur_rev
     resolved = []                                            # (from_cp, to_cp, txt, idx)
     for i, e in enumerate(edits or []):
         selector = _selector_of(e)
-        frm, to, kind, err = _resolve_selector(selector, s)
+        if not selector.get("by"):
+            return refuse(MALFORMED, _shape_error(e), index=i)
+        frm, to, kind, err, reason = _resolve_selector(selector, s)
         if err:
-            return {"ok": False, "conflict": True, "index": i, "error": err,
-                    "context": _selector_neighborhood(s, selector),
-                    "rev": cur_rev, "room": st["key"]}
+            return refuse(reason, err, index=i,
+                          context=_selector_neighborhood(s, selector))
         if stale and kind in {"lines", "range"} and "expect" not in e:
-            return {"ok": False, "conflict": True, "index": i,
-                    "error": "stale base_rev requires expect for positional selectors",
-                    "context": _neighborhood(s, frm, to),
-                    "rev": cur_rev, "room": st["key"]}
+            return refuse(RACE, "stale base_rev requires expect for positional selectors",
+                          index=i, context=_neighborhood(s, frm, to))
         expect = e.get("expect")
         if expect is not None and s[frm:to] != expect:
-            return {"ok": False, "conflict": True, "index": i, "error": "expect mismatch",
-                    "found": s[frm:to], "context": _neighborhood(s, frm, to),
-                    "rev": cur_rev, "room": st["key"]}
+            return refuse(RACE, "expect mismatch", index=i, found=s[frm:to],
+                          context=_neighborhood(s, frm, to))
         txt = _line_newline_fixup(kind, s, frm, to, e.get("text", "") or "")
         # Deleting the last line of a file with NO trailing newline: also consume the
         # preceding newline, else a phantom empty line is left behind (e.g. "a\nb\nc" -> "a\nb").
@@ -743,8 +770,7 @@ async def apply_edits(
     ordered = sorted(resolved, key=lambda r: (r[0], r[1]))
     for (a1, b1, *_), (a2, b2, *_) in zip(ordered, ordered[1:]):
         if _spans_overlap(a1, b1, a2, b2):
-            return {"ok": False, "conflict": True, "error": "overlapping edits in batch",
-                    "rev": cur_rev, "room": st["key"]}
+            return refuse(MALFORMED, "overlapping edits in batch")
     if require_single_file_typst:
         candidate = s
         for frm, to, txt, _idx in sorted(

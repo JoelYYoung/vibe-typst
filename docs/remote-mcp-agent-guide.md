@@ -94,6 +94,12 @@ Use the `vibe-typst` remote MCP connector and discover its current tools before 
 - Allow package imports such as `@preview/touying`; forbid local `.typ` imports/includes.
 - Keep every presentation in Touying form.
 - Read with `get_document`/`find_in_document`; edit only with `apply_edits` and the latest `rev`.
+  Every edit is `{"selector": {"by": "anchor", "text": "<exact snippet>"}, "text": "<replacement>"}`
+  — `{"by": "lines", ...}` and `{"by": "range", ...}` are the other selectors, and there is no
+  `old_text`/`new_text` form.
+- A human may be editing the same document in the browser at the same time. Both writers are
+  merged, so prefer anchor selectors over line or range numbers and add `expect` when a span must
+  not have changed under you.
 - Use generic file tools only for non-Typst assets.
 
 When a deck already has local `.typ` dependencies, consolidate them into `main.typ`, remove the
@@ -113,7 +119,9 @@ dependencies, verify the rendered result, and call `delete_file` to recoverably 
    then mark the comment done. Dismiss only if unclear, obsolete, or already resolved.
 7. Export only when requested and report the project `web_url` for human review.
 
-On `REVISION_CONFLICT`, re-read `main.typ` and re-aim the edit. On
+On `EDIT_REJECTED`, the edit itself was wrong: read `error.details` for which edit failed and the
+live text around it, then fix the edit — re-sending it unchanged fails again. On
+`REVISION_CONFLICT`, the document really moved: re-read `main.typ` and re-aim the edit. On
 `PROJECT_CONTEXT_CHANGED` or `PROJECT_HANDLE_EXPIRED`, call `open_project` again and re-read.
 Never force or blindly retry an overwrite.
 
@@ -152,6 +160,9 @@ Touying, renders the expected pages, has no unintended overflow or clipping, and
 The live server project is the source of truth. Return the `web_url` from `open_project` when a
 human needs to review the result; never expose the token or opaque `project_handle`.
 
+- `EDIT_REJECTED`: the batch was refused because the edit was malformed or its selector no longer
+  matches. `error.details` carries the failing `index`, the live `context`, and — for a malformed
+  edit — the `expected_shape`. Fix the edit; do not retry it unchanged.
 - `REVISION_CONFLICT`: re-read `main.typ`, obtain the new `rev`, and recompute the edit.
 - `PROJECT_CONTEXT_CHANGED` or `PROJECT_HANDLE_EXPIRED`: call `open_project` again, retain the new
   handle, and re-read before changing anything.
