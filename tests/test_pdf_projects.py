@@ -516,16 +516,66 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typst.status_code, 200, typst.text)
         typst_id = typst.json()["id"]
 
-        for route in ("/api/state", "/api/render-version", "/api/slide-map",
-                      "/api/pdf/transcripts"):
+        # PDF-only routes refuse a Typst project rather than inventing an answer for it.
+        for route in ("/api/slide-map", "/api/pdf/transcripts"):
             with self.subTest(route=route):
                 refused = await self.client.get(f"{route}?project_id={typst_id}")
                 self.assertEqual(refused.status_code, 400, refused.text)
                 self.assertIn("not a PDF project", refused.text)
 
+        # The shared deck routes serve whichever kind the project actually is.
+        for route in ("/api/state", "/api/render-version"):
+            with self.subTest(route=route):
+                served = await self.client.get(f"{route}?project_id={typst_id}")
+                self.assertEqual(served.status_code, 200, served.text)
+
         missing = await self.client.get("/api/state?project_id=deadbeefcafe")
         self.assertEqual(missing.status_code, 400, missing.text)
         self.assertIn("project not found", missing.text)
+
+    async def test_a_non_active_typst_deck_keeps_its_own_compiler_and_pages(self):
+        """Compiling happens on the server and its output is per deck on disk, so a tab watching
+        a project that is no longer "active" must still get that deck's own fresh pages — not
+        whichever project some other tab opened last."""
+        first = await self.client.post("/api/projects", json={"name": "Alpha"})
+        second = await self.client.post("/api/projects", json={"name": "Beta"})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+        alpha, beta = first.json()["id"], second.json()["id"]
+
+        started = []
+        with patch.object(self.app.resolver, "start",
+                          side_effect=lambda path=None: started.append(path) or {}):
+            self.assertEqual(
+                (await self.client.post(f"/api/projects/{alpha}/open")).status_code, 200)
+            self.assertEqual(
+                (await self.client.post(f"/api/projects/{beta}/open")).status_code, 200)
+            started.clear()
+
+            # Beta is active; a tab still watching Alpha addresses its own deck.
+            state = (await self.client.get(f"/api/state?project_id={alpha}")).json()
+            self.assertEqual(state["project_name"], "Alpha")
+            self.assertEqual(state["project_type"], "typst")
+            # The live source/CRDT still belong to the active project, and this says so rather
+            # than advertising a room the websocket would reject.
+            self.assertFalse(state["live_editor"])
+            self.assertNotIn("room", state)
+
+            version = (await self.client.get(
+                f"/api/render-version?project_id={alpha}")).json()
+            self.assertIn("preview_running", version)
+            self.assertNotIn("room", version)
+
+        # Both reads re-established ALPHA's compiler, addressed by its own main.typ.
+        self.assertTrue(started)
+        alpha_main = Path(self.root / alpha / "main.typ").resolve()
+        self.assertTrue(all(Path(path).resolve() == alpha_main for path in started))
+
+        # The active project is untouched by the background tab, and still gets the live view.
+        active = (await self.client.get("/api/state")).json()
+        self.assertEqual(active["project_name"], "Beta")
+        self.assertTrue(active["live_editor"])
+        self.assertIn("room", active)
 
     async def test_a_presenter_can_address_a_project_this_process_never_activated(self):
         """Pages were only ever rendered on activation. A second presenter may address a project
@@ -2702,7 +2752,9 @@ class PdfRuntimeApiTest(unittest.IsolatedAsyncioTestCase):
         with (
             patch.object(self.app.projects_mod, "get_project", return_value=self.info),
             patch.object(self.app.resolver, "start") as resolver_start,
-            patch.object(self.app.resolver, "stop") as resolver_stop,
+            # A PDF activation retires EVERY Typst deck, not just the active one: it runs after
+            # the runtime already points at the PDF, and the docstore teardown is global anyway.
+            patch.object(self.app.resolver, "stop_all") as resolver_stop,
             patch.object(self.app.docstore, "ensure_room") as ensure_room,
             patch.object(self.app.docstore, "flush_now") as flush_now,
             patch.object(self.app.store, "set_path") as set_store_path,

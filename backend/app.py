@@ -305,13 +305,13 @@ def _target_pdf_identity(info: dict, pdf_path: Path,
     )
 
 
-def _addressed_pdf_identity(project_id: str) -> _PdfIdentity:
-    """Resolve ONE project's PDF by id, ignoring whichever project happens to be active.
+def _addressed_document(project_id: str) -> tuple[str, dict, Path]:
+    """Resolve ONE project by id, ignoring whichever project happens to be active.
 
-    Everything a PDF read or transcript write touches below this point is already keyed per
-    project — the render directory (`runtime.render_dir`), the recorded render generation, and
-    the write lock. Only the *choice* of target was global, which is why a second browser tab
-    opening another project broke the first tab's presenter.
+    Everything a read touches below this point is already keyed per project — the render
+    directory (`runtime.render_dir`), the recorded PDF render generation, the project write
+    lock, and now the deck's compiler. Only the *choice* of target was global, which is why a
+    second browser tab opening another project froze the first tab.
     """
     try:
         info = projects_mod.get_project(project_id)
@@ -319,10 +319,33 @@ def _addressed_pdf_identity(project_id: str) -> _PdfIdentity:
         raise ValueError("project not found") from exc
     if info.get("archived"):
         raise ValueError("project is archived")
-    project_type, pdf_path = _project_document(info)
+    project_type, main_path = _project_document(info)
+    return project_type, info, main_path
+
+
+def _addressed_pdf_identity(project_id: str) -> _PdfIdentity:
+    """Resolve one project's PDF by id. Refuses anything that is not a PDF project."""
+    project_type, info, pdf_path = _addressed_document(project_id)
     if project_type != "pdf":
         raise ValueError("project is not a PDF project")
     return _target_pdf_identity(info, pdf_path, addressed=True)
+
+
+def _addressed_typst_document(project_id: str) -> tuple[dict, Path]:
+    """Resolve one project's main .typ by id. Refuses anything that is not a Typst project."""
+    project_type, info, main_path = _addressed_document(project_id)
+    if project_type != "typst":
+        raise ValueError("project is not a Typst project")
+    return info, main_path
+
+
+def _active_document_is(path: Path) -> bool:
+    """Whether an addressed document happens to BE the active one — then it gets the full
+    live-editor view rather than the narrower addressed one."""
+    try:
+        return runtime.current_file().resolve() == Path(path).resolve()
+    except Exception:
+        return False
 
 
 def _revalidate_pdf_identity(expected: _PdfIdentity) -> None:
@@ -452,7 +475,10 @@ def _prepare_locked_pdf(expected: _PdfIdentity, *, require_active: bool) -> tupl
 
 
 def _stop_typst_services_for_pdf() -> None:
-    resolver.stop()
+    # Retires EVERY deck, not just the active one: this runs after the runtime already points at
+    # the PDF, and the docstore/comment-store teardown below is global anyway. Each Typst deck
+    # restarts on the next request that addresses it.
+    resolver.stop_all()
     try:
         store.close()
     except Exception:
@@ -523,7 +549,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        resolver.stop()
+        resolver.stop_all()
         await docstore.stop()
 
 
@@ -547,22 +573,33 @@ def _require_typst_mode() -> None:
         raise HTTPException(400, "endpoint is unavailable for PDF projects")
 
 
-def _typst_pipeline_live() -> bool:
-    """Whether the active Typst document still has a compiler process behind it."""
-    return runtime.document_type() == "typst" and bool(resolver.status().get("running"))
+def _typst_pipeline_live(path: Path | None = None) -> bool:
+    """Whether a Typst deck still has a compiler process behind it (default: the active one)."""
+    if path is None and runtime.document_type() != "typst":
+        return False
+    return bool(resolver.status(path).get("running"))
 
 
-def _ensure_typst_pipeline() -> None:
-    """Restart a dead resolver for the project that is still open.
+def _ensure_typst_pipeline(path: Path | None = None) -> None:
+    """Restart a dead compiler for a deck that is still being looked at.
 
-    The resolver is shared by every client of a project, but any ONE of them can stop it:
-    close_project() releases it so a project's files aren't held open, and the child can also
-    die on its own. Meanwhile the browser, the in-container MCP, and remote agents keep editing
-    the same document — their edits still reach disk, but with no compiler every preview freezes
-    at the last render while /api/render-version keeps reporting `error: null`, so nothing
-    surfaces the failure. Re-establish the compiler before observing or driving the preview.
-    Only while a project is genuinely open: a deliberate close must still release the files.
+    A deck's compiler can stop for reasons that have nothing to do with the client asking for
+    it: close_project() releases it so a project's files aren't held open, a PDF activation
+    retires every Typst deck, and the child can die on its own. Meanwhile the browser, the
+    in-container MCP, and remote agents keep editing — their edits still reach disk, but with no
+    compiler every preview freezes at the last render while /api/render-version keeps reporting
+    `error: null`, so nothing surfaces the failure. Re-establish the compiler before observing or
+    driving a preview.
+
+    An ADDRESSED deck (`path`) is asked for by a tab that is looking at it, which is the whole
+    signal needed. The ACTIVE deck additionally requires an open project, so a deliberate
+    close_project() still releases the files instead of being undone by a stray poll.
     """
+    if path is not None:
+        if Path(path).suffix.lower() != ".typ" or _typst_pipeline_live(path):
+            return
+        resolver.start(path)
+        return
     if _active_project is None or not _has_valid_file():
         return
     if runtime.document_type() != "typst" or _typst_pipeline_live():
@@ -624,10 +661,68 @@ async def yjs_ws(websocket: WebSocket, room: str):
 
 
 # ---------------------------------------------------------------- state / files
+def _active_typst_state() -> dict:
+    """The live editor's view of the active deck: source, CRDT room, comment store, preview."""
+    _ensure_typst_pipeline()
+    return {
+        "project": str(runtime.project_dir()),
+        "project_name": (_active_project or {}).get("name", ""),
+        "project_type": "typst",
+        "mode": app_config.APP_MODE,
+        "file": str(runtime.current_file()),
+        "main": runtime.current_main(),
+        "room": docstore.room_name(),
+        "store": str(runtime.store_path()),
+        "ppi": PPI,
+        "source": current_source(),
+        "pages": typst_service.list_pages(),
+        "tokens": typst_service.page_tokens(),
+        "preview": resolver.status(),
+        "live_editor": True,
+        "workdir_ready": workdir.is_ready(),
+        "external_edit_seq": docstore.external_edit_seq,
+        **_active_context(),
+    }
+
+
+def _addressed_typst_state(info: dict, main_path: Path) -> dict:
+    """A NON-active Typst deck: its own compiler and its own rendered pages.
+
+    Deliberately narrower than the active view. The live source, its CRDT room, and the comment
+    store still follow the single active project, so advertising a `room` here would invite a
+    websocket the server rejects. `live_editor: false` says so instead of pretending.
+    """
+    _ensure_typst_pipeline(main_path)
+    return {
+        "project": str(main_path.parent),
+        "project_name": info.get("name", ""),
+        "project_type": "typst",
+        "mode": app_config.APP_MODE,
+        "file": str(main_path),
+        "main": main_path.name,
+        "ppi": PPI,
+        "source": "",
+        "pages": typst_service.list_pages(main_path),
+        "tokens": typst_service.page_tokens(main_path),
+        "preview": resolver.status(main_path),
+        "live_editor": False,
+        **_active_context(),
+    }
+
+
 @app.get("/api/state")
 def state(project_id: Optional[str] = None):
-    # `project_id` addresses ONE PDF project explicitly, so a presenter tab keeps reading its own
-    # project while another one is active. Omitted, this is the active document as before.
+    # `project_id` addresses ONE project explicitly, so a tab keeps reading its own project while
+    # another one is active. Omitted, this is the active document as before.
+    if project_id:
+        try:
+            kind, info, main_path = _addressed_document(project_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if kind == "typst":
+            if _active_document_is(main_path):
+                return _active_typst_state()
+            return _addressed_typst_state(info, main_path)
     if project_id or runtime.document_type() == "pdf":
         try:
             expected = _capture_pdf_identity(project_id)
@@ -654,29 +749,26 @@ def state(project_id: Optional[str] = None):
             return _locked_pdf_observation(observe, expected, recorded_render=True)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-    _ensure_typst_pipeline()
-    return {
-        "project": str(runtime.project_dir()),
-        "project_name": (_active_project or {}).get("name", ""),
-        "project_type": "typst",
-        "mode": app_config.APP_MODE,
-        "file": str(runtime.current_file()),
-        "main": runtime.current_main(),
-        "room": docstore.room_name(),
-        "store": str(runtime.store_path()),
-        "ppi": PPI,
-        "source": current_source(),
-        "pages": typst_service.list_pages(),
-        "tokens": typst_service.page_tokens(),
-        "preview": resolver.status(),
-        "workdir_ready": workdir.is_ready(),
-        "external_edit_seq": docstore.external_edit_seq,
-        **_active_context(),
-    }
+    return _active_typst_state()
 
 
 @app.get("/api/render-version")
 def render_version(project_id: Optional[str] = None):
+    if project_id:
+        try:
+            kind, _info, main_path = _addressed_document(project_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if kind == "typst" and not _active_document_is(main_path):
+            # A tab watching a NON-active deck: its own compiler, its own rendered pages. No
+            # `room`/`external_edit_seq` — the live CRDT still belongs to the active project.
+            _ensure_typst_pipeline(main_path)
+            st = resolver.status(main_path)
+            return {"version": st["version"],
+                    "pages": typst_service.list_pages(main_path),
+                    "tokens": typst_service.page_tokens(main_path),
+                    "error": st.get("error"),
+                    "preview_running": bool(st.get("running"))}
     if project_id or runtime.document_type() == "pdf":
         try:
             expected = _capture_pdf_identity(project_id)
@@ -1714,7 +1806,15 @@ async def compile_():
 def serve_render(name: str, project_id: Optional[str] = None):
     if "/" in name or ".." in name:
         raise HTTPException(400, "bad name")
-    if project_id or runtime.document_type() == "pdf":
+    typst_render = None
+    if project_id:
+        try:
+            kind, _info, main_path = _addressed_document(project_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if kind == "typst":
+            typst_render = typst_service.render_path(name, main_path)
+    if typst_render is None and (project_id or runtime.document_type() == "pdf"):
         try:
             expected = _capture_pdf_identity(project_id)
             def open_page(_pdf_path, _page_count):
@@ -1729,7 +1829,7 @@ def serve_render(name: str, project_id: Optional[str] = None):
         return StreamingResponse(stream, media_type="image/png",
                                  headers={"Cache-Control": "no-cache"},
                                  background=BackgroundTask(stream.close))
-    p = typst_service.render_path(name)
+    p = typst_render if typst_render is not None else typst_service.render_path(name)
     if not p.exists():
         raise HTTPException(404)
     return FileResponse(p, headers={"Cache-Control": "no-cache"})

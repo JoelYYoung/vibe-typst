@@ -166,7 +166,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   // One projection, always: the constant window name makes a second presenter TAKE OVER the
   // existing audience window rather than open a rival one.
   const openProjection = () => window.open(
-    projectionUrl(undefined, api.pdfProjectScope()),
+    projectionUrl(undefined, api.projectScope()),
     'tcb-projection',
     'width=1280,height=720',
   )

@@ -1575,6 +1575,139 @@ class ProjectOpenMigrationRegressionTest(unittest.IsolatedAsyncioTestCase):
                 app.runtime._state["file"] = previous_file
                 app._active_project = previous_project
 
+    async def test_each_open_deck_keeps_its_own_compiler(self):
+        """One compiler followed "the active document", so opening a second project stopped
+        compiling the first and every tab still showing it froze at its last render. Rendered
+        pages were always per deck on disk — the compilers are now too, so a compile done for one
+        project stays current and reusable by whichever tab is watching it."""
+        import resolver
+
+        with tempfile.TemporaryDirectory() as td:
+            first = Path(td) / "alpha" / "main.typ"
+            second = Path(td) / "beta" / "main.typ"
+            for path in (first, second):
+                path.parent.mkdir(parents=True)
+                path.write_text("#slide[deck]\n", encoding="utf-8")
+
+            spawned = []
+
+            class _FakeProc:
+                def __init__(self, argv):
+                    self.argv = argv
+                    self.stdout = iter(())
+                    self.stdin = None
+                    self._returncode = None
+
+                def poll(self):
+                    return self._returncode
+
+                def terminate(self):
+                    self._returncode = 0
+
+                def wait(self, timeout=None):
+                    self._returncode = 0
+                    return 0
+
+                def kill(self):
+                    self._returncode = 0
+
+            def fake_popen(argv, **kwargs):
+                proc = _FakeProc(argv)
+                spawned.append(proc)
+                return proc
+
+            previous = dict(resolver._decks)
+            resolver._decks.clear()
+            try:
+                with (
+                    patch.object(resolver, "_bin", return_value=Path(__file__)),
+                    patch.object(resolver.subprocess, "Popen", side_effect=fake_popen),
+                    patch.object(resolver.threading, "Thread"),
+                ):
+                    resolver.start(first)
+                    resolver.start(second)
+
+                    # Two decks, two compilers, each pointed at its own root and render dir.
+                    self.assertEqual(len(spawned), 2)
+                    roots = [Path(proc.argv[1]) for proc in spawned]
+                    self.assertEqual(
+                        roots, [first.parent.resolve(), second.parent.resolve()]
+                    )
+                    # argv = [bin, root, rel, "serve", render_dir] — separate render dirs.
+                    self.assertNotEqual(spawned[0].argv[4], spawned[1].argv[4])
+                    self.assertTrue(resolver.status(first)["running"])
+                    self.assertTrue(resolver.status(second)["running"])
+
+                    # Starting an already-live deck reuses it instead of respawning.
+                    resolver.start(first)
+                    self.assertEqual(len(spawned), 2)
+
+                    # Stopping one deck leaves the other compiling.
+                    resolver.stop(first)
+                    self.assertFalse(resolver.status(first)["running"])
+                    self.assertTrue(resolver.status(second)["running"])
+                    self.assertEqual(len(resolver.open_decks()), 1)
+
+                    resolver.stop_all()
+                    self.assertEqual(resolver.open_decks(), [])
+            finally:
+                resolver.stop_all()
+                resolver._decks.clear()
+                resolver._decks.update(previous)
+
+    async def test_open_decks_are_capped_and_retire_least_recently_used(self):
+        """A compiler holds a whole typst world, so open projects must not grow them without
+        bound. An evicted deck's pages stay on disk and it restarts on the next request."""
+        import resolver
+
+        with tempfile.TemporaryDirectory() as td:
+            decks = []
+            for index in range(resolver.MAX_DECKS + 1):
+                path = Path(td) / f"deck{index}" / "main.typ"
+                path.parent.mkdir(parents=True)
+                path.write_text("#slide[deck]\n", encoding="utf-8")
+                decks.append(path)
+
+            class _FakeProc:
+                def __init__(self):
+                    self.stdout = iter(())
+                    self.stdin = None
+                    self._returncode = None
+
+                def poll(self):
+                    return self._returncode
+
+                def terminate(self):
+                    self._returncode = 0
+
+                def wait(self, timeout=None):
+                    self._returncode = 0
+                    return 0
+
+                def kill(self):
+                    self._returncode = 0
+
+            previous = dict(resolver._decks)
+            resolver._decks.clear()
+            try:
+                with (
+                    patch.object(resolver, "_bin", return_value=Path(__file__)),
+                    patch.object(resolver.subprocess, "Popen",
+                                 side_effect=lambda argv, **kwargs: _FakeProc()),
+                    patch.object(resolver.threading, "Thread"),
+                ):
+                    for path in decks:
+                        resolver.start(path)
+
+                    self.assertEqual(len(resolver.open_decks()), resolver.MAX_DECKS)
+                    # The first one opened is the one retired; the newest is still compiling.
+                    self.assertFalse(resolver.status(decks[0])["running"])
+                    self.assertTrue(resolver.status(decks[-1])["running"])
+            finally:
+                resolver.stop_all()
+                resolver._decks.clear()
+                resolver._decks.update(previous)
+
     async def test_setup_workdir_endpoint_also_migrates_vcs(self):
         import app
 

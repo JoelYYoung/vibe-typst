@@ -28,23 +28,23 @@ test('a projection recovers its project from its own URL', () => {
 test('PDF requests name their project while Typst requests keep the active document', async () => {
   const api = await import('../src/api.js')
 
-  api.setPdfProjectScope(null)
-  assert.equal(api.pdfProjectScope(), null)
+  api.setProjectScope(null)
+  assert.equal(api.projectScope(), null)
   // Unscoped: exactly the URLs the Typst editor has always sent.
   assert.equal(api.renderUrl('page-1.svg', 'tok'), '/api/render/page-1.svg?v=tok')
 
-  api.setPdfProjectScope('project-1')
-  assert.equal(api.pdfProjectScope(), 'project-1')
+  api.setProjectScope('project-1')
+  assert.equal(api.projectScope(), 'project-1')
   // The render URL already carries a cache-busting token, so the scope appends with `&`.
   assert.equal(
     api.renderUrl('page-1.png', 'tok'),
     '/api/render/page-1.png?v=tok&project_id=project-1',
   )
 
-  api.setPdfProjectScope('a/b')
+  api.setProjectScope('a/b')
   assert.equal(
     api.renderUrl('page-1.png', 'tok'),
     '/api/render/page-1.png?v=tok&project_id=a%2Fb',
   )
-  api.setPdfProjectScope(null)
+  api.setProjectScope(null)
 })

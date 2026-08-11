@@ -1,19 +1,20 @@
 import { workspacePath } from './workspaceRouting.js'
 
-// The PDF project THIS tab is looking at. One workspace backend serves several open projects,
-// and only one of them is "active" at a time, so a presenter that asked for "the active PDF"
-// started reading another tab's project the moment that tab opened one. Every PDF read and
-// transcript write below names its project instead. Module scope is per tab, which is exactly
-// the granularity we want; the projection window recovers it from its own URL.
-let pdfProject = null
-export const setPdfProjectScope = (id) => { pdfProject = id || null }
-export const pdfProjectScope = () => pdfProject
+// The project THIS tab is looking at. One workspace backend serves several open projects but
+// treats exactly one as "active", so a tab that asked for "the active document" started reading
+// another tab's project the moment that tab opened one — its pages, previews and transcript
+// saves followed the wrong deck. Every deck-scoped request below names its project instead.
+// Module scope is per tab, which is exactly the granularity we want; the projection window
+// recovers it from its own URL.
+let projectScopeId = null
+export const setProjectScope = (id) => { projectScopeId = id || null }
+export const projectScope = () => projectScopeId
 
-// Append the tab's project to a PDF-scoped URL. Typst requests carry no scope and keep
-// resolving against the active document, as they always have.
+// Append the tab's project to a deck-scoped URL. Unscoped requests keep resolving against the
+// active document, which is what every existing client already asks for.
 function scoped(path) {
-  if (!pdfProject) return path
-  return `${path}${path.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(pdfProject)}`
+  if (!projectScopeId) return path
+  return `${path}${path.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(projectScopeId)}`
 }
 
 const J = async (r) => {

@@ -35,7 +35,16 @@ const Chevron = ({ dir = 'right', size = 15 }) => (
 let _rvSeq = Date.now()
 const nextRv = () => (_rvSeq += 1)
 
-export default function App({ onBackToProjects }) {
+export default function App({ project, onBackToProjects }) {
+  // Name this tab's deck on every scoped request before anything polls, so another tab opening a
+  // different project cannot redirect this one's pages and previews. Each open deck keeps its own
+  // compiler on the server, so a compile done for this project stays reusable by this tab.
+  api.setProjectScope(project?.id)
+  useEffect(() => {
+    api.setProjectScope(project?.id)
+    return () => api.setProjectScope(null)
+  }, [project?.id])
+
   const [meta, setMeta] = useState({ project: '', project_name: '', mode: 'local', file: '', main: '', room: '', store: '' })
   const [pages, setPages] = useState([])
   const [tokens, setTokens] = useState({}) // per-page content token {name: hash} → SVG URL cache-buster

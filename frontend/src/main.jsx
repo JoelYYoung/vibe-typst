@@ -109,7 +109,7 @@ function Root() {
 
 // `?project` = the audience/projector window (just the current slide, follows the presenter).
 const isProjection = new URLSearchParams(location.search).has('project')
-// A projection opened from a PDF presenter must read THAT project's pages, not whichever
-// project the workspace last made active for some other tab.
-if (isProjection) api.setPdfProjectScope(projectionProjectId(location.search))
+// A projection opened from a presenter must read THAT project's pages, not whichever project
+// the workspace last made active for some other tab.
+if (isProjection) api.setProjectScope(projectionProjectId(location.search))
 createRoot(document.getElementById('root')).render(isProjection ? <Projection /> : <Root />)

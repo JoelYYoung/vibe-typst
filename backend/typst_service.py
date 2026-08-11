@@ -22,8 +22,8 @@ def write_source(text: str) -> None:
     main_path().write_text(text, encoding="utf-8")
 
 
-def list_pages() -> list[str]:
-    d = runtime.render_dir()
+def list_pages(path=None) -> list[str]:
+    d = runtime.render_dir(path)
     if not d.exists():
         return []
     pages = list(d.glob("page-*.svg"))
@@ -31,11 +31,11 @@ def list_pages() -> list[str]:
     return [p.name for p in pages]
 
 
-def page_tokens() -> dict[str, str]:
+def page_tokens(path=None) -> dict[str, str]:
     """Content hashes for rendered pages, used as frontend SVG cache-busters."""
-    d = runtime.render_dir()
+    d = runtime.render_dir(path)
     out = {}
-    for name in list_pages():
+    for name in list_pages(path):
         p = d / name
         try:
             out[name] = hashlib.sha1(p.read_bytes()).hexdigest()[:12]
@@ -44,8 +44,8 @@ def page_tokens() -> dict[str, str]:
     return out
 
 
-def render_path(name: str):
-    return runtime.render_dir() / name
+def render_path(name: str, path=None):
+    return runtime.render_dir(path) / name
 
 
 def compile_slides(fmt: str = "svg") -> dict:
