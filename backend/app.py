@@ -752,6 +752,18 @@ def state(project_id: Optional[str] = None):
     return _active_typst_state()
 
 
+def _active_typst_render_version() -> dict:
+    _ensure_typst_pipeline()
+    st = resolver.status()
+    return {"version": st["version"], "pages": typst_service.list_pages(),
+            "tokens": typst_service.page_tokens(),
+            "room": docstore.room_name(), "error": st.get("error"),
+            # A poller cannot tell a quiet deck from a dead compiler by `version` alone, and a
+            # frozen preview reads as a successful one. Report the pipeline itself.
+            "preview_running": bool(st.get("running")),
+            "external_edit_seq": docstore.external_edit_seq}
+
+
 @app.get("/api/render-version")
 def render_version(project_id: Optional[str] = None):
     if project_id:
@@ -759,7 +771,11 @@ def render_version(project_id: Optional[str] = None):
             kind, _info, main_path = _addressed_document(project_id)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if kind == "typst" and not _active_document_is(main_path):
+        if kind == "typst":
+            if _active_document_is(main_path):
+                # The active deck addressed by its own id — the editor's own tab. It must get the
+                # live view, NOT fall through to the PDF branch and be refused as "not a PDF".
+                return _active_typst_render_version()
             # A tab watching a NON-active deck: its own compiler, its own rendered pages. No
             # `room`/`external_edit_seq` — the live CRDT still belongs to the active project.
             _ensure_typst_pipeline(main_path)
@@ -788,15 +804,7 @@ def render_version(project_id: Optional[str] = None):
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-    _ensure_typst_pipeline()
-    st = resolver.status()
-    return {"version": st["version"], "pages": typst_service.list_pages(),
-            "tokens": typst_service.page_tokens(),
-            "room": docstore.room_name(), "error": st.get("error"),
-            # A poller cannot tell a quiet deck from a dead compiler by `version` alone, and a
-            # frozen preview reads as a successful one. Report the pipeline itself.
-            "preview_running": bool(st.get("running")),
-            "external_edit_seq": docstore.external_edit_seq}
+    return _active_typst_render_version()
 
 
 @app.get("/api/browse")

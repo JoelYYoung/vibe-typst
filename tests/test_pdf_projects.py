@@ -577,6 +577,18 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(active["live_editor"])
         self.assertIn("room", active)
 
+        # The editor's own tab now names its project too, so addressing the ACTIVE deck by id
+        # must return that same live view — not fall through and be refused as "not a PDF".
+        for route, key in (("/api/state", "live_editor"), ("/api/render-version", "room")):
+            with self.subTest(route=route):
+                scoped = await self.client.get(f"{route}?project_id={beta}")
+                self.assertEqual(scoped.status_code, 200, scoped.text)
+                self.assertIn(key, scoped.json())
+        self.assertEqual(
+            (await self.client.get(f"/api/state?project_id={beta}")).json(),
+            active,
+        )
+
     async def test_a_presenter_can_address_a_project_this_process_never_activated(self):
         """Pages were only ever rendered on activation. A second presenter may address a project
         that has not been active here (or not since a restart) and must still see its pages."""
