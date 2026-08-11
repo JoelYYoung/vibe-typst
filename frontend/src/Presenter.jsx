@@ -163,7 +163,13 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   const dirty = ready && script.draft !== script.base
   const editableTranscript = info.project_type === 'pdf' || info.slide_line || info.note_raw
   const mmss = `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`
-  const openProjection = () => window.open(projectionUrl(), 'tcb-projection', 'width=1280,height=720')
+  // One projection, always: the constant window name makes a second presenter TAKE OVER the
+  // existing audience window rather than open a rival one.
+  const openProjection = () => window.open(
+    projectionUrl(undefined, api.pdfProjectScope()),
+    'tcb-projection',
+    'width=1280,height=720',
+  )
 
   return (
     <div className="presenter">

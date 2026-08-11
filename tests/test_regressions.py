@@ -1487,6 +1487,94 @@ class ProjectOpenMigrationRegressionTest(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["ok"])
             migrate.assert_called_once_with(project.resolve())
 
+    async def test_reopening_a_project_whose_resolver_died_rebuilds_the_pipeline(self):
+        """Any client can stop the shared resolver — a browser tab returning to the project list
+        closes the project, and the child can crash on its own. While it is down, edits from the
+        browser/MCP/remote agent still reach disk but nothing recompiles, so every preview
+        silently freezes. Re-opening the project must restart it instead of reporting success."""
+        import app
+
+        with tempfile.TemporaryDirectory() as td:
+            project = Path(td)
+            main = project / "main.typ"
+            main.write_text("#slide[test]\n", encoding="utf-8")
+            info = {
+                "id": "project-id",
+                "name": "Project",
+                "path": str(project),
+                "main_file": "main.typ",
+            }
+
+            previous_file = app.runtime._state.get("file")
+            previous_project = app._active_project
+            try:
+                # Already "open": same project id, same current file — the short-circuit case.
+                app.runtime._state["file"] = str(main.resolve())
+                app._active_project = dict(info)
+                with (
+                    patch.object(app.projects_mod, "get_project", return_value=info),
+                    patch.object(app.runtime, "set_file"),
+                    patch.object(app.store, "set_path"),
+                    patch.object(app.runtime, "backup"),
+                    patch.object(app.docstore, "start", new=AsyncMock()),
+                    patch.object(app.docstore, "ensure_room", new=AsyncMock()),
+                    patch.object(app.workdir, "setup", return_value={}),
+                    patch.object(app.vcs, "migrate"),
+                    patch.object(app.resolver, "status", return_value={"running": False}),
+                    patch.object(app.resolver, "start") as start,
+                ):
+                    result = await app.open_project("project-id")
+                self.assertTrue(result["ok"])
+                start.assert_called_once()
+
+                # A live pipeline still short-circuits: no needless resolver churn per open.
+                with (
+                    patch.object(app.projects_mod, "get_project", return_value=info),
+                    patch.object(app.workdir, "setup", return_value={}),
+                    patch.object(app.vcs, "migrate"),
+                    patch.object(app.resolver, "status", return_value={"running": True}),
+                    patch.object(app.resolver, "start") as start,
+                ):
+                    result = await app.open_project("project-id")
+                self.assertTrue(result["ok"])
+                start.assert_not_called()
+            finally:
+                app.runtime._state["file"] = previous_file
+                app._active_project = previous_project
+
+    async def test_an_agent_edit_leaves_a_working_preview_behind_it(self):
+        """The browser can close the project after a remote agent opened it. The agent's edits
+        keep landing on disk, so the failure is invisible until someone looks at a preview."""
+        import app
+
+        with tempfile.TemporaryDirectory() as td:
+            main = Path(td) / "main.typ"
+            main.write_text("#slide[test]\n", encoding="utf-8")
+            previous_file = app.runtime._state.get("file")
+            previous_project = app._active_project
+            try:
+                app.runtime._state["file"] = str(main.resolve())
+                app._active_project = {"id": "project-id", "path": td}
+                with (
+                    patch.object(app.resolver, "status", return_value={"running": False}),
+                    patch.object(app.resolver, "start") as start,
+                ):
+                    app._ensure_typst_pipeline()
+                start.assert_called_once()
+
+                # A closed project must stay closed: close_project() releases the resolver so the
+                # project's files aren't held open, and a stray poll must not resurrect it.
+                app._active_project = None
+                with (
+                    patch.object(app.resolver, "status", return_value={"running": False}),
+                    patch.object(app.resolver, "start") as start,
+                ):
+                    app._ensure_typst_pipeline()
+                start.assert_not_called()
+            finally:
+                app.runtime._state["file"] = previous_file
+                app._active_project = previous_project
+
     async def test_setup_workdir_endpoint_also_migrates_vcs(self):
         import app
 

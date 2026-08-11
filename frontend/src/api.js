@@ -1,5 +1,21 @@
 import { workspacePath } from './workspaceRouting.js'
 
+// The PDF project THIS tab is looking at. One workspace backend serves several open projects,
+// and only one of them is "active" at a time, so a presenter that asked for "the active PDF"
+// started reading another tab's project the moment that tab opened one. Every PDF read and
+// transcript write below names its project instead. Module scope is per tab, which is exactly
+// the granularity we want; the projection window recovers it from its own URL.
+let pdfProject = null
+export const setPdfProjectScope = (id) => { pdfProject = id || null }
+export const pdfProjectScope = () => pdfProject
+
+// Append the tab's project to a PDF-scoped URL. Typst requests carry no scope and keep
+// resolving against the active document, as they always have.
+function scoped(path) {
+  if (!pdfProject) return path
+  return `${path}${path.includes('?') ? '&' : '?'}project_id=${encodeURIComponent(pdfProject)}`
+}
+
 const J = async (r) => {
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`
@@ -21,7 +37,7 @@ const PATCH = (url, body) =>
     body: JSON.stringify(body ?? {}),
   }).then(J)
 
-export const getState = () => fetch(workspacePath('/api/state')).then(J)
+export const getState = () => fetch(workspacePath(scoped('/api/state'))).then(J)
 
 // ── account (server mode only; served by the control plane, 404 in local mode) ──
 export const whoami = () => fetch('/whoami').then((r) => (r.ok ? r.json() : null)).catch(() => null)
@@ -61,7 +77,7 @@ export const browse = (path) => fetch(workspacePath('/api/browse' + (path ? `?pa
 export const openFile = (path) => POST('/api/open-file', { path })
 export const setupWorkdir = () => POST('/api/setup-workdir')
 export const compile = () => POST('/api/compile')
-export const renderVersion = () => fetch(workspacePath('/api/render-version')).then(J)
+export const renderVersion = () => fetch(workspacePath(scoped('/api/render-version'))).then(J)
 export const getDocument = (file) => fetch(workspacePath('/api/document' + (file ? `?file=${encodeURIComponent(file)}` : ''))).then(J)
 export const resolve = (page_no, x, y) => POST('/api/preview/resolve', { page_no, x, y })
 export const pageStart = (page_no) => POST('/api/preview/page-start', { page_no })
@@ -79,9 +95,10 @@ export const saveNote = (info, text) =>
     : createNote(info && info.slide_line, text, info && info.sub_index, info && info.sub_total)
 export const notesExportUrl = workspacePath('/api/notes/export')
 export const notesPdfpcUrl = workspacePath('/api/notes/pdfpc')
-export const getSlideMap = () => fetch(workspacePath('/api/slide-map')).then(J)
-export const getPdfTranscripts = () => fetch(workspacePath('/api/pdf/transcripts')).then(J)
-export const savePdfTranscript = (page, text) => PATCH(`/api/pdf/transcripts/${encodeURIComponent(page)}`, { text })
+export const getSlideMap = () => fetch(workspacePath(scoped('/api/slide-map'))).then(J)
+export const getPdfTranscripts = () => fetch(workspacePath(scoped('/api/pdf/transcripts'))).then(J)
+export const savePdfTranscript = (page, text) =>
+  PATCH(scoped(`/api/pdf/transcripts/${encodeURIComponent(page)}`), { text })
 
 export const getComments = (status, file) => {
   const q = new URLSearchParams()
@@ -101,7 +118,7 @@ export const terminalInfo = () => fetch(workspacePath('/api/terminal/info')).the
 // `v` is a per-page CONTENT token (hash of that page's bytes, from the backend). Same content
 // → same URL → browser cache hit (no refetch); changed content → new URL → fetched once.
 // Falls back to Date.now() only in the brief window before the first token arrives.
-export const renderUrl = (name, v) => workspacePath(`/api/render/${name}?v=${v ?? Date.now()}`)
+export const renderUrl = (name, v) => workspacePath(scoped(`/api/render/${name}?v=${v ?? Date.now()}`))
 
 // ── app state / config ──────────────────────────────────────────────────────
 export const getAppState = () => fetch(workspacePath('/api/app/state')).then(J)

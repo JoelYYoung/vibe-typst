@@ -15,6 +15,15 @@ import { shortPath, TerminalIcon } from './terminalUi.jsx'
 import { workspaceChannelName } from './workspaceRouting.js'
 
 export default function PdfWorkspace({ project, onBack }) {
+  // Name this tab's project on every PDF request before anything polls. Another tab opening a
+  // different project changes which one the workspace calls "active", and without this scope
+  // that silently redirected this presenter's reads and transcript saves at the other project.
+  api.setPdfProjectScope(project?.id)
+  useEffect(() => {
+    api.setPdfProjectScope(project?.id)
+    return () => api.setPdfProjectScope(null)
+  }, [project?.id])
+
   const [render, setRender] = useState({
     pages: [], tokens: {}, version: 0, generation: '', slideMap: [], orphans: [],
   })

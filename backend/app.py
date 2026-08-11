@@ -129,6 +129,12 @@ class _PdfIdentity:
     project_id: str | None
     project_name: str
     project_pdf: bool
+    # An ADDRESSED target was named by request (`project_id=…`) instead of read off the single
+    # active document, so it stays valid while another project is active. That is what lets two
+    # browser tabs present two different PDF projects at once: every render directory, render
+    # record, and write lock below is already keyed per project — only the *choice* of target
+    # used to be global.
+    addressed: bool = False
 
 
 def _project_document(info: dict) -> tuple[str, Path]:
@@ -249,8 +255,15 @@ def _pdf_identity(path: Path, project: dict | None = None) -> str:
     return f"{project_id}:{path.resolve()}"
 
 
-def _capture_pdf_identity() -> _PdfIdentity:
-    """Capture the active PDF target before waiting on its cross-process lock."""
+def _capture_pdf_identity(project_id: str | None = None) -> _PdfIdentity:
+    """Capture the PDF target before waiting on its cross-process lock.
+
+    With `project_id` the target is named by the request, so a presenter keeps working on its
+    own project while another one is active. Without it the caller means "whatever is active",
+    which is what the browser editor, the MCP, and every existing client already ask for.
+    """
+    if project_id:
+        return _addressed_pdf_identity(project_id)
     current = runtime.current_file().resolve()
     if runtime.document_type() != "pdf" or not current.is_file():
         raise ValueError("no active PDF document")
@@ -278,7 +291,8 @@ def _capture_pdf_identity() -> _PdfIdentity:
     )
 
 
-def _target_pdf_identity(info: dict, pdf_path: Path) -> _PdfIdentity:
+def _target_pdf_identity(info: dict, pdf_path: Path,
+                         *, addressed: bool = False) -> _PdfIdentity:
     return _PdfIdentity(
         project=pdf_path.parent,
         pdf=pdf_path,
@@ -287,11 +301,44 @@ def _target_pdf_identity(info: dict, pdf_path: Path) -> _PdfIdentity:
         project_id=info.get("id"),
         project_name=info.get("name", ""),
         project_pdf=True,
+        addressed=addressed,
     )
+
+
+def _addressed_pdf_identity(project_id: str) -> _PdfIdentity:
+    """Resolve ONE project's PDF by id, ignoring whichever project happens to be active.
+
+    Everything a PDF read or transcript write touches below this point is already keyed per
+    project — the render directory (`runtime.render_dir`), the recorded render generation, and
+    the write lock. Only the *choice* of target was global, which is why a second browser tab
+    opening another project broke the first tab's presenter.
+    """
+    try:
+        info = projects_mod.get_project(project_id)
+    except FileNotFoundError as exc:
+        raise ValueError("project not found") from exc
+    if info.get("archived"):
+        raise ValueError("project is archived")
+    project_type, pdf_path = _project_document(info)
+    if project_type != "pdf":
+        raise ValueError("project is not a PDF project")
+    return _target_pdf_identity(info, pdf_path, addressed=True)
 
 
 def _revalidate_pdf_identity(expected: _PdfIdentity) -> None:
     """Fail instead of redirecting a lock waiter to a newly active project."""
+    if expected.addressed:
+        # An addressed target is deliberately NOT the active document, so the active project
+        # says nothing about whether it is still valid. Re-confirm the project itself still
+        # names this exact PDF — that is what a concurrent rename, archive, or delete changes.
+        try:
+            info = projects_mod.get_project(expected.project_id or "")
+            _, pdf_path = _project_document(info)
+        except (FileNotFoundError, ValueError) as exc:
+            raise ValueError("addressed PDF project is no longer available") from exc
+        if info.get("archived") or pdf_path != expected.pdf:
+            raise ValueError("addressed PDF project changed while waiting")
+        return
     if runtime.document_type() != "pdf" or runtime.current_file().resolve() != expected.pdf:
         raise ValueError("active PDF changed while waiting")
     if expected.project_id is None:
@@ -500,6 +547,29 @@ def _require_typst_mode() -> None:
         raise HTTPException(400, "endpoint is unavailable for PDF projects")
 
 
+def _typst_pipeline_live() -> bool:
+    """Whether the active Typst document still has a compiler process behind it."""
+    return runtime.document_type() == "typst" and bool(resolver.status().get("running"))
+
+
+def _ensure_typst_pipeline() -> None:
+    """Restart a dead resolver for the project that is still open.
+
+    The resolver is shared by every client of a project, but any ONE of them can stop it:
+    close_project() releases it so a project's files aren't held open, and the child can also
+    die on its own. Meanwhile the browser, the in-container MCP, and remote agents keep editing
+    the same document — their edits still reach disk, but with no compiler every preview freezes
+    at the last render while /api/render-version keeps reporting `error: null`, so nothing
+    surfaces the failure. Re-establish the compiler before observing or driving the preview.
+    Only while a project is genuinely open: a deliberate close must still release the files.
+    """
+    if _active_project is None or not _has_valid_file():
+        return
+    if runtime.document_type() != "typst" or _typst_pipeline_live():
+        return
+    resolver.start()
+
+
 # ---------------------------------------------------------------- crdt websocket
 def _yjs_admission_is_current(expected_path: Path, room: str) -> bool:
     """Whether a websocket admission still names this exact live Typst lineage."""
@@ -555,10 +625,12 @@ async def yjs_ws(websocket: WebSocket, room: str):
 
 # ---------------------------------------------------------------- state / files
 @app.get("/api/state")
-def state():
-    if runtime.document_type() == "pdf":
+def state(project_id: Optional[str] = None):
+    # `project_id` addresses ONE PDF project explicitly, so a presenter tab keeps reading its own
+    # project while another one is active. Omitted, this is the active document as before.
+    if project_id or runtime.document_type() == "pdf":
         try:
-            expected = _capture_pdf_identity()
+            expected = _capture_pdf_identity(project_id)
             def observe(_pdf_path, _page_count):
                 pages = _pdf_pages(expected.pdf)
                 return {
@@ -582,6 +654,7 @@ def state():
             return _locked_pdf_observation(observe, expected, recorded_render=True)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+    _ensure_typst_pipeline()
     return {
         "project": str(runtime.project_dir()),
         "project_name": (_active_project or {}).get("name", ""),
@@ -603,10 +676,10 @@ def state():
 
 
 @app.get("/api/render-version")
-def render_version():
-    if runtime.document_type() == "pdf":
+def render_version(project_id: Optional[str] = None):
+    if project_id or runtime.document_type() == "pdf":
         try:
-            expected = _capture_pdf_identity()
+            expected = _capture_pdf_identity(project_id)
             return _locked_pdf_observation(
                 lambda _pdf_path, _page_count: {
                     "version": _pdf_render_version(expected.pdf, expected.identity),
@@ -623,10 +696,14 @@ def render_version():
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+    _ensure_typst_pipeline()
     st = resolver.status()
     return {"version": st["version"], "pages": typst_service.list_pages(),
             "tokens": typst_service.page_tokens(),
             "room": docstore.room_name(), "error": st.get("error"),
+            # A poller cannot tell a quiet deck from a dead compiler by `version` alone, and a
+            # frozen preview reads as a successful one. Report the pipeline itself.
+            "preview_running": bool(st.get("running")),
             "external_edit_seq": docstore.external_edit_seq}
 
 
@@ -1100,12 +1177,12 @@ async def create_note(request: Request):
 
 
 @app.get("/api/slide-map")
-async def slide_map():
+async def slide_map(project_id: Optional[str] = None):
     """Per-page presenter data: section, subslide index, and the **per-page transcript** for that
     page (authoritative, from touying's pdfpc mapping). Used by the inline notes + presenter."""
-    if runtime.document_type() == "pdf":
+    if project_id or runtime.document_type() == "pdf":
         try:
-            expected = _capture_pdf_identity()
+            expected = _capture_pdf_identity(project_id)
             def observe(_pdf_path, page_count):
                 transcripts = pdf_transcript.load(expected.pdf.parent, expected.pdf.name, page_count)
                 page_notes = transcripts.get("pages", {})
@@ -1194,10 +1271,26 @@ async def slide_map():
     return {"pages": out, "total": total, "orphans": orphans}
 
 
+def _ensure_addressed_pdf_render(expected: _PdfIdentity) -> None:
+    """Render an addressed project's pages the first time this process serves them.
+
+    Pages were only ever rendered when a project was *activated*. A second presenter addresses a
+    project that may never have been active in this process (or not since a restart), so without
+    this it would poll an empty page list forever. Takes the project's own write lock, so it must
+    run before the observation lock below rather than nested inside it.
+    """
+    if not expected.addressed:
+        return
+    if _pdf_render_record(expected.pdf, expected.identity) is not None:
+        return
+    _prepare_locked_pdf(expected, require_active=False)
+
+
 def _locked_pdf_observation(operation, expected: _PdfIdentity | None = None,
                             recorded_render: bool = False):
     """Observe an active PDF generation while the publish pair is locked and recovered."""
     expected = expected or _capture_pdf_identity()
+    _ensure_addressed_pdf_render(expected)
     with pdf_service.project_write_lock(expected.project):
         pdf_service.recover_pending(expected.project, expected.render)
         _revalidate_pdf_identity(expected)
@@ -1222,9 +1315,9 @@ async def _json_object(request: Request) -> dict:
 
 
 @app.get("/api/pdf/transcripts")
-def get_pdf_transcripts():
+def get_pdf_transcripts(project_id: Optional[str] = None):
     try:
-        expected = _capture_pdf_identity()
+        expected = _capture_pdf_identity(project_id)
         return _locked_pdf_observation(
             lambda _pdf_path, page_count: pdf_transcript.load(
                 expected.project, "document.pdf", page_count
@@ -1236,7 +1329,8 @@ def get_pdf_transcripts():
 
 
 @app.patch("/api/pdf/transcripts/{page}")
-async def patch_pdf_transcript(page: str, request: Request):
+async def patch_pdf_transcript(page: str, request: Request,
+                               project_id: Optional[str] = None):
     body = await _json_object(request)
     if set(body) != {"text"} or not isinstance(body.get("text"), str):
         raise HTTPException(400, "body must contain only string text")
@@ -1244,7 +1338,7 @@ async def patch_pdf_transcript(page: str, request: Request):
         page_no = int(page)
         if str(page_no) != page:
             raise ValueError("page must be a positive integer")
-        expected = _capture_pdf_identity()
+        expected = _capture_pdf_identity(project_id)
         def patch_sync():
             return _locked_pdf_observation(
                 lambda _pdf_path, page_count: pdf_transcript.set_page(
@@ -1258,12 +1352,13 @@ async def patch_pdf_transcript(page: str, request: Request):
 
 
 @app.post("/api/pdf/transcripts/batch")
-async def patch_pdf_transcripts(request: Request):
+async def patch_pdf_transcripts(request: Request,
+                                project_id: Optional[str] = None):
     body = await _json_object(request)
     if set(body) != {"updates"}:
         raise HTTPException(400, "body must contain only updates")
     try:
-        expected = _capture_pdf_identity()
+        expected = _capture_pdf_identity(project_id)
         def patch_sync():
             return _locked_pdf_observation(
                 lambda _pdf_path, page_count: pdf_transcript.set_pages(
@@ -1277,13 +1372,14 @@ async def patch_pdf_transcripts(request: Request):
 
 
 @app.post("/api/pdf/transcripts/restore")
-async def restore_pdf_orphan_transcript(request: Request):
+async def restore_pdf_orphan_transcript(request: Request,
+                                        project_id: Optional[str] = None):
     """Restore a retained transcript entry to a current PDF page."""
     body = await _json_object(request)
     if set(body) != {"orphan_page", "target_page"}:
         raise HTTPException(400, "body must contain only orphan_page and target_page")
     try:
-        expected = _capture_pdf_identity()
+        expected = _capture_pdf_identity(project_id)
 
         def restore_sync():
             return _locked_pdf_observation(
@@ -1573,6 +1669,9 @@ async def edit(request: Request):
         )
     else:
         raise HTTPException(400, f"unknown op {kind!r}")
+    # An edit from the MCP or a remote agent must leave a working preview behind it, even when
+    # the browser closed the project after the agent opened it.
+    await asyncio.to_thread(_ensure_typst_pipeline)
     return r
 
 
@@ -1592,6 +1691,7 @@ async def compile_():
     # We key off `seq`, which bumps on every compile whether it rendered or errored, so a
     # pre-existing error from the previous compile never short-circuits the wait.
     _require_typst_mode()
+    await asyncio.to_thread(_ensure_typst_pipeline)
     seq0 = resolver.status()["seq"]
     await docstore.flush_now()
     waited = 0.0
@@ -1611,12 +1711,12 @@ async def compile_():
 
 
 @app.get("/api/render/{name}")
-def serve_render(name: str):
+def serve_render(name: str, project_id: Optional[str] = None):
     if "/" in name or ".." in name:
         raise HTTPException(400, "bad name")
-    if runtime.document_type() == "pdf":
+    if project_id or runtime.document_type() == "pdf":
         try:
-            expected = _capture_pdf_identity()
+            expected = _capture_pdf_identity(project_id)
             def open_page(_pdf_path, _page_count):
                 if name not in _pdf_pages(expected.pdf):
                     return None
@@ -1872,6 +1972,11 @@ async def open_project(project_id: str):
             main_path, _pdf_identity(main_path, info)
         )
         same_runtime = same_runtime and render_record is not None
+    else:
+        # Re-opening a project whose resolver died must REBUILD the pipeline, not report
+        # success: reporting it left the deck compiling to nothing, so every preview stayed
+        # frozen at the last render no matter how many times the project was opened again.
+        same_runtime = same_runtime and _typst_pipeline_live()
     if same_runtime:
         _set_active_project(info)
         return {"ok": True, "project": info, **_active_context()}

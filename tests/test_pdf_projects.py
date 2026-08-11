@@ -445,6 +445,106 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typst_state["main"], "main.typ")
         self.assertIn("Original Typst flow", typst_state["source"])
 
+    async def test_two_pdf_projects_are_presented_and_transcribed_at_the_same_time(self):
+        """A second tab opening another project used to hijack the first tab's presenter: every
+        PDF route resolved "the active project", so the first tab's reads and transcript saves
+        started addressing the wrong deck and failed. Each request names its own project now."""
+        async def create(name, label, pages):
+            created = await self.client.post(
+                "/api/projects/pdf",
+                data={"name": name},
+                files={"file": (f"{label}.pdf", _pdf_bytes(label, pages=pages),
+                                "application/pdf")},
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            return created.json()
+
+        first = await create("Keynote", "keynote", 2)
+        second = await create("Workshop", "workshop", 1)
+
+        # Open the first, then let the SECOND tab take over as the active project.
+        self.assertEqual(
+            (await self.client.post(f"/api/projects/{first['id']}/open")).status_code, 200)
+        self.assertEqual(
+            (await self.client.post(f"/api/projects/{second['id']}/open")).status_code, 200)
+        self.assertEqual(self.app._active_project["id"], second["id"])
+
+        # Unaddressed requests still mean "the active project" — the workspace's own editor.
+        active_state = (await self.client.get("/api/state")).json()
+        self.assertEqual(active_state["pages"], ["page-1.png"])
+
+        # The first tab keeps presenting its own deck: two pages, its own transcripts.
+        scoped = f"?project_id={first['id']}"
+        state = (await self.client.get(f"/api/state{scoped}")).json()
+        self.assertEqual(state["project_type"], "pdf")
+        self.assertEqual(state["project_name"], "Keynote")
+        self.assertEqual(state["pages"], ["page-1.png", "page-2.png"])
+        version = (await self.client.get(f"/api/render-version{scoped}")).json()
+        self.assertEqual(version["pages"], ["page-1.png", "page-2.png"])
+        page = await self.client.get(f"/api/render/page-2.png{scoped}")
+        self.assertEqual(page.status_code, 200, page.text)
+        self.assertEqual(page.headers["content-type"], "image/png")
+
+        saved = await self.client.patch(
+            f"/api/pdf/transcripts/2{scoped}", json={"text": "Keynote page two"}
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+        other = await self.client.patch(
+            f"/api/pdf/transcripts/1?project_id={second['id']}",
+            json={"text": "Workshop opener"},
+        )
+        self.assertEqual(other.status_code, 200, other.text)
+
+        # Each transcript landed in its OWN project's sidecar, and the active project is
+        # untouched by the background tab's writes.
+        first_map = (await self.client.get(f"/api/slide-map{scoped}")).json()
+        self.assertEqual(
+            [(entry["page"], entry["note"]) for entry in first_map["pages"]],
+            [(1, ""), (2, "Keynote page two")],
+        )
+        second_map = (
+            await self.client.get(f"/api/slide-map?project_id={second['id']}")
+        ).json()
+        self.assertEqual(
+            [(entry["page"], entry["note"]) for entry in second_map["pages"]],
+            [(1, "Workshop opener")],
+        )
+        self.assertEqual(self.app._active_project["id"], second["id"])
+
+    async def test_addressing_a_project_that_is_not_a_pdf_or_not_there_is_refused(self):
+        typst = await self.client.post("/api/projects", json={"name": "Deck"})
+        self.assertEqual(typst.status_code, 200, typst.text)
+        typst_id = typst.json()["id"]
+
+        for route in ("/api/state", "/api/render-version", "/api/slide-map",
+                      "/api/pdf/transcripts"):
+            with self.subTest(route=route):
+                refused = await self.client.get(f"{route}?project_id={typst_id}")
+                self.assertEqual(refused.status_code, 400, refused.text)
+                self.assertIn("not a PDF project", refused.text)
+
+        missing = await self.client.get("/api/state?project_id=deadbeefcafe")
+        self.assertEqual(missing.status_code, 400, missing.text)
+        self.assertIn("project not found", missing.text)
+
+    async def test_a_presenter_can_address_a_project_this_process_never_activated(self):
+        """Pages were only ever rendered on activation. A second presenter may address a project
+        that has not been active here (or not since a restart) and must still see its pages."""
+        created = await self.client.post(
+            "/api/projects/pdf",
+            data={"name": "Cold"},
+            files={"file": ("cold.pdf", _pdf_bytes("cold", pages=2), "application/pdf")},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        project = created.json()
+
+        # Never opened: no render record, nothing on the active runtime.
+        self.assertIsNone(self.app._active_project)
+        state = (await self.client.get(f"/api/state?project_id={project['id']}")).json()
+
+        self.assertEqual(state["pages"], ["page-1.png", "page-2.png"])
+        self.assertIsNone(self.app._active_project)
+
     async def test_agent_staged_pdf_creation_and_replacement_are_atomic(self):
         upload_dir = self.root / ".tcb" / "uploads"
         upload_dir.mkdir(parents=True)

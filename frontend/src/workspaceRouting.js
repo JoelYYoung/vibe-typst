@@ -32,12 +32,21 @@ export function openProjectInNewTabUrl(projectId) {
   return `/project-workspaces/open?project_id=${encodeURIComponent(projectId)}`
 }
 
-export function projectionUrl(search = currentSearch()) {
+// The projection window is its own tab, so it cannot inherit the presenter's in-memory PDF
+// project scope — it carries the project in its URL and restores the scope on load. `project`
+// (empty) stays the flag that says "render the audience view"; `pid` says which project.
+export function projectionUrl(search = currentSearch(), projectId = null) {
   const params = new URLSearchParams()
   const workspace = projectWorkspaceId(search)
   if (workspace) params.set(WORKSPACE_PARAM, workspace)
   params.set('project', '')
+  if (projectId) params.set('pid', projectId)
   return `/?${params.toString()}`
+}
+
+export function projectionProjectId(search = currentSearch()) {
+  const value = new URLSearchParams(search || '').get('pid')
+  return value && value.trim() ? value : null
 }
 
 export function workspaceChannelName(base, search = currentSearch()) {

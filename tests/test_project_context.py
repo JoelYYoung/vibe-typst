@@ -72,6 +72,10 @@ class ProjectContextVersionTest(unittest.IsolatedAsyncioTestCase):
                 app.docstore, "ensure_room", new=AsyncMock()
             ) as ensure_room,
             patch.object(app.resolver, "start") as resolver_start,
+            # A successful open leaves a live compiler behind it. Idempotence means "nothing
+            # changed AND the pipeline still works" — a dead resolver must rebuild instead
+            # (covered by ProjectOpenMigrationRegressionTest).
+            patch.object(app.resolver, "status", return_value={"running": True}),
             patch.object(app.workdir, "setup", return_value={}),
             patch.object(app.vcs, "migrate"),
         ):
