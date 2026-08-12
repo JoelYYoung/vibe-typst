@@ -113,11 +113,14 @@ dependencies, verify the rendered result, and call `delete_file` to recoverably 
    returned authenticated `web_url` with the human; never share the handle or bearer token.
 3. Read enough of `main.typ` to understand the existing Touying structure before editing.
 4. Apply the smallest coherent edit batch with the latest revision.
-5. Inspect every affected rendered page. Fix compilation, overflow, clipping, contrast, and
-   layout problems before completion.
-6. For pending comments, read the live location, make the change, verify the preview, and only
+5. Call `get_compile_status` after every meaningful edit. A rendered page is the LAST GOOD one,
+   so a deck that stops compiling keeps serving the pre-edit picture unchanged — a broken edit
+   looks exactly like an edit that did nothing. Fix the reported errors before looking at pages.
+6. Inspect every affected rendered page (`get_slide_preview` reports the same compile state
+   beside the image). Fix overflow, clipping, contrast, and layout problems before completion.
+7. For pending comments, read the live location, make the change, verify the preview, and only
    then mark the comment done. Dismiss only if unclear, obsolete, or already resolved.
-7. Export only when requested and report the project `web_url` for human review.
+8. Export only when requested and report the project `web_url` for human review.
 
 On `EDIT_REJECTED`, the edit itself was wrong: read `error.details` for which edit failed and the
 live text around it, then fix the edit — re-sending it unchanged fails again. On

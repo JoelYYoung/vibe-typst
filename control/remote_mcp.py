@@ -59,7 +59,10 @@ Never use generic file writes to replace main.typ or bypass its shared CRDT stat
 
 Every presentation MUST remain in Touying form: preserve or add the Touying
 package import, use its slide/theme model, and keep speaker transcripts inline in main.typ. After
-meaningful Typst changes, inspect the rendered result with get_slide_preview; fix compile or
+meaningful Typst changes, call get_compile_status: a rendered page is the LAST GOOD one, so when
+the source stops compiling every preview keeps serving the pre-edit picture unchanged and a broken
+edit looks like an edit that did nothing. Fix the reported errors first, then inspect the rendered
+result with get_slide_preview (which reports the same compile state alongside the image) and fix
 layout problems before declaring the work complete.
 
 For human Typst comments, call get_pending_comments, read the requested change and its live
@@ -1704,6 +1707,63 @@ class _RemoteProjectService:
             audit_context=audit_context,
         )
 
+    @staticmethod
+    def _compile_report(body: dict) -> dict:
+        """Normalize a workspace compile/preview status into the agent-facing shape."""
+        errors = body.get("errors")
+        if errors is None:
+            errors = body.get("error")
+        if isinstance(errors, str):
+            errors = [errors]
+        if not isinstance(errors, list):
+            errors = []
+        errors = [str(item)[:400] for item in errors[:20]]
+        report: dict[str, Any] = {"compiles": not errors, "errors": errors}
+        for key in ("version",):
+            value = body.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                report[key] = value
+        pages = body.get("pages")
+        if isinstance(pages, list):
+            report["pages"] = len(pages)
+        running = body.get("preview_running")
+        if isinstance(running, bool):
+            report["preview_running"] = running
+        return report
+
+    async def _compile_status(self, identity) -> dict:
+        """The deck's CURRENT compile state, without forcing a recompile."""
+        body = await self.gateway.request(
+            identity, "GET", "/api/render-version"
+        )
+        return self._compile_report(body)
+
+    async def get_compile_status(
+        self, project_handle: str, recompile: bool = True
+    ) -> RemoteToolResult:
+        async def operation(identity):
+            lease, _ = await self._typed_project(
+                identity, project_handle, "typst"
+            )
+            if recompile:
+                # Flush the live document and WAIT for the next compile outcome, so an agent
+                # that just edited learns whether ITS edit builds instead of reading the
+                # previous compile's verdict.
+                body = await self.gateway.request(
+                    identity, "POST", "/api/compile", json={}, timeout=60
+                )
+                report = self._compile_report(body)
+            else:
+                report = await self._compile_status(identity)
+            await self._confirm_project_context(
+                identity, project_handle, lease
+            )
+            return {"ok": True, **report}
+
+        return await self._run(
+            "get_compile_status", "slides:read", operation
+        )
+
     async def get_slide_preview(
         self, project_handle: str, page: int
     ) -> RemoteToolResult:
@@ -1747,11 +1807,16 @@ class _RemoteProjectService:
                     "BACKEND_ERROR",
                     "workspace returned invalid preview metadata",
                 ) from exc
+            # A rendered page is the LAST GOOD one: when the source stops compiling the image
+            # keeps being served unchanged. Without saying so, a stale page is indistinguishable
+            # from a correct one and an agent reads its own broken edit as "no effect".
+            report = await self._compile_status(identity)
             return {
                 "ok": True,
                 "page": page,
                 "page_count": page_count,
                 "media_type": "image/png",
+                **report,
                 "_image_data": data,
             }
 
@@ -2489,9 +2554,30 @@ def create_remote_mcp(
     async def get_slide_preview(
         project_handle: str, page: int
     ) -> CallToolResult:
-        """Return one handled Typst rendered page as bounded PNG MCP image content."""
+        """Return one handled Typst rendered page as bounded PNG MCP image content.
+
+        Also reports the deck's compile state (`compiles`, `errors`). A rendered page is the
+        LAST GOOD one: when the source stops compiling the image keeps being served unchanged,
+        so `compiles: false` means the picture predates your edit — fix the listed errors
+        instead of re-editing what you see.
+        """
         return _image_protocol_result(
             await service.get_slide_preview(project_handle, page)
+        )
+
+    @server.tool()
+    async def get_compile_status(
+        project_handle: str, recompile: bool = True
+    ) -> CallToolResult:
+        """Report whether the handled Typst deck currently compiles, with the compiler's errors.
+
+        Call this after apply_edits: `recompile` (default) flushes the live document and waits
+        for the NEXT compile outcome, so you learn whether YOUR edit builds rather than reading
+        the previous verdict. Returns {compiles, errors, pages, version}. Pass
+        `recompile: false` for a cheap read of the current state without forcing a rebuild.
+        """
+        return _protocol_result(
+            await service.get_compile_status(project_handle, recompile)
         )
 
     @server.tool()

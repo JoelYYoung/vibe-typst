@@ -55,6 +55,8 @@ class _FileGateway:
             "orphans": {},
         }
         self.edit_response = None
+        self.compile_errors = []
+        self.compiles = 0
 
     async def read_bytes(self, identity, path, max_bytes):
         self.calls.append((identity.token_id, "GET_BYTES", path, None))
@@ -120,6 +122,21 @@ class _FileGateway:
             self.source = self.source.replace("Old title", "New title")
             self.rev += 1
             return {"ok": True, "rev": self.rev, "applied": 1}
+        if method == "GET" and parsed.path == "/api/render-version":
+            return {
+                "version": 7,
+                "pages": ["page-1.svg", "page-2.svg"],
+                "error": self.compile_errors,
+                "preview_running": True,
+            }
+        if method == "POST" and parsed.path == "/api/compile":
+            self.compiles += 1
+            return {
+                "ok": not self.compile_errors,
+                "errors": self.compile_errors,
+                "pages": ["page-1.svg", "page-2.svg"],
+                "version": 8,
+            }
         if method == "GET" and parsed.path == "/api/locate":
             return {
                 "ok": True,
@@ -776,6 +793,61 @@ class RemoteFileToolTest(unittest.IsolatedAsyncioTestCase):
             "updated",
         )
         self.assertEqual(done["comment"]["status"], "done")
+
+    async def test_an_agent_can_read_the_compilers_errors(self):
+        """A rendered page is the LAST GOOD one, so a deck that stops compiling keeps serving the
+        pre-edit picture. With no way to read the compiler, an agent read its own broken edit as
+        an edit that did nothing and kept re-editing what it could see."""
+        healthy = await self._call(
+            self.viewer, "get_compile_status", self.viewer_handle, True
+        )
+        self.assertTrue(healthy["ok"])
+        self.assertTrue(healthy["compiles"])
+        self.assertEqual(healthy["errors"], [])
+        self.assertEqual(healthy["pages"], 2)
+        self.assertEqual(self.gateway.compiles, 1)
+
+        self.gateway.compile_errors = ["unexpected closing bracket (main.typ:411:1)"]
+        broken = await self._call(
+            self.viewer, "get_compile_status", self.viewer_handle, True
+        )
+        self.assertTrue(broken["ok"])   # the TOOL worked; the deck is what is broken
+        self.assertFalse(broken["compiles"])
+        self.assertEqual(
+            broken["errors"], ["unexpected closing bracket (main.typ:411:1)"]
+        )
+
+        # A preview carries the same verdict, so the stale image is self-explaining.
+        preview = await self._call(
+            self.viewer, "get_slide_preview", self.viewer_handle, 1
+        )
+        self.assertTrue(preview["_image_data"].startswith(b"\x89PNG"))
+        self.assertFalse(preview["compiles"])
+        self.assertEqual(
+            preview["errors"], ["unexpected closing bracket (main.typ:411:1)"]
+        )
+
+        # A cheap read must not force a rebuild.
+        before = self.gateway.compiles
+        cheap = await self._call(
+            self.viewer, "get_compile_status", self.viewer_handle, False
+        )
+        self.assertFalse(cheap["compiles"])
+        self.assertTrue(cheap["preview_running"])
+        self.assertEqual(self.gateway.compiles, before)
+        self.gateway.compile_errors = []
+
+    async def test_compiler_errors_are_bounded_before_reaching_the_agent(self):
+        self.gateway.compile_errors = ["x" * 5000] * 50
+
+        report = await self._call(
+            self.viewer, "get_compile_status", self.viewer_handle, True
+        )
+
+        self.gateway.compile_errors = []
+        self.assertFalse(report["compiles"])
+        self.assertEqual(len(report["errors"]), 20)
+        self.assertTrue(all(len(item) == 400 for item in report["errors"]))
 
     async def test_refused_edits_report_why_instead_of_a_blanket_conflict(self):
         # A malformed edit used to come back as REVISION_CONFLICT, so agents re-read a document
