@@ -607,6 +607,93 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["pages"], ["page-1.png", "page-2.png"])
         self.assertIsNone(self.app._active_project)
 
+    async def test_replacing_the_pdf_from_the_browser_keeps_the_transcripts(self):
+        """Picking a new PDF in the workspace swaps the deck through the same locked, versioned
+        transaction the agent path uses. Page-numbered transcripts stay on their pages, and a
+        shorter PDF retains the ones past its end as orphans rather than dropping them."""
+        created = await self.client.post(
+            "/api/projects/pdf",
+            data={"name": "Deck"},
+            files={"file": ("draft.pdf", _pdf_bytes("draft", pages=3), "application/pdf")},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        project = created.json()
+        self.assertEqual(
+            (await self.client.post(f"/api/projects/{project['id']}/open")).status_code, 200)
+
+        for page, text in ((1, "Opening"), (2, "Middle"), (3, "Closing")):
+            saved = await self.client.patch(
+                f"/api/pdf/transcripts/{page}", json={"text": text}
+            )
+            self.assertEqual(saved.status_code, 200, saved.text)
+
+        replaced = await self.client.post(
+            "/api/pdf/replace-upload",
+            files={"file": ("v2.pdf", _pdf_bytes("v2", pages=2), "application/pdf")},
+            data={"message": "second draft"},
+        )
+
+        self.assertEqual(replaced.status_code, 200, replaced.text)
+        self.assertEqual(replaced.json()["page_count"], 2)
+        self.assertEqual(replaced.json()["pages"], ["page-1.png", "page-2.png"])
+
+        # Pages that still exist keep their text; the third is RETAINED as an orphan, not lost.
+        transcripts = (await self.client.get("/api/pdf/transcripts")).json()
+        self.assertEqual(
+            transcripts["pages"],
+            {"1": {"text": "Opening"}, "2": {"text": "Middle"}},
+        )
+        self.assertEqual(
+            [entry["text"] for entry in transcripts.get("orphans", {}).values()],
+            ["Closing"],
+        )
+
+        # Both sides of the swap are recoverable through the version system.
+        versions = (await self.client.get("/api/git/versions")).json()
+        self.assertEqual([version["tag"] for version in versions], ["v2", "v1"])
+
+    async def test_browser_pdf_replacement_refuses_anything_that_is_not_one_pdf(self):
+        created = await self.client.post(
+            "/api/projects/pdf",
+            data={"name": "Guarded"},
+            files={"file": ("draft.pdf", _pdf_bytes("draft"), "application/pdf")},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        project = created.json()
+        self.assertEqual(
+            (await self.client.post(f"/api/projects/{project['id']}/open")).status_code, 200)
+        before = (await self.client.get("/api/pdf/transcripts")).json()
+
+        cases = (
+            ("not a pdf", {"file": ("notes.txt", b"hello", "text/plain")}, None),
+            ("no file at all", None, {"message": "nothing"}),
+            (
+                "two files",
+                [
+                    ("file", ("a.pdf", _pdf_bytes("a"), "application/pdf")),
+                    ("file", ("b.pdf", _pdf_bytes("b"), "application/pdf")),
+                ],
+                None,
+            ),
+        )
+        for label, files, data in cases:
+            with self.subTest(label):
+                refused = await self.client.post(
+                    "/api/pdf/replace-upload", files=files, data=data
+                )
+                self.assertEqual(refused.status_code, 400, refused.text)
+
+        # A refusal leaves the deck and its transcripts exactly as they were, and no candidate
+        # file is left lying beside document.pdf.
+        self.assertEqual(
+            (await self.client.get("/api/pdf/transcripts")).json(), before
+        )
+        residue = [
+            path.name for path in Path(project["path"]).iterdir()
+            if path.name.startswith(".pdf-replacement-upload-")
+        ]
+        self.assertEqual(residue, [])
+
     async def test_agent_staged_pdf_creation_and_replacement_are_atomic(self):
         upload_dir = self.root / ".tcb" / "uploads"
         upload_dir.mkdir(parents=True)

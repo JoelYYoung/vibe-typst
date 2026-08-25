@@ -1618,6 +1618,78 @@ async def replace_pdf(request: Request):
     return await _replace_pdf_candidate(candidate, message)
 
 
+@app.post("/api/pdf/replace-upload")
+async def replace_pdf_from_upload(request: Request, project_id: Optional[str] = None):
+    """Replace a project's PDF with one uploaded straight from the browser.
+
+    The authoritative transaction (`_replace_pdf_candidate`) replaces a candidate that already
+    sits in the project directory, which the agent path reaches through a staged upload. A person
+    picking a file in the workspace has no staging step, so stream the multipart part into a
+    private candidate beside document.pdf and hand that to the same transaction — same locking,
+    same before/after version snapshots, same transcript reconciliation.
+    """
+    raw_content_length = request.headers.get("content-length")
+    if raw_content_length:
+        try:
+            content_length = int(raw_content_length)
+        except ValueError as exc:
+            raise HTTPException(400, "invalid Content-Length") from exc
+        if content_length > MAX_PDF_UPLOAD_BYTES + _PDF_MULTIPART_OVERHEAD_BYTES:
+            raise HTTPException(413, "PDF upload is too large")
+    try:
+        expected = _capture_pdf_identity(project_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    bounded_request = _pdf_ingress_bound_request(request)
+    try:
+        form = await bounded_request.form(
+            max_files=1, max_fields=1, max_part_size=_PDF_FORM_MAX_PART_BYTES,
+        )
+    except _PdfIngressTooLarge as exc:
+        raise HTTPException(413, "PDF upload is too large") from exc
+    except Exception as exc:
+        raise HTTPException(400, "invalid multipart form") from exc
+
+    items = list(form.multi_items())
+    messages = [value for key, value in items if key == "message" and isinstance(value, str)]
+    files = [(key, value) for key, value in items if isinstance(value, StarletteUploadFile)]
+    if len(files) != 1 or files[0][0] != "file" or len(items) != 1 + len(messages):
+        for _, uploaded in files:
+            await uploaded.close()
+        raise HTTPException(400, "provide exactly one PDF file and an optional message")
+
+    message = messages[0] if messages else ""
+    file = files[0][1]
+    candidate: Path | None = None
+    try:
+        filename = file.filename or ""
+        if not filename or not filename.lower().endswith(".pdf"):
+            raise HTTPException(400, "file must be a PDF")
+        if file.size is not None and file.size > MAX_PDF_UPLOAD_BYTES:
+            raise HTTPException(413, "PDF upload is too large")
+        fd, raw_candidate = tempfile.mkstemp(
+            prefix=".pdf-replacement-upload-", suffix=".pdf", dir=expected.project,
+        )
+        candidate = Path(raw_candidate)
+        total = 0
+        with os.fdopen(fd, "wb") as stream:
+            while chunk := await file.read(_PDF_UPLOAD_CHUNK_BYTES):
+                total += len(chunk)
+                if total > MAX_PDF_UPLOAD_BYTES:
+                    raise HTTPException(413, "PDF upload is too large")
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if not total:
+            raise HTTPException(400, "file must be a PDF")
+        return await _replace_pdf_candidate(candidate.name, message, expected)
+    finally:
+        await file.close()
+        if candidate is not None:
+            candidate.unlink(missing_ok=True)
+
+
 @app.get("/api/pdf/text")
 def get_pdf_text(page: Optional[int] = None):
     def observe(pdf_path, page_count):

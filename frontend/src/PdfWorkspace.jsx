@@ -13,6 +13,8 @@ import {
 } from './pdfWorkspace.js'
 import { shortPath, TerminalIcon } from './terminalUi.jsx'
 import { workspaceChannelName } from './workspaceRouting.js'
+import { selectPdfFile } from './projectCreation.js'
+import { toast } from './Toaster.jsx'
 
 export default function PdfWorkspace({ project, onBack }) {
   // Name this tab's project on every deck request before anything polls. Another tab opening a
@@ -122,6 +124,34 @@ export default function PdfWorkspace({ project, onBack }) {
     })
   }, [render.pages.length])
 
+  const replaceInputRef = useRef(null)
+  const [replacing, setReplacing] = useState(false)
+
+  // Swap the deck for a newly picked PDF. The server snapshots a version on both sides of the
+  // swap, and page-numbered transcripts stay put — a shorter PDF retains the ones past its end
+  // as orphans rather than dropping them, so nothing a person wrote is lost by replacing.
+  const replacePdf = useCallback(async (files) => {
+    // Dismissing the picker selects nothing; that is a cancel, not an error to complain about.
+    if (!files || files.length === 0) return
+    const picked = selectPdfFile(files, null)
+    if (picked.error) { toast.error(picked.error); return }
+    if (!picked.file) return
+    setReplacing(true)
+    try {
+      const result = await api.replacePdf(picked.file)
+      await poller.poll()
+      const pages = result?.page_count
+      toast.success(
+        `Replaced the PDF${Number.isInteger(pages) ? ` · ${pages} page${pages === 1 ? '' : 's'}` : ''}`,
+      )
+    } catch (error) {
+      toast.error(error.message || 'Could not replace the PDF')
+    } finally {
+      setReplacing(false)
+      if (replaceInputRef.current) replaceInputRef.current.value = ''
+    }
+  }, [poller])
+
   const presentationActive = presenting || presentationLive
 
   const openPresenter = useCallback(() => {
@@ -171,6 +201,18 @@ export default function PdfWorkspace({ project, onBack }) {
         <div className="bar-title" title={project?.name || 'PDF project'}>
           {project?.name || 'PDF project'}
         </div>
+        <input
+          ref={replaceInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          hidden
+          onChange={(event) => replacePdf(event.target.files)}
+        />
+        <button className="openbtn" onClick={() => replaceInputRef.current?.click()}
+          disabled={replacing}
+          title="upload a new PDF for this project; transcripts stay on their page numbers">
+          {replacing ? '⏳ Replacing…' : '⇪ Replace PDF'}
+        </button>
         <button className="openbtn present" onClick={openPresenter} disabled={!render.pages.length}
           title="presenter view (current + next page, transcript, dual-screen)">▶ Present</button>
         <div className="actions">

@@ -100,6 +100,17 @@ export const getSlideMap = () => fetch(workspacePath(scoped('/api/slide-map'))).
 export const getPdfTranscripts = () => fetch(workspacePath(scoped('/api/pdf/transcripts'))).then(J)
 export const savePdfTranscript = (page, text) =>
   PATCH(scoped(`/api/pdf/transcripts/${encodeURIComponent(page)}`), { text })
+// Swap the deck for a newly picked PDF. Page-numbered transcripts stay where they are; if the
+// new PDF has fewer pages the ones past the end are retained as orphans, never dropped.
+export const replacePdf = (file, message = '') => {
+  const form = new FormData()
+  form.append('file', file)
+  if (message) form.append('message', message)
+  return fetch(workspacePath(scoped('/api/pdf/replace-upload')), {
+    method: 'POST',
+    body: form,
+  }).then(J)
+}
 
 export const getComments = (status, file) => {
   const q = new URLSearchParams()
