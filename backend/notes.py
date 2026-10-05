@@ -152,11 +152,11 @@ async def create_note(slide_line: int, text: str,
 # (`if self.subslide == n { speaker-note(...) }`) gives a distinct per-page transcript. We use
 # this as the authoritative page->note mapping (it's what touying itself computes).
 
-def pdfpc_raw() -> str:
+def pdfpc_raw(main=None, proj=None) -> str:
     """The complete `.pdfpc` file content (pdfpc-format-2 JSON) for the CURRENT deck on disk, or
     "" if it can't be produced. Caller should flush the live doc to disk first."""
-    main = runtime.current_file()
-    proj = runtime.project_dir()
+    main = main or runtime.current_file()
+    proj = proj or runtime.project_dir()
     if not main.exists():
         return ""
     try:
@@ -175,9 +175,9 @@ def pdfpc_raw() -> str:
     return out if (proc.returncode == 0 and out.startswith("{")) else ""
 
 
-def pdfpc_pages() -> list[dict]:
+def pdfpc_pages(main=None, proj=None) -> list[dict]:
     """Per-page transcripts: [{page (1-based), label, overlay, note}] in page order."""
-    raw = pdfpc_raw()
+    raw = pdfpc_raw(main, proj) if main is not None else pdfpc_raw()
     if not raw:
         return []
     try:

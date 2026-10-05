@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App.jsx'
 import Projection from './Projection.jsx'
@@ -7,6 +7,7 @@ import ProjectsPage from './ProjectsPage.jsx'
 import AdminPage from './AdminPage.jsx'
 import PdfWorkspace from './PdfWorkspace.jsx'
 import Toaster from './Toaster.jsx'
+import ConnectionMonitor from './ConnectionMonitor.jsx'
 import { toast } from './Toaster.jsx'
 import * as api from './api.js'
 import {
@@ -18,7 +19,6 @@ import {
 import {
   inProjectWorkspace,
   projectionProjectId,
-  workspacePath,
 } from './workspaceRouting.js'
 import './styles.css'
 
@@ -26,11 +26,12 @@ function Root() {
   const [view, setView] = useState('loading')
   const [activeProject, setActiveProject] = useState(null)
   const [serverMode, setServerMode] = useState(false)
+  const initializationFailed = useRef(false)
 
   async function checkState() {
     try {
-      const r = await fetch(workspacePath('/api/app/state'))
-      const s = await r.json()
+      const s = await api.getAppState()
+      initializationFailed.current = false
       setServerMode(s.mode === 'server')
       if (!s.configured && s.mode === 'local') {
         setView('onboarding')
@@ -62,11 +63,17 @@ function Root() {
       }
       setView('projects')
     } catch {
+      initializationFailed.current = true
       setView('projects')
     }
   }
 
-  useEffect(() => { checkState() }, [])
+  useEffect(() => {
+    checkState()
+    const recover = () => { if (initializationFailed.current) checkState() }
+    window.addEventListener('connection-restored', recover)
+    return () => window.removeEventListener('connection-restored', recover)
+  }, [])
 
   function goToEditor(project) {
     setActiveProject(project)
@@ -77,10 +84,11 @@ function Root() {
       location.assign('/')
       return
     }
-    fetch(workspacePath('/api/projects/close'), { method: 'POST' }).catch(() => {})
+    api.closeProject().catch(() => {})
     setActiveProject(null)
     setView('projects')
   }
+
   function goToAdmin() { setView('admin') }
 
   if (view === 'loading') return <div className="app-loading">✦</div>
@@ -112,4 +120,9 @@ const isProjection = new URLSearchParams(location.search).has('project')
 // A projection opened from a presenter must read THAT project's pages, not whichever project
 // the workspace last made active for some other tab.
 if (isProjection) api.setProjectScope(projectionProjectId(location.search))
-createRoot(document.getElementById('root')).render(isProjection ? <Projection /> : <Root />)
+createRoot(document.getElementById('root')).render(
+  <>
+    {isProjection ? <Projection /> : <Root />}
+    <ConnectionMonitor />
+  </>,
+)

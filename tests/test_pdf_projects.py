@@ -516,12 +516,18 @@ class PdfEndToEndTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(typst.status_code, 200, typst.text)
         typst_id = typst.json()["id"]
 
-        # PDF-only routes refuse a Typst project rather than inventing an answer for it.
-        for route in ("/api/slide-map", "/api/pdf/transcripts"):
+        # PDF transcript routes refuse Typst rather than inventing a PDF answer.
+        for route in ("/api/pdf/transcripts",):
             with self.subTest(route=route):
                 refused = await self.client.get(f"{route}?project_id={typst_id}")
                 self.assertEqual(refused.status_code, 400, refused.text)
                 self.assertIn("not a PDF project", refused.text)
+
+        # Typst slide maps use the active CRDT source, so an inactive deck must
+        # not receive another project's notes. Active Typst is covered separately.
+        refused_map = await self.client.get(f"/api/slide-map?project_id={typst_id}")
+        self.assertEqual(refused_map.status_code, 400, refused_map.text)
+        self.assertIn("requires the active project", refused_map.text)
 
         # The shared deck routes serve whichever kind the project actually is.
         for route in ("/api/state", "/api/render-version"):

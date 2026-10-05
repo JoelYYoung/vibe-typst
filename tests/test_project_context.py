@@ -53,6 +53,31 @@ class ProjectContextVersionTest(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _set_runtime_file(path):
         app.runtime._state["file"] = str(Path(path).resolve())
+
+    async def test_typst_slide_map_project_id_is_not_treated_as_pdf(self):
+        info = self.projects["alpha"]
+        self._set_runtime_file(Path(info["path"]) / "main.typ")
+        app._set_active_project(info)
+        with (
+            patch.object(app.projects_mod, "get_project", return_value=info),
+            patch.object(app.docstore, "flush_now", new=AsyncMock()),
+            patch.object(app.notes_mod, "pdfpc_pages", return_value=[]),
+            patch.object(app.notes_mod, "list_notes", return_value=[]),
+            patch.object(app.notes_mod, "slide_open_lines", return_value=[]),
+            patch.object(app.typst_service, "list_pages", return_value=["page-1.svg"]),
+            patch.object(app.slidemap, "slide_info", return_value=None),
+        ):
+            result = await app.slide_map("alpha")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["pages"][0]["page"], 1)
+
+    async def test_inactive_typst_slide_map_rejects_reading_other_projects_notes(self):
+        self._set_runtime_file(Path(self.projects["beta"]["path"]) / "main.typ")
+        app._set_active_project(self.projects["beta"])
+        with patch.object(app.projects_mod, "get_project", return_value=self.projects["alpha"]):
+            with self.assertRaises(app.HTTPException) as error:
+                await app.slide_map("alpha")
+        self.assertEqual(error.exception.status_code, 400)
         return app.runtime._state["file"]
 
     async def test_same_project_open_is_idempotent_and_switch_rotates_context(self):

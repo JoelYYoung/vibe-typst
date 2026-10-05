@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+from collections.abc import Iterator
 import hashlib
 import hmac
 import html
@@ -26,7 +27,7 @@ import subprocess
 import sys
 import time
 import shutil
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote, urlencode, urlsplit
@@ -81,10 +82,15 @@ _HOP = frozenset([
 
 # ── Database ───────────────────────────────────────────────────────────────────
 
-def _db() -> sqlite3.Connection:
+@contextmanager
+def _db() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -276,7 +282,15 @@ def _container(*args) -> subprocess.CompletedProcess:
         return subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=120)
 
     exe = shutil.which(CONTAINER_RUNTIME) or CONTAINER_RUNTIME
-    return subprocess.run([exe, *map(str, args)], capture_output=True, text=True, timeout=120)
+    env = os.environ.copy()
+    # Old Mac launchd installations forced amd64 globally. Workspace images now
+    # follow the Docker host; an explicit workspace override remains available.
+    platform = env.get("TCB_DOCKER_PLATFORM")
+    if platform:
+        env["DOCKER_DEFAULT_PLATFORM"] = platform
+    else:
+        env.pop("DOCKER_DEFAULT_PLATFORM", None)
+    return subprocess.run([exe, *map(str, args)], capture_output=True, text=True, timeout=120, env=env)
 
 def _cname(username: str) -> str:
     safe = "".join(c for c in username if c.isalnum() or c in "-_")

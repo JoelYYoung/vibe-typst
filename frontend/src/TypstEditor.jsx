@@ -9,6 +9,7 @@ import { searchKeymap, highlightSelectionMatches } from '@codemirror/search'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language'
 import { typst } from 'codemirror-lang-typst'
 import { workspaceWebSocketUrl } from './workspaceRouting.js'
+import { reportConnectionLost, reportConnectionRestored } from './connectionStatus.js'
 
 const wsBase = () => workspaceWebSocketUrl('/ws')
 
@@ -28,7 +29,22 @@ const TypstEditor = forwardRef(function TypstEditor({ room, onSelect, onReady, o
     const provider = new WebsocketProvider(wsBase(), room, ydoc)
     const ytext = ydoc.getText('source')
     const undoManager = new Y.UndoManager(ytext)
+    const connectionSource = `live-editor:${room}`
+    let disconnectTimer = null
     docRef.current = { ydoc, provider, ytext }
+
+    const onStatus = ({ status }) => {
+      if (status === 'connected') {
+        clearTimeout(disconnectTimer)
+        reportConnectionRestored(connectionSource)
+        return
+      }
+      clearTimeout(disconnectTimer)
+      disconnectTimer = setTimeout(() => {
+        reportConnectionLost(connectionSource, 'Live editing is disconnected.')
+      }, 1_500)
+    }
+    provider.on('status', onStatus)
 
     const selectionListener = EditorView.updateListener.of((vu) => {
       if (!vu.selectionSet && !vu.docChanged) return
@@ -84,6 +100,9 @@ const TypstEditor = forwardRef(function TypstEditor({ room, onSelect, onReady, o
     })
 
     return () => {
+      clearTimeout(disconnectTimer)
+      provider.off('status', onStatus)
+      reportConnectionRestored(connectionSource)
       view.destroy()
       provider.destroy()
       ydoc.destroy()

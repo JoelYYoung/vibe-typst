@@ -1,0 +1,45 @@
+# Build with scripts/build-workspace-native.sh. All executables match TARGETARCH;
+# existing O3 deployment artifacts remain supported by the original Containerfile.
+FROM docker.io/library/node:22-bookworm-slim
+ARG TARGETARCH
+ARG CODEX_VERSION=0.160.0
+ARG CLAUDE_VERSION=2.1.185
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-venv ca-certificates curl git bash bubblewrap procps lsof \
+      xz-utils libssl3 fonts-noto-cjk ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /usr/local/bin/uv
+RUN case "$TARGETARCH" in arm64) arch=aarch64;; amd64) arch=x86_64;; *) exit 1;; esac && \
+    curl -fsSL "https://github.com/typst/typst/releases/download/v0.15.0/typst-${arch}-unknown-linux-musl.tar.xz" -o /tmp/typst.tar.xz && \
+    tar -xJf /tmp/typst.tar.xz -C /tmp --no-same-owner && \
+    install -m755 "/tmp/typst-${arch}-unknown-linux-musl/typst" /usr/local/bin/typst && \
+    rm -rf /tmp/typst* && typst --version
+WORKDIR /app/backend
+COPY backend/pyproject.toml backend/uv.lock ./
+RUN uv sync --frozen --no-dev --python /usr/bin/python3 && \
+    .venv/bin/python -c 'import fitz, pycrdt'
+COPY backend/ /app/backend/
+COPY resolver/target/native-linux-${TARGETARCH}/release/tcb-resolver /app/resolver/target/release/tcb-resolver
+COPY frontend/dist /app/frontend/dist
+COPY backend/sample /app/sample
+RUN npm install -g "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" && \
+    codex --version && claude --version && \
+    ln -s "$(readlink -f /usr/local/bin/codex)" /usr/local/bin/codex-real && \
+    rm /usr/local/bin/codex && \
+    mkdir -p /root/.local/bin && ln -s /usr/local/bin/claude /root/.local/bin/claude && \
+    printf '%s\n' 'cd() {' '  local t="${1:-/workspace}"' \
+      '  local abs; abs="$(realpath -m -- "$t" 2>/dev/null)" || abs="$t"' \
+      '  if [[ "$abs" != /workspace && "$abs" != /workspace/* ]]; then' \
+      '    printf "cd: restricted to /workspace\n" >&2; return 1' '  fi' \
+      '  builtin cd -- "$t"' '}' >> /root/.bash_profile
+COPY codex-project-wrapper.sh /usr/local/bin/codex
+COPY docker-entrypoint.sh /usr/local/bin/entrypoint
+RUN chmod +x /usr/local/bin/codex /usr/local/bin/entrypoint
+ENV PORT=8080 TCB_BROWSE_ROOT=/workspace RENDER_DIR=/tmp/tcb-render \
+    TCB_STATE_PATH=/workspace/.tcb/state.json TYPST_FILE=/app/sample/welcome.typ \
+    HOME=/root TCB_AGENT_BINARY_ARCH=linux-${TARGETARCH} \
+    NPM_CONFIG_PREFIX=/workspace/.agent-home/codex-npm-linux-${TARGETARCH} \
+    PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/entrypoint"]

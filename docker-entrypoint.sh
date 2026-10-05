@@ -3,11 +3,14 @@ set -e
 # Ensure persistent dirs exist. The workspace is bind-mounted; agent home state is
 # symlinked into it so container replacement does not discard auth/config/cache state.
 WORKSPACE="${TCB_BROWSE_ROOT:-/workspace}"
+# Keep architecture-specific auto-updates separate while sharing conversations/auth.
+BINARY_SUFFIX="${TCB_AGENT_BINARY_ARCH:+-$TCB_AGENT_BINARY_ARCH}"
+export NPM_CONFIG_PREFIX="${NPM_CONFIG_PREFIX:-$WORKSPACE/.agent-home/codex-npm$BINARY_SUFFIX}"
 if ! mkdir -p "$WORKSPACE" /tmp/tcb-render \
     "$(dirname "${TCB_STATE_PATH:-/workspace/.tcb/state.json}")" \
     "$WORKSPACE/.agent-home/claude" "$WORKSPACE/.agent-home/codex" \
-    "$WORKSPACE/.agent-home/tcb" "$WORKSPACE/.agent-home/local" \
-    "$WORKSPACE/.agent-home/codex-npm"; then
+    "$WORKSPACE/.agent-home/tcb" "$WORKSPACE/.agent-home/local$BINARY_SUFFIX" \
+    "$NPM_CONFIG_PREFIX"; then
   echo "[entrypoint] cannot create persistent workspace directories" >&2
   exit 1
 fi
@@ -16,7 +19,7 @@ fi
 # layer, so the agents re-updated on every fresh container. Symlinking ~/.local (etc.) into the
 # bind-mounted workspace keeps those self-updates. If an in-container dir already has content
 # (e.g. a first-run install before the symlink existed), migrate it into the store once.
-for pair in "$HOME/.claude:claude" "$HOME/.codex:codex" "$HOME/.tcb:tcb" "$HOME/.local:local"; do
+for pair in "$HOME/.claude:claude" "$HOME/.codex:codex" "$HOME/.tcb:tcb" "$HOME/.local:local$BINARY_SUFFIX"; do
   link="${pair%%:*}"
   target="$WORKSPACE/.agent-home/${pair#*:}"
   if [ -L "$link" ] && [ "$(readlink "$link")" = "$target" ]; then

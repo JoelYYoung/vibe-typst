@@ -11,3 +11,11 @@
 **/*.pyc
 .git
 **/*.backup
+workspaces
+control/data
+!resolver/target/native-linux-arm64/
+!resolver/target/native-linux-arm64/release/
+!resolver/target/native-linux-arm64/release/tcb-resolver
+!resolver/target/native-linux-amd64/
+!resolver/target/native-linux-amd64/release/
+!resolver/target/native-linux-amd64/release/tcb-resolver

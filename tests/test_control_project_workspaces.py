@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sqlite3
 import subprocess
 import sys
@@ -41,6 +42,24 @@ class ProjectWorkspaceControlTest(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         self._tmp.cleanup()
+
+    async def test_docker_platform_ignores_legacy_global_setting_and_supports_override(self):
+        for override, expected in ((None, None), ("linux/arm64", "linux/arm64")):
+            with self.subTest(override=override):
+                with patch.dict(os.environ, {"DOCKER_DEFAULT_PLATFORM": "linux/amd64"}):
+                    os.environ.pop("TCB_DOCKER_PLATFORM", None)
+                    if override:
+                        os.environ["TCB_DOCKER_PLATFORM"] = override
+                    with (
+                        patch.object(self.control, "CONTAINER_RUNTIME", "docker"),
+                        patch.object(self.control.subprocess, "run") as run,
+                    ):
+                        self.control._container("run", "workspace-image")
+                        self.assertEqual(
+                            run.call_args.kwargs["env"].get("DOCKER_DEFAULT_PLATFORM"),
+                            expected,
+                        )
+                    self.assertEqual(os.environ["DOCKER_DEFAULT_PLATFORM"], "linux/amd64")
 
     async def test_each_project_gets_one_stable_isolated_port_and_state_file(self):
         first = self.control._project_workspace_for(self.user, self.project_ids[0])

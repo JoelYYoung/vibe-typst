@@ -319,7 +319,11 @@ export default function ProjectsPage({ onOpen, onOpenAdmin, allowWorkspaceTabs =
     }
   }, [view])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    window.addEventListener('connection-restored', load)
+    return () => window.removeEventListener('connection-restored', load)
+  }, [load])
   useEffect(() => { if (creating) newInputRef.current?.focus() }, [creating])
 
   function resetNewProject() {

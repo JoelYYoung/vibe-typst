@@ -6,7 +6,8 @@ set -euo pipefail
 # CODEX_REAL (e.g. in tests) always wins.
 REAL_CODEX="${CODEX_REAL:-}"
 if [ -z "$REAL_CODEX" ]; then
-  _persisted="${NPM_CONFIG_PREFIX:-${TCB_BROWSE_ROOT:-/workspace}/.agent-home/codex-npm}/bin/codex"
+  _suffix="${TCB_AGENT_BINARY_ARCH:+-$TCB_AGENT_BINARY_ARCH}"
+  _persisted="${NPM_CONFIG_PREFIX:-${TCB_BROWSE_ROOT:-/workspace}/.agent-home/codex-npm$_suffix}/bin/codex"
   if [ -x "$_persisted" ]; then REAL_CODEX="$_persisted"; else REAL_CODEX="/usr/local/bin/codex-real"; fi
 fi
 BEGIN="# TYPST-COMMENT-BRIDGE:BEGIN (auto-managed - edits here will be overwritten)"

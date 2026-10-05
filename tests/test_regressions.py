@@ -1744,6 +1744,34 @@ class McpUrlEncodingRegressionTest(unittest.TestCase):
 
 
 class DockerEntrypointMigrationRegressionTest(unittest.TestCase):
+    def test_native_binary_storage_preserves_old_binaries_and_shared_sessions(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            workspace = root / "workspace"
+            store = workspace / ".agent-home"
+            old_binary = store / "local" / "bin" / "claude"
+            old_binary.parent.mkdir(parents=True)
+            old_binary.write_text("old x86 binary")
+            session = store / "codex" / "sessions" / "old.jsonl"
+            session.parent.mkdir(parents=True)
+            session.write_text("existing conversation")
+            native_binary = home / ".local" / "bin" / "claude"
+            native_binary.parent.mkdir(parents=True)
+            native_binary.write_text("native binary")
+            env = {**os.environ, "HOME": str(home), "TCB_BROWSE_ROOT": str(workspace),
+                   "TCB_STATE_PATH": str(workspace / ".tcb" / "state.json"),
+                   "TCB_AGENT_BINARY_ARCH": "linux-arm64"}
+            env.pop("NPM_CONFIG_PREFIX", None)
+            subprocess.run(["bash", str(ROOT / "docker-entrypoint.sh")], env=env,
+                           capture_output=True, text=True)
+            self.assertEqual(old_binary.read_text(), "old x86 binary")
+            self.assertEqual(session.read_text(), "existing conversation")
+            self.assertEqual((home / ".codex").resolve(), (store / "codex").resolve())
+            self.assertEqual((home / ".local").resolve(), (store / "local-linux-arm64").resolve())
+            self.assertEqual((home / ".local" / "bin" / "claude").read_text(), "native binary")
+            self.assertTrue((store / "codex-npm-linux-arm64").is_dir())
+
     def test_failed_agent_home_copy_preserves_original_directory(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -1885,6 +1913,23 @@ class RenderTokenRegressionTest(unittest.TestCase):
 
 
 class CodexWrapperRegressionTest(unittest.TestCase):
+    def test_native_wrapper_ignores_old_persisted_executable_without_npm_env(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            workspace = root / "workspace"
+            for prefix, label in (("codex-npm", "old-x86"), ("codex-npm-linux-arm64", "native-arm")):
+                binary = workspace / ".agent-home" / prefix / "bin" / "codex"
+                binary.parent.mkdir(parents=True)
+                binary.write_text(f"#!/bin/sh\necho {label}\n")
+                binary.chmod(0o755)
+            env = {**os.environ, "HOME": str(root / "home"),
+                   "TCB_BROWSE_ROOT": str(workspace), "TCB_AGENT_BINARY_ARCH": "linux-arm64"}
+            for key in ("NPM_CONFIG_PREFIX", "CODEX_REAL", "CODEX_HOME"):
+                env.pop(key, None)
+            result = subprocess.run(["bash", str(ROOT / "codex-project-wrapper.sh"), "--version"],
+                                    cwd=workspace, env=env, text=True, capture_output=True, check=True)
+            self.assertEqual(result.stdout.strip(), "native-arm")
+
     def test_project_codex_config_is_loaded_and_cleared_by_directory(self):
         wrapper = ROOT / "codex-project-wrapper.sh"
         managed = """# TYPST-COMMENT-BRIDGE:BEGIN (auto-managed - edits here will be overwritten)

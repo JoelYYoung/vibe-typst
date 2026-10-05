@@ -50,6 +50,9 @@ import preview_service
 import remote_files
 import resolver
 import runtime
+import presentation_recording
+import typst_recording
+import recording_routes
 import slidemap
 import store
 import typst_service
@@ -1022,8 +1025,10 @@ async def pty_ws(websocket: WebSocket):
         # which the entrypoint now persists — make sure it's on PATH so the updated build is used.
         home = os.path.expanduser("~")
         ws = os.environ.get("TCB_BROWSE_ROOT", "/workspace")
-        os.environ["NPM_CONFIG_PREFIX"] = f"{ws}/.agent-home/codex-npm"
-        cleaned = f"{home}/.local/bin:{cleaned}:{ws}/.agent-home/codex-npm/bin"
+        binary_arch = os.environ.get("TCB_AGENT_BINARY_ARCH", "")
+        suffix = f"-{binary_arch}" if binary_arch else ""
+        npm_prefix = os.environ.setdefault("NPM_CONFIG_PREFIX", f"{ws}/.agent-home/codex-npm{suffix}")
+        cleaned = f"{home}/.local/bin:{cleaned}:{npm_prefix}/bin"
         if cleaned:
             os.environ["PATH"] = cleaned
         os.execvp(shell, [shell, "-l"])
@@ -1280,6 +1285,17 @@ async def create_note(request: Request):
 async def slide_map(project_id: Optional[str] = None):
     """Per-page presenter data: section, subslide index, and the **per-page transcript** for that
     page (authoritative, from touying's pdfpc mapping). Used by the inline notes + presenter."""
+    if project_id:
+        try:
+            kind, _info, main_path = _addressed_document(project_id)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if kind == "typst":
+            # Typst notes currently read the active CRDT document. A project query
+            # must neither send Typst to the PDF reader nor expose another deck's notes.
+            if not _active_document_is(main_path):
+                raise HTTPException(400, "Typst slide map requires the active project")
+            project_id = None
     if project_id or runtime.document_type() == "pdf":
         try:
             expected = _capture_pdf_identity(project_id)
@@ -3364,6 +3380,47 @@ class _CacheAwareStatic(StaticFiles):
             resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         return resp
 
+
+def _recording_target(project_id: str | None = None):
+    if project_id:
+        kind, info, document = _addressed_document(project_id)
+        project = Path(info["path"]).resolve()
+    else:
+        document = runtime.current_file()
+        if not document.is_file():
+            raise ValueError("open a project before recording")
+        project = runtime.project_dir()
+        kind = runtime.document_type()
+    if kind == "pdf":
+        expected = _capture_pdf_identity(project_id)
+        def observe(_pdf, _count):
+            return [{"name": name, "token": hashlib.sha1((runtime.render_dir(document) / name).read_bytes()).hexdigest()[:12]}
+                    for name in _pdf_pages(document)]
+        pages = _locked_pdf_observation(observe, expected)
+    else:
+        snapshot = runtime.render_dir(document) / "render-source.json"
+        stamp = snapshot.read_bytes() if snapshot.exists() else None
+        tokens = typst_service.page_tokens(document)
+        names = typst_service.list_pages(document)
+        identities = typst_recording.page_bindings(document, project, len(names))
+        if any(identities) and (not snapshot.exists() or snapshot.read_bytes() != stamp):
+            raise ValueError("slides are recompiling; wait for the preview to finish, then retry")
+        pages = [{"name": name, "token": tokens.get(name), "recording_id": identity, "binding_required": True}
+                 for name, identity in zip(names, identities)]
+    return presentation_recording.directory(project, document), pages
+
+
+async def _prepare_recording(project_id=None):
+    if project_id:
+        kind, info, document = _addressed_document(project_id)
+        project = Path(info["path"]).resolve()
+    else:
+        kind, document, project = runtime.document_type(), runtime.current_file(), runtime.project_dir()
+    if kind == "typst":
+        await typst_recording.prepare(document, project, lambda: _recording_target(project_id))
+
+
+app.include_router(recording_routes.router(_recording_target, _prepare_recording))
 
 _DIST = HERE.parent / "frontend" / "dist"
 if _DIST.exists():

@@ -214,9 +214,14 @@ export default function App({ project, onBackToProjects }) {
   // bump `rv` MONOTONICALLY so the per-page SVG URL (?v=rv) can never collide across projects.
   const lastRenderRef = useRef({ room: null, version: -1, externalEditSeq: null })
   useEffect(() => {
+    let pending = false
+    let stopped = false
     const t = setInterval(async () => {
+      if (pending) return
+      pending = true
       try {
         const r = await api.renderVersion()
+        if (stopped) return
         const last = lastRenderRef.current
         const roomChanged = !!r.room && r.room !== last.room
         const externalEditSeq = Number.isFinite(r.external_edit_seq) ? r.external_edit_seq : 0
@@ -242,12 +247,19 @@ export default function App({ project, onBackToProjects }) {
           return JSON.stringify(next) === JSON.stringify(cur) ? cur : next
         })
       } catch {}
+      finally { pending = false }
     }, 300)
-    return () => clearInterval(t)
+    return () => { stopped = true; clearInterval(t) }
   }, [])
   // slower poll for comment status (MCP-driven changes)
   useEffect(() => {
-    const t = setInterval(loadComments, 2500)
+    let pending = false
+    const t = setInterval(async () => {
+      if (pending) return
+      pending = true
+      try { await loadComments() }
+      finally { pending = false }
+    }, 2500)
     return () => clearInterval(t)
   }, [loadComments])
 
@@ -629,7 +641,7 @@ export default function App({ project, onBackToProjects }) {
       </main>
 
       {fileMgrOpen && <FileManager activeFile={meta.file} mainFile={meta.main} onOpenFile={onOpened} onClose={() => setFileMgrOpen(false)} onRoomChange={room => setMeta(m => ({ ...m, room }))} />}
-      {presenting && <Presenter onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap} onPointer={sendPresentationPointer} page={presentPage} setPage={setPresentPage} pages={pages} tokens={tokens} />}
+      {presenting && <Presenter onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap} onPointer={sendPresentationPointer} page={presentPage} setPage={setPresentPage} pages={pages} tokens={tokens} renderVersion={rv} />}
     </div>
   )
 }

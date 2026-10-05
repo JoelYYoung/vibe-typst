@@ -208,6 +208,18 @@ fn serve(root: PathBuf, main_rel: String, render_dir: PathBuf) {
             match compile(&world) {
                 Ok(d) => {
                     let pages = render_svgs(&d, &render_dir);
+                    // Publish the exact source used for these SVGs after all pages exist.
+                    // Recording anchors must not be read from a newer source and applied
+                    // to older images while the incremental compiler is catching up.
+                    if let Ok(source) = world.source(world.main) {
+                        let stamp = SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                            .map(|value| value.as_nanos().to_string()).unwrap_or_default();
+                        let snapshot = serde_json::json!({"source": source.text(), "pages": pages, "stamp": stamp});
+                        let pending = render_dir.join(".render-source.json");
+                        if std::fs::write(&pending, snapshot.to_string()).is_ok() {
+                            let _ = std::fs::rename(pending, render_dir.join("render-source.json"));
+                        }
+                    }
                     *doc.lock().unwrap() = Some(d);
                     let v = version.fetch_add(1, Ordering::SeqCst) + 1;
                     println!("{{\"event\":\"rendered\",\"version\":{},\"pages\":{}}}", v, pages);

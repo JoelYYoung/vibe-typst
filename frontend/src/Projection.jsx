@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react'
 import * as api from './api.js'
 import { sanitizePresentationPointer, slidePointToPixels } from './presentationPointer.js'
 import { workspaceChannelName } from './workspaceRouting.js'
+import { projectionLaserStyle } from './presentationLaser.js'
 
 // The AUDIENCE screen: just the current slide, full-bleed. Opened as a second window and
 // dragged onto the projector; it follows the presenter window via a BroadcastChannel.
@@ -50,7 +51,7 @@ export default function Projection() {
             onLoad={(e) => setImageSize({ name, width: e.currentTarget.naturalWidth, height: e.currentTarget.naturalHeight })} />
         : <div className="proj-empty">waiting for slides…</div>}
       {visiblePointer && <span className="presentation-pointer proj-pointer" aria-hidden="true"
-        style={{ left: `${visiblePointer.left}px`, top: `${visiblePointer.top}px` }} />}
+        style={{ ...projectionLaserStyle, left: `${visiblePointer.left}px`, top: `${visiblePointer.top}px` }} />}
     </div>
   )
 }

@@ -426,7 +426,7 @@ def list_project_items(project_dir: Path) -> list[dict]:
     """List all files and directories (non-hidden) inside the project, recursively."""
     items = []
     for p in sorted(project_dir.rglob("*")):
-        if p.name.startswith(".") or p.name.endswith(".backup"):
+        if any(part.startswith(".") for part in p.relative_to(project_dir).parts) or p.name.endswith(".backup"):
             continue
         rel = str(p.relative_to(project_dir))
         if p.is_dir():

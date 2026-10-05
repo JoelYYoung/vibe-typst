@@ -2,6 +2,39 @@
 
 Two supported modes: **local** (single user, Mac) and **server** (multi-user, Linux + Podman + Cloudflare).
 
+## Native Docker workspace images (ARM64 Mac)
+
+The old O3 `Containerfile` imports amd64 artifacts. On ARM64 Docker, build with:
+
+```bash
+cd frontend
+npm ci
+npm run build
+cd ..
+TCB_NATIVE_IMAGE=tcb-workspace:native-candidate bash scripts/build-workspace-native.sh
+```
+
+This compiles the Linux resolver on the Docker host's native architecture and uses
+`Containerfile.native` for native Python dependencies, Typst 0.15.0, Node 22,
+Codex 0.160.0 and Claude Code 2.1.185. Cargo cache/output lives in
+`control/data/native-build-<arch>` on the host; the build container uses two CPUs
+and at most 4 GiB. Test the candidate against a workspace copy before replacing a
+running container. Tag the validated image `tcb-workspace:latest` for future starts.
+
+| Persistent data | Native ARM64 location |
+| --- | --- |
+| Projects and workspace state | Original `/workspace` bind mount |
+| Codex conversations, auth and configuration | `/workspace/.agent-home/codex` |
+| Claude conversations, auth and configuration | `/workspace/.agent-home/claude` |
+| Claude auto-update executables | `/workspace/.agent-home/local-linux-arm64` |
+| Codex npm auto-update executables | `/workspace/.agent-home/codex-npm-linux-arm64` |
+
+The original `local` and `codex-npm` directories remain available for rollback.
+Control ignores inherited `DOCKER_DEFAULT_PLATFORM` (old Mac launchd installations
+forced `linux/amd64`). To deliberately select another platform, set
+`TCB_DOCKER_PLATFORM`. Existing stopped containers retain their original architecture;
+changing an image tag only affects newly created containers.
+
 ---
 
 ## Local Deployment (Mac)

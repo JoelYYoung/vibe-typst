@@ -109,11 +109,75 @@ Touying workflow, and the single-file `main.typ` rule, see the
 
 Click **Present** to open the presenter console. Click **Open projection** to open the audience screen in a second window — it follows your page automatically.
 
+Hold the left mouse button on the current slide to show the laser pointer; releasing
+it hides the dot on both the projection and recorded video. Choose **Hide preview**
+on the next-slide window to give the full right column to your transcript, and
+**Show preview** to restore it. Use **A− / A+** in the transcript header to adjust
+its font size (12–36 px). Preview visibility and font size are remembered in this browser.
+
 - **Presenter console** — slide strip, current slide, next-slide preview, speaker notes, timer
 - **Projection screen** — full-screen slide, no chrome, live sync
 - **Pin / Jump** buttons let you sync the editor preview to the projector and vice versa
 
 Speaker notes live inline in the source as `#speaker-note["…"]`, so Claude can draft or rewrite them the same way it edits slides.
+
+### Recording a presentation
+
+In **Present**, choose **Record presentation**. On each page, click **Start page**,
+narrate and hold the left mouse button when pointing, then **Stop & save page** before
+navigating. **Preview page** plays that page's take; **Re-record page** replaces only
+that page after the new take saves successfully. Recorded pages show a REC badge.
+Both Typst and PDF presentations support this workflow.
+Presenter actions use compact icon buttons; hover for function details. Recording
+actions, duration counters and pacing controls share one toolbar row.
+While recording, the right end of the toolbar shows live microphone input in
+dBFS and a volume meter. Green/yellow/red segments reflect the current level;
+the meter disappears when recording stops. It does not play microphone audio
+through the speakers or measure physical sound pressure.
+New recordings use the projection laser's red core, white ring, glow and shadow,
+scaled for the 1080p frame. Existing takes retain their recorded pixels; re-record
+a page to apply the new laser appearance.
+With FFmpeg installed, previews cache a stream-copied container with complete
+duration and seek indexes, including for older takes. Native video controls use a
+fixed full timeline and show buffering separately; original media stays intact.
+
+Once every page is recorded, **Export full MP4** assembles the current takes in page
+order. When export finishes, use **Download MP4**. The video contains the slide,
+mouse pointer, and microphone audio at 1920x1080 / 30 fps with H.264/AAC; presenter
+controls and speaker notes stay outside the video. Changed slide content requires
+re-recording the affected pages before export.
+
+Use **Clear page recording** to remove just the current take. The toolbar shows
+current-page and total recording time; a live retake replaces the old page in the
+running total. Set **Talk target** in minutes for per-page pacing suggestions,
+allocated by transcript length (CJK characters and alphabetic words). This is a
+reference budget, rather than a prediction of reading speed.
+
+Typst recording mode adds a stable `// vibe-typst-recording: <uuid>` reference on
+each explicit Touying slide opener in the source. Keep it with that slide when
+moving or copying source: reordered slides retain their corresponding recording,
+and deleting a slide removes its association from the current deck. Overlays are
+distinguished within each logical slide. Changed rendered content remains marked
+for rerecording. Old recordings migrate only when content hashes uniquely match;
+unmatched media is preserved. PDF recordings retain their page/content checks.
+
+Use HTTPS or localhost and allow microphone access. Export needs `ffmpeg` and
+`ffprobe` on the backend (`brew install ffmpeg` for local macOS); both workspace
+Containerfiles include these tools.
+
+Per-page takes and pointer timestamps persist beneath
+the project's `.tcb/recordings/`, outside slide Git versions. Refreshing retains
+saved takes. A failed upload offers retry and a local take backup; keep the tab open
+until it saves. Hiding the tab stops the current recording to avoid missing frames.
+Export runs in the background; a server restart requires starting the export again.
+
+Recording smoke tests use disposable projects and Chromium's simulated microphone:
+
+```bash
+cd frontend
+npm run build
+npm run test:recording-e2e
+```
 
 ---
 
