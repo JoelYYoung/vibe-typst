@@ -6,7 +6,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.datastructures import UploadFile
 from starlette.requests import Request as StarletteRequest
@@ -134,10 +134,10 @@ def router(resolve, prepare=None):
             raise HTTPException(404, str(exc)) from exc
 
     @routes.post("/exports")
-    def export(project_id: Optional[str] = None):
+    def export(project_id: Optional[str] = None, options: Optional[dict] = Body(default=None)):
         root, pages = target(project_id)
         try:
-            return recording.start_export(root, pages)
+            return recording.start_export(root, pages, skip_pages=(options or {}).get("skip_pages", []))
         except (ValueError, OSError) as exc:
             raise HTTPException(400, str(exc)) from exc
 

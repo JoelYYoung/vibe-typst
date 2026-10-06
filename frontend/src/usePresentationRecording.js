@@ -179,13 +179,13 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
     finally { if (mounted.current) changeStatus('idle') }
   }
 
-  async function exportVideo() {
+  async function exportVideo(skipPages = []) {
     if (phase.current !== 'idle' || pending || job?.status === 'running') return
     changeStatus('exporting')
     setError('')
     setPreview(false)
     try {
-      const next = await api.startRecordingExport()
+      const next = await api.startRecordingExport({ skip_pages: skipPages })
       if (mounted.current) setJob(next)
     } catch (error) { if (mounted.current) setError(error.message) }
     finally { if (mounted.current) changeStatus('idle') }
@@ -196,8 +196,11 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
   const pageStates = pages.map((name, index) => recordingPageState(takes[index + 1], name,
     snapshot?.key === deckKey ? snapshot.slides[index]?.token : undefined))
   const completed = pageStates.filter((value) => value === 'recorded').length
-  const exportMatches = completed === pages.length && job?.takes?.length === pages.length
-    && job.takes.every((take, index) => takes[index + 1]?.take === take)
+  const exportMatches = snapshot?.key === deckKey && job?.takes?.length === completed
+    && job?.slides?.length === pages.length && job?.pages?.length === completed
+    && job.slides.every((slide, index) => ['name', 'token', 'recording_id'].every(key =>
+      (slide[key] ?? null) === (snapshot.slides[index]?.[key] ?? null)))
+    && job.takes.every((take, index) => takes[job.pages[index]]?.take === take)
   return {
     takes, status, elapsed, audioLevel, error, loaded: loaded && snapshot?.key === deckKey, exportAvailable, job, preview, pending, busy,
     locked: busy || !!pending,

@@ -255,21 +255,28 @@ def encode_mp4(clips, durations, work: Path, progress=lambda value: None):
     return output
 
 
-def start_export(root: Path, pages):
+def start_export(root: Path, pages, skip_pages=()):
     if not shutil.which("ffmpeg"):
         raise ValueError("MP4 export requires FFmpeg on the server")
     if not pages:
         raise ValueError("there are no slides to export")
+    if not isinstance(skip_pages, (list, tuple)) or any(
+        type(page) is not int or not 1 <= page <= len(pages) for page in skip_pages
+    ):
+        raise ValueError("invalid pages to skip")
     if not _export_slot.acquire(blocking=False):
         raise ValueError("another video is exporting; wait for it to finish")
     work = None
     try:
         work = Path(tempfile.mkdtemp(prefix=".export-", dir=root))
-        durations, clips, takes = [], [], []
+        durations, clips, takes, included, skipped = [], [], [], [], []
         with locked(root):
             for page, slide in enumerate(pages, 1):
                 recording_id = slide.get("recording_id")
                 data = _read_take(root, page, recording_id)
+                if not data and page in skip_pages:
+                    skipped.append(page)
+                    continue
                 if not data or (not recording_id and data["name"] != slide["name"]) or data["token"] != slide["token"]:
                     raise ValueError(f"record or re-record page {page} before exporting")
                 clip = work / f"clip-{page}"
@@ -278,6 +285,9 @@ def start_export(root: Path, pages):
                 clips.append(clip)
                 durations.append(data["duration"])
                 takes.append(data["take"])
+                included.append(page)
+        if not clips:
+            raise ValueError("record at least one page before exporting")
         job_id = uuid.uuid4().hex
         with _jobs_lock:
             # Keep one completed output per document; an active download holds its inode.
@@ -286,7 +296,9 @@ def start_export(root: Path, pages):
                     if old.get("path"):
                         Path(old["path"]).unlink(missing_ok=True)
                     del _jobs[old_id]
-            _jobs[job_id] = {"id": job_id, "root": str(root), "status": "running", "progress": 0, "takes": takes}
+            _jobs[job_id] = {"id": job_id, "root": str(root), "status": "running", "progress": 0,
+                             "takes": takes, "pages": included, "skipped_pages": skipped,
+                             "slides": [{key: slide.get(key) for key in ("name", "token", "recording_id")} for slide in pages]}
 
         def update(**values):
             with _jobs_lock:

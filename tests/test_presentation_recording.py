@@ -8,6 +8,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -188,6 +189,52 @@ class RecordingTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "page 1"):
                 recording.start_export(self.root, self.slides)
         self.assertEqual(list(self.root.glob(".export-*")), [])
+
+    def test_partial_export_only_skips_confirmed_missing_pages_and_rejects_empty_or_stale_decks(self):
+        with patch.object(recording.shutil, 'which', return_value='ffmpeg'):
+            with self.assertRaisesRegex(ValueError, 'at least one page'):
+                recording.start_export(self.root, self.slides, skip_pages=[1, 2])
+            self.save(2)
+            for invalid in (None, '1', [True], [0], [3], [1.0]):
+                with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'invalid pages'):
+                    recording.start_export(self.root, self.slides, skip_pages=invalid)
+            # Confirming page 2 cannot silently authorize skipping a newly missing page 1.
+            with self.assertRaisesRegex(ValueError, 'page 1'):
+                recording.start_export(self.root, self.slides, skip_pages=[2])
+            self.slides[1]['token'] = 'f' * 12
+            with self.assertRaisesRegex(ValueError, 'page 2'):
+                recording.start_export(self.root, self.slides, skip_pages=[1, 2])
+        self.assertEqual(list(self.root.glob('.export-*')), [])
+
+    def test_partial_export_api_pins_recorded_pages_in_slide_order(self):
+        self.slides = [{"name": f"page-{page}.svg", "token": str(page) * 12} for page in range(1, 6)]
+        first, last = self.save(2, b'second'), self.save(4, b'fourth')
+        api = FastAPI()
+        api.include_router(recording_routes.router(lambda project_id: (self.root, self.slides)))
+        with patch.object(recording.shutil, 'which', return_value='ffmpeg'), patch.object(
+            recording, 'threading', SimpleNamespace(Thread=lambda **kwargs: SimpleNamespace(start=lambda: None))
+        ):
+            job = None
+            try:
+                with TestClient(api) as client:
+                    self.assertEqual(client.post('/api/recording/exports').status_code, 400)
+                    self.assertEqual(client.post('/api/recording/exports', json={'skip_pages': [True]}).status_code, 400)
+                    response = client.post('/api/recording/exports', json={'skip_pages': [1, 3, 5]})
+                self.assertEqual(response.status_code, 200, response.text)
+                job = response.json()
+                self.assertEqual(job['pages'], [2, 4])
+                self.assertEqual(job['skipped_pages'], [1, 3, 5])
+                self.assertEqual(job['takes'], [first['take'], last['take']])
+                self.assertEqual([slide['token'] for slide in job['slides']], [slide['token'] for slide in self.slides])
+                recording.clear_take(self.root, 2)
+                work = next(self.root.glob('.export-*'))
+                self.assertEqual((work / 'clip-2').read_bytes(), b'second')
+                self.assertEqual((work / 'clip-4').read_bytes(), b'fourth')
+            finally:
+                if job:
+                    with recording._jobs_lock:
+                        recording._jobs.pop(job['id'], None)
+                    recording._export_slot.release()
 
     def test_recordings_are_isolated_by_document_and_project(self):
         self.save(1)

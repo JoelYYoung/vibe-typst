@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawn, execFileSync } from 'node:child_process'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import net from 'node:net'
@@ -162,6 +162,7 @@ try {
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
     await enterPresenter(page, projectId)
+    assert.equal(await page.$eval('[aria-label="Export full MP4"]', node => node.disabled), true, 'an empty deck cannot export a video')
     assert.ok(await page.$eval('.pr-recording-row', row => {
       const buttons = [...row.querySelectorAll('button')]
       const top = buttons[0].getBoundingClientRect().top
@@ -224,6 +225,7 @@ try {
     assert.equal(await page.$eval('[aria-label="Target presentation minutes"]', input => input.value), '6')
     assert.equal(await page.$eval('.pr-note-edit', node => getComputedStyle(node).fontSize), '19px', 'font size must survive reload')
     await clickText(page, '.pr-recording button', 'Export full MP4')
+    assert.equal(await page.$('.pr-export-dialog'), null, 'fully recorded decks export without a warning')
     await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
     const href = await page.$eval('.pr-recording a[download="presentation.mp4"]', link => link.href)
     const response = await fetch(href)
@@ -266,10 +268,69 @@ try {
     assert.equal(await page.$('.pr-recording a[download="presentation.mp4"]'), null)
     assert.ok((await page.$eval('.pr-recording-total', node => node.textContent)).includes(clock(after[1].duration)))
     assert.equal(await page.$eval('[aria-label="Current page recording time"]', node => node.textContent.trim()), '00:00')
+    assert.equal(await page.$eval('[aria-label="Export full MP4"]', node => node.disabled), false, 'one recorded page is enough to export')
+    let exportRequests = 0
+    page.on('request', request => {
+      if (request.method() === 'POST' && request.url().includes('/api/recording/exports')) exportRequests++
+    })
+    const openExport = async () => {
+      await page.$eval('[aria-label="Export full MP4"]', node => { node.focus(); node.click() })
+      await page.waitForSelector('.pr-export-dialog[open]')
+    }
+    await openExport()
+    assert.deepEqual(await page.$$eval('.pr-export-missing li', nodes => nodes.map(node => node.textContent)), ['Page 1'])
+    assert.equal(await page.$eval('.pr-export-dialog', node => node.contains(document.activeElement)), true)
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Tab')
+    assert.equal(await page.$eval('.pr-export-dialog', node => node.contains(document.activeElement)), true, 'keyboard focus must remain in the modal')
+    await page.keyboard.press('Escape')
+    await waitFor(page, () => !document.querySelector('.pr-export-dialog'))
+    assert.ok(await page.$('.pr-recording'), 'Escape must close the dialog without exiting presenter')
+    assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), 'Export full MP4', 'closing must restore focus to export')
+    assert.equal(exportRequests, 0)
+    await openExport()
+    await clickText(page, '.pr-export-dialog button', 'Cancel')
+    await waitFor(page, () => !document.querySelector('.pr-export-dialog'))
+    assert.equal(exportRequests, 0, 'cancel must not start an export job')
+    await openExport()
+    if (process.env.RECORDING_E2E_SCREENSHOTS) {
+      await mkdir(process.env.RECORDING_E2E_SCREENSHOTS, { recursive: true })
+      await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-partial-export.png` })
+    }
+    await page.setViewport({ width: 375, height: 667 })
+    assert.ok(await page.$eval('.pr-export-dialog', node => {
+      const rect = node.getBoundingClientRect()
+      return rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight
+    }), 'confirmation dialog must fit a narrow viewport')
+    if (process.env.RECORDING_E2E_SCREENSHOTS) {
+      await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-partial-export-mobile.png` })
+    }
+    await page.setViewport({ width: 1440, height: 900 })
+    await clickText(page, '.pr-export-dialog button', 'Continue export')
+    await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
+    assert.equal(exportRequests, 1)
+    const partialHref = await page.$eval('.pr-recording a[download="presentation.mp4"]', node => node.href)
+    const partialResponse = await fetch(partialHref)
+    assert.equal(partialResponse.status, 200)
+    const partialMp4 = `${temp}/${projectId}-partial.mp4`
+    await writeFile(partialMp4, Buffer.from(await partialResponse.arrayBuffer()))
+    const partialInfo = JSON.parse(execFileSync('ffprobe', ['-v', 'error', '-show_streams', '-show_format', '-of', 'json', partialMp4]))
+    assert.ok(partialInfo.streams.some(stream => stream.codec_name === 'h264'))
+    assert.ok(partialInfo.streams.some(stream => stream.codec_name === 'aac'))
+    assert.ok(Math.abs(Number(partialInfo.format.duration) - after[1].duration) < .2, 'partial MP4 must contain only the recorded second page')
+    const partialPixel = execFileSync('ffmpeg', ['-v', 'error', '-ss', '0.2', '-i', partialMp4, '-frames:v', '1',
+      '-vf', 'crop=2:2:40:40,scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'])
+    const originalSecondPixel = execFileSync('ffmpeg', ['-v', 'error', '-ss', String(after[0].duration + .2), '-i', mp4, '-frames:v', '1',
+      '-vf', 'crop=2:2:40:40,scale=1:1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'])
+    assert.ok([...partialPixel].every((value, index) => Math.abs(value - originalSecondPixel[index]) < 12), 'partial video must show the recorded page rather than a silent missing page')
+    const partialPcm = execFileSync('ffmpeg', ['-v', 'error', '-ss', '0.3', '-i', partialMp4, '-t', '0.5', '-vn', '-f', 's16le', 'pipe:1'])
+    assert.ok(partialPcm.some(value => value !== 0), 'audio must survive a partial export')
     await enterPresenter(page, projectId)
     await waitFor(page, () => document.querySelectorAll('.pr-thumb-recorded.recorded').length === 1)
+    assert.ok(await page.$('.pr-recording a[download="presentation.mp4"]'), 'partial download remains available after reload')
     if (projectId === 'recording-typst') {
       await recordPage(page)
+      assert.equal(await page.$('.pr-recording a[download="presentation.mp4"]'), null, 'adding a missing take must invalidate the previous partial export')
       const original = await takes(projectId)
       assert.ok(original.every(take => take.recording_id))
       let response = await fetch(`${baseUrl}/test/typst/order`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '[2,1]' })
@@ -286,7 +347,7 @@ try {
       assert.equal(remaining[0].page, 1)
     }
     assert.deepEqual(errors, [])
-    console.log(`${projectId}: laser in video, transcript layout/font persistence, clear page, total/page/target time, source bindings, recovery, retake, H.264/AAC MP4 passed`)
+    console.log(`${projectId}: partial/full H.264/AAC export, custom dialog cancel/Escape/focus, download invalidation, laser, microphone meter, transcript controls, source bindings and recovery passed`)
     await page.close()
   }
 } catch (error) {

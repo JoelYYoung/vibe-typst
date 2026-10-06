@@ -150,7 +150,7 @@ export const saveRecordingPage = (page, video, metadata, signal) => {
   }).then(J)
 }
 export const recordingPageUrl = (page, take) => workspacePath(scoped(`/api/recording/pages/${page}/video?take=${encodeURIComponent(take)}`))
-export const startRecordingExport = () => POST(scoped('/api/recording/exports'))
+export const startRecordingExport = (options = {}) => POST(scoped('/api/recording/exports'), options)
 export const getRecordingExport = (id) => trackedFetch(workspacePath(scoped(`/api/recording/exports/${encodeURIComponent(id)}`))).then(J)
 export const recordingExportUrl = (id) => workspacePath(scoped(`/api/recording/exports/${encodeURIComponent(id)}/video`))
 

@@ -29,7 +29,7 @@ test('recording upload, preview, jobs and download stay in the addressed workspa
   try {
     await api.getRecording()
     await api.saveRecordingPage(2, new Blob(['video']), { duration: 1 })
-    await api.startRecordingExport()
+    await api.startRecordingExport({ skip_pages: [1, 3] })
     await api.getRecordingExport('job')
     await api.prepareRecording()
     await api.clearRecordingPage(2)
@@ -39,6 +39,7 @@ test('recording upload, preview, jobs and download stay in the addressed workspa
     }
     assert.ok(requests[1].options.body instanceof FormData)
     assert.equal(requests[1].options.method, 'PUT')
+    assert.deepEqual(JSON.parse(requests[2].options.body), { skip_pages: [1, 3] })
     assert.equal(requests.at(-1).options.method, 'DELETE')
     assert.ok(api.recordingPageUrl(2, 'take').includes('project_id=deck-a'))
     assert.ok(api.recordingExportUrl('job').includes('project_id=deck-a'))

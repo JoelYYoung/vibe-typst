@@ -141,8 +141,10 @@ With FFmpeg installed, previews cache a stream-copied container with complete
 duration and seek indexes, including for older takes. Native video controls use a
 fixed full timeline and show buffering separately; original media stays intact.
 
-Once every page is recorded, **Export full MP4** assembles the current takes in page
-order. When export finishes, use **Download MP4**. The video contains the slide,
+With at least one page recorded, **Export full MP4** assembles the current takes in
+page order. If some pages have no recording, an in-app dialog lists them before
+you continue; those pages are skipped. With all pages recorded, export starts
+directly. When export finishes, use **Download MP4**. The video contains the slide,
 mouse pointer, and microphone audio at 1920x1080 / 30 fps with H.264/AAC; presenter
 controls and speaker notes stay outside the video. Changed slide content requires
 re-recording the affected pages before export.

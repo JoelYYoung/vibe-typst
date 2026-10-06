@@ -244,6 +244,22 @@ a:hover { text-decoration: underline; }
 .pr-recording-recovery { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .pr-recording a.pr-btn { text-decoration: none; box-sizing: border-box; }
 .pr-export-progress { position: absolute; top: 100%; font-size: 9px; line-height: 10px; }
+.pr-export-dialog { width: min(500px, calc(100vw - 40px)); max-height: calc(100dvh - 40px); box-sizing: border-box; padding: 24px; border: 1px solid #3e4c60; border-radius: 14px; background: #141a22; color: #e7ecf2; font-family: inherit; box-shadow: 0 24px 80px #0008; }
+.pr-export-dialog::backdrop { background: #050a12b8; backdrop-filter: blur(4px); }
+.pr-export-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.pr-export-dialog h2 { margin: 3px 0 0; font-size: 20px; font-weight: 600; line-height: 1.35; }
+.pr-export-dialog-heading .pr-btn { flex: none; }
+.pr-export-dialog p { margin: 14px 0 20px; color: #9fb4cc; font-size: 14px; line-height: 1.6; }
+.pr-export-missing { padding: 14px 16px; background: #0f141b; border-left: 3px solid #ebc36c; border-radius: 6px; }
+.pr-export-missing-heading { color: #ebc36c; font-size: 13px; font-weight: 500; }
+.pr-export-missing ul { display: flex; flex-wrap: wrap; gap: 8px; max-height: 170px; overflow-y: auto; list-style: none; margin: 12px 0 0; padding: 0; }
+.pr-export-missing li { padding: 4px 9px; border: 1px solid #2c3848; border-radius: 5px; color: #cfdae8; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pr-export-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.pr-export-dialog-actions .pr-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 38px; padding: 8px 14px; }
+.pr-export-dialog .pr-export-confirm { background: #2f6fb0; border-color: #488bc9; color: #fff; }
+.pr-export-dialog .pr-export-confirm:hover:not(:disabled) { background: #3880c5; }
+.pr-export-dialog .pr-btn:focus-visible { outline: 2px solid #75b9f7; outline-offset: 3px; }
+@media (max-width: 480px) { .pr-export-dialog { padding: 20px; } .pr-export-dialog h2 { font-size: 18px; } }
 .pr-recording-preview { margin: 12px auto 0; max-width: 640px; }
 .pr-recording-preview video { display: block; width: 100%; max-height: 32vh; background: #000; }
 .pr-mic-meter { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 12px; border-left: 1px solid #2c3848; height: 28px; color: #9fb4cc; }

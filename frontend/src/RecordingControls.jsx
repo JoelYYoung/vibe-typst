@@ -1,10 +1,13 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { formatRecordingTime } from './slideRecorder.js'
 import { allocateTranscriptTime, recordingDurations } from './presentationTiming.js'
 import Icon from './PresenterIcon.jsx'
+import RecordingExportDialog from './RecordingExportDialog.jsx'
 
 export default function RecordingControls({ recording: r, page, total, transcripts, targetMinutes, onTargetMinutesChange }) {
   const [backup, setBackup] = useState(null)
+  const [confirmExport, setConfirmExport] = useState(false)
+  const exportTrigger = useRef(null)
   useEffect(() => {
     if (!r.pending) { setBackup(null); return }
     const url = URL.createObjectURL(r.pending.video)
@@ -17,6 +20,14 @@ export default function RecordingControls({ recording: r, page, total, transcrip
   const durations = recordingDurations(r.takes, total, page, live ? r.elapsed : null)
   const suggested = allocateTranscriptTime(transcripts, targetMinutes)[page - 1]
   const startLabel = r.status === 'starting' ? 'Starting microphone…' : r.status === 'saving' ? 'Saving page…' : current ? 'Re-record page' : 'Start page'
+  const missingPages = r.pageStates.flatMap((state, index) => state === 'missing' ? [index + 1] : [])
+  const hasStalePages = r.pageStates.includes('stale')
+  const exportDisabled = r.locked || !r.loaded || r.status === 'exporting' || r.job?.status === 'running'
+    || !r.exportAvailable || !r.completed || hasStalePages
+  function requestExport() {
+    if (missingPages.length) setConfirmExport(true)
+    else r.exportVideo()
+  }
   return <section className="pr-recording" aria-label="Slide recording">
     <div className="pr-recording-row">
       <span className={`pr-recording-dot ${r.status === 'recording' ? 'live' : ''}`} aria-hidden="true" />
@@ -43,9 +54,9 @@ export default function RecordingControls({ recording: r, page, total, transcrip
         aria-label="Clear page recording" title="Clear only this page's recording">
         <Icon name="trash" />
       </button>
-      <button className="pr-btn pr-icon-btn" onClick={r.exportVideo} aria-label="Export full MP4"
-        title={r.job?.status === 'running' ? `Exporting ${r.job.progress}%` : !r.exportAvailable ? 'MP4 export requires FFmpeg' : 'Export all recorded pages as one MP4 video'}
-        disabled={r.locked || r.status === 'exporting' || r.job?.status === 'running' || !r.exportAvailable || r.completed !== total || !total}>
+      <button ref={exportTrigger} className="pr-btn pr-icon-btn" onClick={requestExport} aria-label="Export full MP4"
+        title={r.job?.status === 'running' ? `Exporting ${r.job.progress}%` : !r.exportAvailable ? 'MP4 export requires FFmpeg' : hasStalePages ? 'Re-record changed pages before exporting' : !r.completed ? 'Record at least one page to export' : 'Export recorded pages as one MP4 video'}
+        disabled={exportDisabled}>
         <Icon name="export" />{r.job?.status === 'running' && <span className="pr-export-progress">{r.job.progress}%</span>}
       </button>
       <button className="pr-btn pr-icon-btn pr-record-reload" onClick={r.load} disabled={r.locked || r.status !== 'idle'}
@@ -60,6 +71,8 @@ export default function RecordingControls({ recording: r, page, total, transcrip
         <output className="pr-mic-value" aria-hidden="true">{r.audioLevel === null ? '—' : Math.round(r.audioLevel)} <small>dBFS</small></output>
       </div>}
     </div>
+    {confirmExport && <RecordingExportDialog missingPages={missingPages} recordedCount={r.completed} disabled={exportDisabled} triggerRef={exportTrigger}
+      onCancel={() => setConfirmExport(false)} onExport={() => { setConfirmExport(false); r.exportVideo(missingPages) }} />}
     {(r.error || r.job?.status === 'failed') && <div className="pr-recording-error" role="alert">{r.error || r.job.error}</div>}
     {r.pending && <div className="pr-recording-recovery">
       <button className="pr-btn pr-icon-btn" disabled={r.busy} onClick={r.retry} aria-label={`Retry saving page ${r.pending.page}`} title="Retry saving the unsaved recording"><Icon name="save" /></button>
