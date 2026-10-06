@@ -243,7 +243,10 @@ a:hover { text-decoration: underline; }
 .pr-recording-error { margin-top: 8px; color: #ffb6bc; font-size: 13px; }
 .pr-recording-recovery { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
 .pr-recording a.pr-btn { text-decoration: none; box-sizing: border-box; }
-.pr-export-progress { position: absolute; top: 100%; font-size: 9px; line-height: 10px; }
+.pr-exporting { overflow: hidden; isolation: isolate; }
+.pr-exporting:disabled { opacity: 1; color: #e7ecf2; border-color: #476c92; cursor: progress; }
+.pr-export-progress { position: absolute; top: 0; bottom: 0; left: 0; background: #2f6fb0; pointer-events: none; transition: width 180ms ease-out; }
+.pr-exporting > .pr-icon { position: relative; z-index: 1; }
 .pr-export-dialog { width: min(500px, calc(100vw - 40px)); max-height: calc(100dvh - 40px); box-sizing: border-box; padding: 24px; border: 1px solid #3e4c60; border-radius: 14px; background: #141a22; color: #e7ecf2; font-family: inherit; box-shadow: 0 24px 80px #0008; }
 .pr-export-dialog::backdrop { background: #050a12b8; backdrop-filter: blur(4px); }
 .pr-export-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
@@ -271,7 +274,7 @@ a:hover { text-decoration: underline; }
 .pr-mic-bar.lit.hot { background: #ff747d; }
 .pr-mic-value { min-width: 72px; text-align: right; color: #cfdae8; font-variant-numeric: tabular-nums; font-size: 12px; }
 .pr-mic-value small { font-size: 10px; color: #9fb4cc; }
-@media (prefers-reduced-motion: reduce) { .pr-mic-bar { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .pr-mic-bar, .pr-export-progress { transition: none; } }
 .pr-thumb-recorded { position: absolute; top: 3px; right: 4px; z-index: 2; border-radius: 4px; padding: 0 5px; line-height: 1.6; font-size: 10px; font-weight: 700; background: #164b40; color: #a8f0dc; }
 .pr-thumb-recorded.stale { background: #653f15; color: #ffda9a; }
 

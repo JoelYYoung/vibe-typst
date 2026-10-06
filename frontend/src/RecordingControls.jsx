@@ -22,6 +22,8 @@ export default function RecordingControls({ recording: r, page, total, transcrip
   const startLabel = r.status === 'starting' ? 'Starting microphone…' : r.status === 'saving' ? 'Saving page…' : current ? 'Re-record page' : 'Start page'
   const missingPages = r.pageStates.flatMap((state, index) => state === 'missing' ? [index + 1] : [])
   const hasStalePages = r.pageStates.includes('stale')
+  const exporting = r.status === 'exporting' || r.job?.status === 'running'
+  const exportProgress = r.job?.status === 'running' ? Math.max(0, Math.min(100, r.job.progress ?? 0)) : 0
   const exportDisabled = r.locked || !r.loaded || r.status === 'exporting' || r.job?.status === 'running'
     || !r.exportAvailable || !r.completed || hasStalePages
   function requestExport() {
@@ -54,10 +56,12 @@ export default function RecordingControls({ recording: r, page, total, transcrip
         aria-label="Clear page recording" title="Clear only this page's recording">
         <Icon name="trash" />
       </button>
-      <button ref={exportTrigger} className="pr-btn pr-icon-btn" onClick={requestExport} aria-label="Export full MP4"
-        title={r.job?.status === 'running' ? `Exporting ${r.job.progress}%` : !r.exportAvailable ? 'MP4 export requires FFmpeg' : hasStalePages ? 'Re-record changed pages before exporting' : !r.completed ? 'Record at least one page to export' : 'Export recorded pages as one MP4 video'}
+      <button ref={exportTrigger} className={`pr-btn pr-icon-btn${exporting ? ' pr-exporting' : ''}`} onClick={requestExport} aria-label="Export full MP4"
+        title={exporting ? `Exporting ${exportProgress}%` : !r.exportAvailable ? 'MP4 export requires FFmpeg' : hasStalePages ? 'Re-record changed pages before exporting' : !r.completed ? 'Record at least one page to export' : 'Export recorded pages as one MP4 video'}
         disabled={exportDisabled}>
-        <Icon name="export" />{r.job?.status === 'running' && <span className="pr-export-progress">{r.job.progress}%</span>}
+        {exporting && <span className="pr-export-progress" style={{ width: `${exportProgress}%` }} role="progressbar"
+          aria-label="Video export progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={exportProgress} />}
+        <Icon name="export" />
       </button>
       <button className="pr-btn pr-icon-btn pr-record-reload" onClick={r.load} disabled={r.locked || r.status !== 'idle'}
         aria-label="Reload recordings" title="Reload saved page recordings"><Icon name="refresh" /></button>
