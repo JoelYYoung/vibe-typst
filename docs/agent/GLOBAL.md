@@ -15,11 +15,10 @@ GLOBAL.md 由当前主 agent 维护，最多 150 行。保留已有未提交修�
 上线完成必须报告可观察的验证结果，区分本地验收和线上部署。
 
 ## 进度与下一步
-进行中：tasks/pending/T-010-export-button-progress/spec.md。
-将导出进度移入图标按钮，以填充色块显示，保持工具栏高度。
+当前无进行中任务。导出按钮内部填充进度已上线并同步 GitHub main。
 公网地址：https://vibetypst.yjwspace.win。
-正式工作区和 latest 使用 partial-export-20261006 原生镜像，包含 FFmpeg。
+正式工作区和 latest 使用 export-progress-20261007 原生镜像，包含 FFmpeg。
 Typst 录制绑定通过源内 UUID，单页媒体保存于项目 .tcb。
-最终候选真实 Typst/PDF 音视频、缺页确认与公网长清单验收通过；
-728 原文件字节一致，挂载/状态及旧容器回退保留。独立账户草稿保持未提交。
+最终候选与公网按钮 0/50/100% 填充、固定高度、完成恢复与截图验收通过；
+729 原文件字节一致，挂载/状态及旧容器回退保留。独立账户草稿保持未提交。
 最新部署私密备份入口：control/data/presenter-deployment-backup-path。
