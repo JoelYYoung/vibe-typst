@@ -15,11 +15,10 @@ GLOBAL.md 由当前主 agent 维护，最多 150 行。保留已有未提交修�
 上线完成必须报告可观察的验证结果，区分本地验收和线上部署。
 
 ## 进度与下一步
-进行中：tasks/pending/T-011-export-loudness-normalization/spec.md。
-实现合成视频逐页响度统一，保留原录音、讲话强弱和现有进度控件。
+当前无进行中任务。导出响度统一与轻度降噪已上线并同步 GitHub main。
 公网地址：https://vibetypst.yjwspace.win。
-正式工作区和 latest 使用 export-progress-20261007 原生镜像，包含 FFmpeg。
-Typst 录制绑定通过源内 UUID，单页媒体保存于项目 .tcb。
-最终候选与公网按钮 0/50/100% 填充、固定高度、完成恢复与截图验收通过；
-729 原文件字节一致，挂载/状态及旧容器回退保留。独立账户草稿保持未提交。
+正式工作区和 latest 使用 loudness-normalization-20261007 原生镜像，包含 FFmpeg。
+Typst 录制绑定通过源内 UUID，单页媒体保存于项目 .tcb；原录音与预览不处理。
+324 后端与最终候选音量/降噪/延迟/真实 Typst/PDF 音视频及公网验收通过；
+739 原文件字节一致，挂载/状态及旧容器回退保留。独立账户草稿保持未提交。
 最新部署私密备份入口：control/data/presenter-deployment-backup-path。
