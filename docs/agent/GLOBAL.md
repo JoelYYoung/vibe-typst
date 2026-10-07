@@ -15,7 +15,8 @@ GLOBAL.md 由当前主 agent 维护，最多 150 行。保留已有未提交修�
 上线完成必须报告可观察的验证结果，区分本地验收和线上部署。
 
 ## 进度与下一步
-当前无进行中任务。导出按钮内部填充进度已上线并同步 GitHub main。
+进行中：tasks/pending/T-011-export-loudness-normalization/spec.md。
+实现合成视频逐页响度统一，保留原录音、讲话强弱和现有进度控件。
 公网地址：https://vibetypst.yjwspace.win。
 正式工作区和 latest 使用 export-progress-20261007 原生镜像，包含 FFmpeg。
 Typst 录制绑定通过源内 UUID，单页媒体保存于项目 .tcb。

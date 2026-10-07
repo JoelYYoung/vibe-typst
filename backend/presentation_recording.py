@@ -213,11 +213,45 @@ def get_job(root: Path, job_id: str):
         return dict(job)
 
 
-def _run_ffmpeg(args):
-    process = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y", *args],
+def _run_ffmpeg(args, loglevel="error"):
+    process = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", loglevel, "-nostats", "-nostdin", "-y", *args],
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
     if process.returncode:
         raise ValueError("Video conversion failed. Check that the page recording has audio and video, then retry.")
+    return process.stderr.decode("utf-8", errors="replace")
+
+
+def _export_audio_filter(duration):
+    # afftdn buffers two 12.5ms hops. Pad and discard that delay so quiet/short
+    # takes retain their final samples and speech stays aligned with the slide.
+    return (f"aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,atrim=duration={duration},"
+            f"apad=whole_dur={duration + .025},afftdn=nr=8:nf=-50:tn=1:gs=5,"
+            f"atrim=start=0.025:duration={duration},asetpts=PTS-STARTPTS")
+
+
+def normalized_audio_filter(clip: Path, duration):
+    # Measure the same stereo, timed signal that will be encoded. This also accounts
+    # for mono microphones and preserves each slide's audio/video alignment.
+    audio = _export_audio_filter(duration)
+    target = "loudnorm=I=-16:TP=-1.5:LRA=50"
+    report = _run_ffmpeg(["-i", str(clip), "-map", "0:a:0", "-vn", "-af", audio + "," + target + ":print_format=json",
+                          "-t", str(duration), "-f", "null", "-"], loglevel="info")
+    reports = re.findall(r'\{\s*"input_i"\s*:[^{}]*\}', report)
+    try:
+        stats = json.loads(reports[-1]) if reports else {}
+        measured = {option: float(stats[key]) for option, key in (
+            ("measured_I", "input_i"), ("measured_TP", "input_tp"),
+            ("measured_LRA", "input_lra"), ("measured_thresh", "input_thresh"), ("offset", "target_offset"))}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Could not measure recording loudness; please retry exporting.") from exc
+    # Silence and very short takes have no finite integrated loudness. Preserve them
+    # rather than boosting silence or feeding infinity into FFmpeg's second pass.
+    if not all(math.isfinite(value) for value in measured.values()):
+        return audio
+    settings = ":".join(f"{key}={value}" for key, value in measured.items())
+    # Prefer a constant gain per page; leave natural speech dynamics intact. FFmpeg
+    # falls back to peak limiting when a linear gain would exceed the true-peak target.
+    return audio + "," + target + ":" + settings + ":linear=true,aresample=48000"
 
 
 def validate_media(path: Path):
@@ -239,13 +273,14 @@ def encode_mp4(clips, durations, work: Path, progress=lambda value: None):
     parts = []
     for index, (clip, duration) in enumerate(zip(clips, durations)):
         part = work / f"part-{index}.mp4"
+        audio = normalized_audio_filter(clip, duration)
         # Re-encode each independently recorded container: raw WebM concatenation does not
         # repair timestamps or changing codec settings. Force one interoperable AV format.
         _run_ffmpeg(["-i", str(clip), "-map", "0:v:0", "-map", "0:a:0",
                      "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,tpad=stop_mode=clone:stop_duration=1",
-                     "-af", "aresample=48000:async=1:first_pts=0,apad", "-t", str(duration),
+                     "-af", audio, "-t", str(duration),
                      "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
-                     "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-threads", "2", str(part)])
+                     "-c:a", "aac", "-b:a", "192k", "-ac", "2", "-ar", "48000", "-threads", "2", str(part)])
         parts.append(part)
         progress(round((index + 1) / len(clips) * 90))
     listing = work / "concat.txt"

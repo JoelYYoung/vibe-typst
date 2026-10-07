@@ -1,5 +1,8 @@
 import hashlib
+from array import array
 import json
+import math
+import random
 import re
 import shutil
 import subprocess
@@ -7,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -340,6 +344,117 @@ class RecordingTest(unittest.TestCase):
             root, pages = workspace._recording_target("recorded")
         self.assertEqual(root, self.root)
         self.assertEqual(pages, [{"name": slide.name, "token": hashlib.sha1(slide.read_bytes()).hexdigest()[:12], "recording_id": None, "binding_required": True}])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
+    def test_export_balances_page_loudness_preserves_dynamics_silence_short_takes_and_sources(self):
+        clips, durations = [], [4, 4, .6, .1]
+        for index, (duration, gain) in enumerate(zip(durations, (.12, 1.2, 0, .12))):
+            clip = self.project / f'volume-{index}.webm'
+            subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=30',
+                            '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', str(duration),
+                            '-af', f"volume='if(lt(t,2),{gain},{gain * 2})':eval=frame",
+                            '-c:v', 'libvpx', '-c:a', 'libopus', str(clip)], check=True)
+            clips.append(clip)
+        hashes = [hashlib.sha256(clip.read_bytes()).hexdigest() for clip in clips]
+
+        def rms(path, start, duration=.5):
+            pcm = subprocess.check_output(['ffmpeg', '-v', 'error', '-ss', str(start), '-i', str(path),
+                                           '-t', str(duration), '-map', '0:a:0', '-f', 'f32le', 'pipe:1'])
+            samples = array('f', pcm)
+            self.assertTrue(samples)
+            return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+        before = 20 * math.log10(rms(clips[1], 0, 4) / rms(clips[0], 0, 4))
+        self.assertGreater(before, 19)
+        work = self.project / 'normalized-export'
+        work.mkdir()
+        progress = []
+        output = recording.encode_mp4(clips, durations, work, progress.append)
+        after = 20 * math.log10(rms(output, 4, 4) / rms(output, 0, 4))
+        self.assertLess(abs(after), .5, f'input difference {before:.2f} dB, export difference {after:.2f} dB')
+        for start in (0, 4):
+            variation = 20 * math.log10(rms(output, start + 2.5) / rms(output, start + .5))
+            self.assertAlmostEqual(variation, 6.02, delta=1, msg='gentle denoising must preserve the loud/quiet speech difference')
+            report = subprocess.run(['ffmpeg', '-hide_banner', '-nostats', '-ss', str(start), '-t', '4', '-i', str(output),
+                                     '-map', '0:a:0', '-af', 'ebur128=peak=true', '-f', 'null', '-'],
+                                    capture_output=True, text=True, check=True).stderr
+            integrated = float(re.findall(r'I:\s*(-?\d+(?:\.\d+)?) LUFS', report)[-1])
+            peak = float(re.findall(r'Peak:\s*(-?\d+(?:\.\d+)?) dBFS', report)[-1])
+            self.assertAlmostEqual(integrated, -16, delta=.5)
+            self.assertLess(peak, -1, 'AAC output must retain peak headroom')
+        self.assertLess(rms(output, 8.15, .2), 1e-5, 'silent takes must not become noise')
+        self.assertGreater(rms(output, 8.64, .03), 1e-4, 'a very short take must still have audio')
+        info = json.loads(subprocess.check_output(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(output)]))
+        self.assertAlmostEqual(float(info['format']['duration']), sum(durations), delta=.15)
+        self.assertTrue(any(row['codec_name'] == 'aac' and row['sample_rate'] == '48000' and row['channels'] == 2 for row in info['streams']))
+        self.assertTrue(any(row['codec_name'] == 'h264' and row['width'] == 1920 and row['height'] == 1080 for row in info['streams']))
+        self.assertEqual(hashes, [hashlib.sha256(clip.read_bytes()).hexdigest() for clip in clips])
+        self.assertEqual(progress, sorted(progress))
+        self.assertEqual(progress[-1], 90)
+
+    def test_loudness_analysis_rejects_missing_or_malformed_statistics(self):
+        for report in ('no statistics', '{"input_i":"invalid"}', '{"input_i":-20}'):
+            with self.subTest(report=report), patch.object(recording, '_run_ffmpeg', return_value=report):
+                with self.assertRaisesRegex(ValueError, 'measure recording loudness'):
+                    recording.normalized_audio_filter(self.project / 'take.webm', 1)
+
+    @unittest.skipUnless(shutil.which('ffmpeg'), 'FFmpeg required')
+    def test_export_denoises_background_without_delaying_or_truncating_speech(self):
+        rate, duration = 48000, 6
+        rng = random.Random(17)
+        noisy = self.project / 'noisy-voice.wav'
+        values = array('h', (round(32767 * ((.07 * math.sin(2 * math.pi * 660 * i / rate) if 2 * rate <= i < 4 * rate else 0)
+                                          + rng.uniform(-.002, .002))) for i in range(rate * duration)))
+
+        def write_wav(path, samples):
+            with wave.open(str(path), 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(rate)
+                wav.writeframes(samples.tobytes())
+
+        def samples(path, filters=None):
+            args = ['ffmpeg', '-v', 'error', '-i', str(path), '-map', '0:a:0']
+            if filters:
+                args += ['-af', filters]
+            return array('f', subprocess.check_output([*args, '-ac', '1', '-ar', str(rate), '-f', 'f32le', 'pipe:1']))
+
+        def rms(signal, start, end):
+            interval = signal[round(start * rate):round(end * rate)]
+            self.assertTrue(interval)
+            return math.sqrt(sum(value * value for value in interval) / len(interval))
+
+        write_wav(noisy, values)
+        before = samples(noisy)
+        clip = self.project / 'noisy-page.webm'
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=blue:s=160x90:r=30',
+                        '-i', str(noisy), '-t', str(duration), '-c:v', 'libvpx', '-c:a', 'libopus', str(clip)], check=True)
+        clip_hash = hashlib.sha256(clip.read_bytes()).hexdigest()
+        work = self.project / 'denoised-export'
+        work.mkdir()
+        output = recording.encode_mp4([clip], [duration], work)
+        after = samples(output)
+        before_ratio = rms(before, .7, 1.7) / rms(before, 2.5, 3.5)
+        after_ratio = rms(after, .7, 1.7) / rms(after, 2.5, 3.5)
+        improvement = 20 * math.log10(before_ratio / after_ratio)
+        self.assertGreater(improvement, 3, f'noise-to-voice ratio improved by only {improvement:.2f} dB')
+        self.assertGreater(rms(after, 2.5, 3.5), .03, 'speech signal must remain audible')
+        self.assertEqual(hashlib.sha256(clip.read_bytes()).hexdigest(), clip_hash)
+
+        # Impulses verify timing directly, including speech samples near the end.
+        impulse = self.project / 'timing.wav'
+        values = array('h', [0]) * (rate * duration)
+        locations = [rate // 4, rate * duration - 480]
+        for position in locations:
+            values[position] = 16384
+        write_wav(impulse, values)
+        cleaned = samples(impulse, recording._export_audio_filter(duration))
+        self.assertEqual(len(cleaned), rate * duration)
+        for position in locations:
+            start, end = max(0, position - 1800), min(len(cleaned), position + 1800)
+            peak = max(range(start, end), key=lambda index: abs(cleaned[index]))
+            self.assertLessEqual(abs(peak - position), 2, 'denoising must compensate its buffering delay')
+            self.assertGreater(abs(cleaned[peak]), .01, 'the final speech samples must not be lost')
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg required")
     def test_real_mp4_has_audio_correct_slide_order_and_immutable_export_snapshot(self):

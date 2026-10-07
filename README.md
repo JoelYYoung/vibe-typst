@@ -149,6 +149,13 @@ mouse pointer, and microphone audio at 1920x1080 / 30 fps with H.264/AAC; presen
 controls and speaker notes stay outside the video. Changed slide content requires
 re-recording the affected pages before export.
 
+Export applies gentle [background noise reduction](https://www.ffmpeg.org/ffmpeg-filters.html#afftdn)
+before automatically balancing loudness between page recordings using
+[FFmpeg loudness normalization](https://www.ffmpeg.org/ffmpeg-filters.html#loudnorm)
+(target -16 LUFS with true-peak headroom), so page transitions have more consistent volume. It
+preserves natural speech dynamics where possible; silent or unmeasurably short
+takes are not boosted. Original recordings and single-page previews are preserved.
+
 Use **Clear page recording** to remove just the current take. The toolbar shows
 current-page and total recording time; a live retake replaces the old page in the
 running total. Set **Talk target** in minutes for per-page pacing suggestions,
