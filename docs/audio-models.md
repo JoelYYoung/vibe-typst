@@ -17,7 +17,10 @@ Model failures stop that export with an error; audio is never silently substitut
 A submitted export continues when you exit the presenter or close the webpage.
 Reopen the same project to restore its progress or download. The compact task bar
 shows the stage, page count and percentage; its stop icon explicitly cancels the
-export. Temporary connection errors retry without changing the server's job state.
+export. In recording mode it sits at the right of the toolbar; outside that mode
+it floats in the workspace. The reference menu shows page numbers and durations,
+with keyboard selection and a styled upload control. Temporary connection errors
+retry without changing the server's job state.
 Active exports keep their workspace and account session from idle shutdown.
 Completed status and MP4 files survive workspace restarts. An unexpected server
 restart during an unfinished export reports a failure that can be retried.
