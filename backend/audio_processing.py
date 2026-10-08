@@ -4,6 +4,7 @@ import wave
 from pathlib import Path
 
 import httpx
+import bundled_audio
 
 MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 MAX_AUDIO_BYTES = 384 * 1024 * 1024
@@ -12,25 +13,31 @@ MAX_AUDIO_BYTES = 384 * 1024 * 1024
 def _settings():
     url = os.environ.get('TCB_AUDIO_MODELS_URL', '').rstrip('/')
     token = os.environ.get('TCB_AUDIO_MODELS_TOKEN', '')
+    if not url:
+        url, token = bundled_audio.settings()
     return url, {'Authorization': f'Bearer {token}'}
 
 
-def capabilities():
+def capabilities(refresh=False):
     url, headers = _settings()
     unavailable = {'denoise': False, 'seed_vc': False, 'denoiser': None,
-                   'message': 'Optional audio models are not installed or connected.'}
+                   'message': 'Audio model runtime unavailable.'}
     if not url:
         return unavailable
     try:
-        response = httpx.get(url + '/health', headers=headers, timeout=2, follow_redirects=False)
+        response = httpx.get(url + '/health' + ('?refresh=true' if refresh else ''), headers=headers, timeout=2, follow_redirects=False)
         response.raise_for_status()
         data = response.json()
         if not isinstance(data, dict):
             return unavailable
         return {'denoise': data.get('denoise') is True, 'seed_vc': data.get('seed_vc') is True,
                 'denoiser': data.get('denoiser') if isinstance(data.get('denoiser'), str) else None,
-                'message': data.get('message', ''), 'device': data.get('device')}
+                'message': data.get('message', ''), 'device': data.get('device'),
+                'checks': data.get('checks', {})}
     except (httpx.HTTPError, ValueError):
+        if not os.environ.get('TCB_AUDIO_MODELS_URL') and bundled_audio.starting():
+            return dict(unavailable, checks={key: {'state': 'checking', 'message': ''}
+                        for key in ('denoise', 'seed_vc')})
         return unavailable
 
 
@@ -57,9 +64,9 @@ def validate_options(value):
     if denoise == 'model' or voice == 'seed-vc':
         available = capabilities()
         if denoise == 'model' and not available['denoise']:
-            raise ValueError('Model noise reduction is unavailable. Install/connect the optional audio models or use light noise reduction.')
+            raise ValueError('Model noise reduction is unavailable on this server.')
         if voice == 'seed-vc' and not available['seed_vc']:
-            raise ValueError('Seed-VC is unavailable. Install/connect the optional audio models or keep the original voice.')
+            raise ValueError('Voice conversion is unavailable on this server.')
         if voice == 'seed-vc' and denoise != 'model':
             raise ValueError('Select model noise reduction before using Seed-VC.')
     return result

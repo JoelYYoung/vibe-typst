@@ -6,6 +6,10 @@
 **/*.pyc
 .git
 **/*.backup
+workspaces
+control/data
+models/audio-models
+outputs/audio-models
 # Allow pre-compiled artifacts (built natively on O3 outside Docker to avoid crun/ICE issues)
 !resolver/target/release/tcb-resolver
 !frontend/dist

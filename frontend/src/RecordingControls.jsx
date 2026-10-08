@@ -74,7 +74,7 @@ export default function RecordingControls({ recording: r, page, total, transcrip
         <output className="pr-mic-value" aria-hidden="true">{r.audioLevel === null ? '—' : Math.round(r.audioLevel)} <small>dBFS</small></output>
       </div>}
     </div>
-    {confirmExport && <RecordingExportDialog missingPages={missingPages} recordedCount={r.completed} disabled={exportDisabled} triggerRef={exportTrigger}
+    {confirmExport && <RecordingExportDialog missingPages={missingPages} disabled={exportDisabled} triggerRef={exportTrigger}
       takes={r.takes} pageStates={r.pageStates}
       onCancel={() => setConfirmExport(false)} onExport={(audio, reference) => { setConfirmExport(false); r.exportVideo(missingPages, audio, reference) }} />}
     {(r.error || r.job?.status === 'failed') && <div className="pr-recording-error" role="alert">{r.error || r.job.error}</div>}

@@ -429,7 +429,7 @@ var require_stdin = __commonJS({
           if (m = false, S(N), !g) if (i(a) !== null) g = true, R(x);
           else {
             var $ = i(c);
-            $ !== null && j(b, $.startTime - N);
+            $ !== null && I(b, $.startTime - N);
           }
         }
         function x(N, $) {
@@ -448,21 +448,21 @@ var require_stdin = __commonJS({
             if (u !== null) var H = true;
             else {
               var se = i(c);
-              se !== null && j(b, se.startTime - $), H = false;
+              se !== null && I(b, se.startTime - $), H = false;
             }
             return H;
           } finally {
             u = null, d = B, p = false;
           }
         }
-        var D = false, M = null, C = -1, E = 5, T = -1;
+        var D = false, M = null, C = -1, E = 5, A = -1;
         function O() {
-          return !(t.unstable_now() - T < E);
+          return !(t.unstable_now() - A < E);
         }
-        function A() {
+        function T() {
           if (M !== null) {
             var N = t.unstable_now();
-            T = N;
+            A = N;
             var $ = true;
             try {
               $ = M(true, N);
@@ -473,20 +473,20 @@ var require_stdin = __commonJS({
         }
         var k;
         if (typeof v == "function") k = function() {
-          v(A);
+          v(T);
         };
         else if (typeof MessageChannel < "u") {
-          var L = new MessageChannel(), P = L.port2;
-          L.port1.onmessage = A, k = function() {
-            P.postMessage(null);
+          var P = new MessageChannel(), L = P.port2;
+          P.port1.onmessage = T, k = function() {
+            L.postMessage(null);
           };
         } else k = function() {
-          y(A, 0);
+          y(T, 0);
         };
         function R(N) {
           M = N, D || (D = true, k());
         }
-        function j(N, $) {
+        function I(N, $) {
           C = y(function() {
             N(t.unstable_now());
           }, $);
@@ -563,7 +563,7 @@ var require_stdin = __commonJS({
             startTime: B,
             expirationTime: G,
             sortIndex: -1
-          }, B > K ? (N.sortIndex = B, e(c, N), i(a) === null && N === i(c) && (m ? (_(C), C = -1) : m = true, j(b, B - K))) : (N.sortIndex = G, e(a, N), g || p || (g = true, R(x))), N;
+          }, B > K ? (N.sortIndex = B, e(c, N), i(a) === null && N === i(c) && (m ? (_(C), C = -1) : m = true, I(b, B - K))) : (N.sortIndex = G, e(a, N), g || p || (g = true, R(x))), N;
         }, t.unstable_shouldYield = O, t.unstable_wrapCallback = function(N) {
           var $ = d;
           return function() {
@@ -3002,12 +3002,12 @@ var require_stdin = __commonJS({
         function g(_, v, S, b) {
           for (var x = null, D = null, M = v, C = v = 0, E = null; M !== null && C < S.length; C++) {
             M.index > C ? (E = M, M = null) : E = M.sibling;
-            var T = d(_, M, S[C], b);
-            if (T === null) {
+            var A = d(_, M, S[C], b);
+            if (A === null) {
               M === null && (M = E);
               break;
             }
-            t && M && T.alternate === null && e(_, M), v = n(T, v, C), D === null ? x = T : D.sibling = T, D = T, M = E;
+            t && M && A.alternate === null && e(_, M), v = n(A, v, C), D === null ? x = A : D.sibling = A, D = A, M = E;
           }
           if (C === S.length) return i(_, M), Ve && En(_, C), x;
           if (M === null) {
@@ -3023,23 +3023,23 @@ var require_stdin = __commonJS({
           var x = ql(S);
           if (typeof x != "function") throw Error(q(150));
           if (S = x.call(S), S == null) throw Error(q(151));
-          for (var D = x = null, M = v, C = v = 0, E = null, T = S.next(); M !== null && !T.done; C++, T = S.next()) {
+          for (var D = x = null, M = v, C = v = 0, E = null, A = S.next(); M !== null && !A.done; C++, A = S.next()) {
             M.index > C ? (E = M, M = null) : E = M.sibling;
-            var O = d(_, M, T.value, b);
+            var O = d(_, M, A.value, b);
             if (O === null) {
               M === null && (M = E);
               break;
             }
             t && M && O.alternate === null && e(_, M), v = n(O, v, C), D === null ? x = O : D.sibling = O, D = O, M = E;
           }
-          if (T.done) return i(_, M), Ve && En(_, C), x;
+          if (A.done) return i(_, M), Ve && En(_, C), x;
           if (M === null) {
-            for (; !T.done; C++, T = S.next()) T = u(_, T.value, b), T !== null && (v = n(T, v, C), D === null ? x = T : D.sibling = T, D = T);
+            for (; !A.done; C++, A = S.next()) A = u(_, A.value, b), A !== null && (v = n(A, v, C), D === null ? x = A : D.sibling = A, D = A);
             return Ve && En(_, C), x;
           }
-          for (M = s(_, M); !T.done; C++, T = S.next()) T = p(M, _, C, T.value, b), T !== null && (t && T.alternate !== null && M.delete(T.key === null ? C : T.key), v = n(T, v, C), D === null ? x = T : D.sibling = T, D = T);
-          return t && M.forEach(function(A) {
-            return e(_, A);
+          for (M = s(_, M); !A.done; C++, A = S.next()) A = p(M, _, C, A.value, b), A !== null && (t && A.alternate !== null && M.delete(A.key === null ? C : A.key), v = n(A, v, C), D === null ? x = A : D.sibling = A, D = A);
+          return t && M.forEach(function(T) {
+            return e(_, T);
           }), Ve && En(_, C), x;
         }
         function y(_, v, S, b) {
@@ -6656,7 +6656,7 @@ Error generating stack: ` + n.message + `
           body: r,
           signal: s
         }).then(Ie);
-      }, aL = (t, e) => xe(Ti(`/api/recording/pages/${t}/video?take=${encodeURIComponent(e)}`)), cL = () => Me(xe("/api/recording/audio-models")).then(Ie), hL = (t = {}, e = null) => {
+      }, aL = (t, e) => xe(Ti(`/api/recording/pages/${t}/video?take=${encodeURIComponent(e)}`)), cL = (t = false) => Me(xe("/api/recording/audio-models" + (t ? "?refresh=true" : ""))).then(Ie), hL = (t = {}, e = null) => {
         if (!e) return Ue(Ti("/api/recording/exports"), t);
         const i = new FormData();
         return i.append("options", JSON.stringify(t)), i.append("reference", e), Me(xe(Ti("/api/recording/exports")), {
@@ -18323,25 +18323,25 @@ ${e}`), W2 = (t, e, i) => {
           return C;
         }
         function S(x, D, M) {
-          let C = 1e9, E = -1e9, T = [];
-          function O(L, P, R, j, N) {
-            let $ = t.coordsAtPos(L, L == M.to ? -2 : 2), B = t.coordsAtPos(R, R == M.from ? 2 : -2);
-            !$ || !B || (C = Math.min($.top, B.top, C), E = Math.max($.bottom, B.bottom, E), N == Ke.LTR ? T.push(n && P ? u : $.left, n && j ? d : B.right) : T.push(!n && j ? u : B.left, !n && P ? d : $.right));
+          let C = 1e9, E = -1e9, A = [];
+          function O(P, L, R, I, N) {
+            let $ = t.coordsAtPos(P, P == M.to ? -2 : 2), B = t.coordsAtPos(R, R == M.from ? 2 : -2);
+            !$ || !B || (C = Math.min($.top, B.top, C), E = Math.max($.bottom, B.bottom, E), N == Ke.LTR ? A.push(n && L ? u : $.left, n && I ? d : B.right) : A.push(!n && I ? u : B.left, !n && L ? d : $.right));
           }
-          let A = x ?? M.from, k = D ?? M.to;
-          for (let L of t.visibleRanges) if (L.to > A && L.from < k) for (let P = Math.max(L.from, A), R = Math.min(L.to, k); ; ) {
-            let j = t.state.doc.lineAt(P);
-            for (let N of t.bidiSpans(j)) {
-              let $ = N.from + j.from, B = N.to + j.from;
+          let T = x ?? M.from, k = D ?? M.to;
+          for (let P of t.visibleRanges) if (P.to > T && P.from < k) for (let L = Math.max(P.from, T), R = Math.min(P.to, k); ; ) {
+            let I = t.state.doc.lineAt(L);
+            for (let N of t.bidiSpans(I)) {
+              let $ = N.from + I.from, B = N.to + I.from;
               if ($ >= R) break;
-              B > P && O(Math.max($, P), x == null && $ <= A, Math.min(B, R), D == null && B >= k, N.dir);
+              B > L && O(Math.max($, L), x == null && $ <= T, Math.min(B, R), D == null && B >= k, N.dir);
             }
-            if (P = j.to + 1, P >= R) break;
+            if (L = I.to + 1, L >= R) break;
           }
-          return T.length == 0 && O(A, x == null, k, D == null, t.textDirection), {
+          return A.length == 0 && O(T, x == null, k, D == null, t.textDirection), {
             top: C,
             bottom: E,
-            horizontal: T
+            horizontal: A
           };
         }
         function b(x, D) {
@@ -20012,126 +20012,126 @@ ${e}`), W2 = (t, e, i) => {
       function S4(t) {
         var e;
         let { buffer: i, nodeSet: s, maxBufferLength: r = g4, reused: n = [], minRepeatType: o = s.types.length } = t, l = Array.isArray(i) ? new Z0(i, i.length) : i, a = s.types, c = 0, h = 0;
-        function u(x, D, M, C, E, T) {
-          let { id: O, start: A, end: k, size: L } = l, P = h, R = c;
-          if (L < 0) if (l.next(), L == -1) {
+        function u(x, D, M, C, E, A) {
+          let { id: O, start: T, end: k, size: P } = l, L = h, R = c;
+          if (P < 0) if (l.next(), P == -1) {
             let K = n[O];
-            M.push(K), C.push(A - x);
+            M.push(K), C.push(T - x);
             return;
-          } else if (L == -3) {
+          } else if (P == -3) {
             c = O;
             return;
-          } else if (L == -4) {
+          } else if (P == -4) {
             h = O;
             return;
-          } else throw new RangeError(`Unrecognized record size: ${L}`);
-          let j = a[O], N, $, B = A - x;
-          if (k - A <= r && ($ = y(l.pos - D, E))) {
+          } else throw new RangeError(`Unrecognized record size: ${P}`);
+          let I = a[O], N, $, B = T - x;
+          if (k - T <= r && ($ = y(l.pos - D, E))) {
             let K = new Uint16Array($.size - $.skip), G = l.pos - $.size, H = K.length;
             for (; l.pos > G; ) H = _($.start, K, H);
             N = new pn(K, k - $.start, s), B = $.start - x;
           } else {
-            let K = l.pos - L;
+            let K = l.pos - P;
             l.next();
             let G = [], H = [], se = O >= o ? O : -1, z = 0, X = k;
-            for (; l.pos > K; ) se >= 0 && l.id == se && l.size >= 0 ? (l.end <= X - r && (g(G, H, A, z, l.end, X, se, P, R), z = G.length, X = l.end), l.next()) : T > 2500 ? d(A, K, G, H) : u(A, K, G, H, se, T + 1);
-            if (se >= 0 && z > 0 && z < G.length && g(G, H, A, z, A, X, se, P, R), G.reverse(), H.reverse(), se > -1 && z > 0) {
-              let pe = p(j, R);
-              N = ty(j, G, H, 0, G.length, 0, k - A, pe, pe);
-            } else N = m(j, G, H, k - A, P - k, R);
+            for (; l.pos > K; ) se >= 0 && l.id == se && l.size >= 0 ? (l.end <= X - r && (g(G, H, T, z, l.end, X, se, L, R), z = G.length, X = l.end), l.next()) : A > 2500 ? d(T, K, G, H) : u(T, K, G, H, se, A + 1);
+            if (se >= 0 && z > 0 && z < G.length && g(G, H, T, z, T, X, se, L, R), G.reverse(), H.reverse(), se > -1 && z > 0) {
+              let pe = p(I, R);
+              N = ty(I, G, H, 0, G.length, 0, k - T, pe, pe);
+            } else N = m(I, G, H, k - T, L - k, R);
           }
           M.push(N), C.push(B);
         }
         function d(x, D, M, C) {
-          let E = [], T = 0, O = -1;
+          let E = [], A = 0, O = -1;
           for (; l.pos > D; ) {
-            let { id: A, start: k, end: L, size: P } = l;
-            if (P > 4) l.next();
+            let { id: T, start: k, end: P, size: L } = l;
+            if (L > 4) l.next();
             else {
               if (O > -1 && k < O) break;
-              O < 0 && (O = L - r), E.push(A, k, L), T++, l.next();
+              O < 0 && (O = P - r), E.push(T, k, P), A++, l.next();
             }
           }
-          if (T) {
-            let A = new Uint16Array(T * 4), k = E[E.length - 2];
-            for (let L = E.length - 3, P = 0; L >= 0; L -= 3) A[P++] = E[L], A[P++] = E[L + 1] - k, A[P++] = E[L + 2] - k, A[P++] = P;
-            M.push(new pn(A, E[2] - k, s)), C.push(k - x);
+          if (A) {
+            let T = new Uint16Array(A * 4), k = E[E.length - 2];
+            for (let P = E.length - 3, L = 0; P >= 0; P -= 3) T[L++] = E[P], T[L++] = E[P + 1] - k, T[L++] = E[P + 2] - k, T[L++] = L;
+            M.push(new pn(T, E[2] - k, s)), C.push(k - x);
           }
         }
         function p(x, D) {
           return (M, C, E) => {
-            let T = 0, O = M.length - 1, A, k;
-            if (O >= 0 && (A = M[O]) instanceof jt) {
-              if (!O && A.type == x && A.length == E) return A;
-              (k = A.prop(Ee.lookAhead)) && (T = C[O] + A.length + k);
+            let A = 0, O = M.length - 1, T, k;
+            if (O >= 0 && (T = M[O]) instanceof jt) {
+              if (!O && T.type == x && T.length == E) return T;
+              (k = T.prop(Ee.lookAhead)) && (A = C[O] + T.length + k);
             }
-            return m(x, M, C, E, T, D);
+            return m(x, M, C, E, A, D);
           };
         }
-        function g(x, D, M, C, E, T, O, A, k) {
-          let L = [], P = [];
-          for (; x.length > C; ) L.push(x.pop()), P.push(D.pop() + M - E);
-          x.push(m(s.types[O], L, P, T - E, A - T, k)), D.push(E - M);
+        function g(x, D, M, C, E, A, O, T, k) {
+          let P = [], L = [];
+          for (; x.length > C; ) P.push(x.pop()), L.push(D.pop() + M - E);
+          x.push(m(s.types[O], P, L, A - E, T - A, k)), D.push(E - M);
         }
-        function m(x, D, M, C, E, T, O) {
-          if (T) {
-            let A = [
+        function m(x, D, M, C, E, A, O) {
+          if (A) {
+            let T = [
               Ee.contextHash,
-              T
+              A
             ];
             O = O ? [
-              A
+              T
             ].concat(O) : [
-              A
+              T
             ];
           }
           if (E > 25) {
-            let A = [
+            let T = [
               Ee.lookAhead,
               E
             ];
             O = O ? [
-              A
+              T
             ].concat(O) : [
-              A
+              T
             ];
           }
           return new jt(x, D, M, C, O);
         }
         function y(x, D) {
-          let M = l.fork(), C = 0, E = 0, T = 0, O = M.end - r, A = {
+          let M = l.fork(), C = 0, E = 0, A = 0, O = M.end - r, T = {
             size: 0,
             start: 0,
             skip: 0
           };
           e: for (let k = M.pos - x; M.pos > k; ) {
-            let L = M.size;
-            if (M.id == D && L >= 0) {
-              A.size = C, A.start = E, A.skip = T, T += 4, C += 4, M.next();
+            let P = M.size;
+            if (M.id == D && P >= 0) {
+              T.size = C, T.start = E, T.skip = A, A += 4, C += 4, M.next();
               continue;
             }
-            let P = M.pos - L;
-            if (L < 0 || P < k || M.start < O) break;
-            let R = M.id >= o ? 4 : 0, j = M.start;
-            for (M.next(); M.pos > P; ) {
+            let L = M.pos - P;
+            if (P < 0 || L < k || M.start < O) break;
+            let R = M.id >= o ? 4 : 0, I = M.start;
+            for (M.next(); M.pos > L; ) {
               if (M.size < 0) if (M.size == -3 || M.size == -4) R += 4;
               else break e;
               else M.id >= o && (R += 4);
               M.next();
             }
-            E = j, C += L, T += R;
+            E = I, C += P, A += R;
           }
-          return (D < 0 || C == x) && (A.size = C, A.start = E, A.skip = T), A.size > 4 ? A : void 0;
+          return (D < 0 || C == x) && (T.size = C, T.start = E, T.skip = A), T.size > 4 ? T : void 0;
         }
         function _(x, D, M) {
-          let { id: C, start: E, end: T, size: O } = l;
+          let { id: C, start: E, end: A, size: O } = l;
           if (l.next(), O >= 0 && C < o) {
-            let A = M;
+            let T = M;
             if (O > 4) {
               let k = l.pos - (O - 4);
               for (; l.pos > k; ) M = _(x, D, M);
             }
-            D[--M] = A, D[--M] = T - x, D[--M] = E - x, D[--M] = C;
+            D[--M] = T, D[--M] = A - x, D[--M] = E - x, D[--M] = C;
           } else O == -3 ? c = C : O == -4 && (h = C);
           return M;
         }
@@ -23950,51 +23950,51 @@ ${t.stack}` : s;
             behavior: "smooth",
             block: "center"
           });
-          const A = setTimeout(() => _(null), 2400);
-          return () => clearTimeout(A);
+          const T = setTimeout(() => _(null), 2400);
+          return () => clearTimeout(T);
         }, [
           s && s.key,
           s && s.page
         ]), w.useEffect(() => {
-          let A = false;
+          let T = false;
           return fetch(zn(t, i)).then((k) => k.text()).then((k) => {
-            if (A || !l.current) return;
+            if (T || !l.current) return;
             l.current.innerHTML = k;
-            const L = l.current.querySelector("svg");
-            if (!L) return;
-            const P = L.viewBox.baseVal.width, R = L.viewBox.baseVal.height;
-            L.removeAttribute("width"), L.removeAttribute("height"), L.style.width = "100%", L.style.height = "auto", L.style.display = "block", a.current = {
-              svg: L,
-              w: P,
+            const P = l.current.querySelector("svg");
+            if (!P) return;
+            const L = P.viewBox.baseVal.width, R = P.viewBox.baseVal.height;
+            P.removeAttribute("width"), P.removeAttribute("height"), P.style.width = "100%", P.style.height = "auto", P.style.display = "block", a.current = {
+              svg: P,
+              w: L,
               h: R
             }, c.current = [], h.current = null, m({
-              w: P,
+              w: L,
               h: R
             }), p(null);
           }).catch(() => {
           }), () => {
-            A = true;
+            T = true;
           };
         }, [
           t,
           i
         ]);
         function S() {
-          const A = a.current;
-          if (!A || c.current.length) return;
-          const k = A.svg.getBoundingClientRect();
+          const T = a.current;
+          if (!T || c.current.length) return;
+          const k = T.svg.getBoundingClientRect();
           if (!k.width || !k.height) return;
-          const L = [];
-          A.svg.querySelectorAll("g").forEach((R) => {
-            R.querySelector(":scope > use") && L.push(R);
-          }), A.svg.querySelectorAll("path").forEach((R) => {
-            R.closest("defs") || L.push(R);
-          }), A.svg.querySelectorAll("image").forEach((R) => L.push(R));
-          const P = A.w * A.h;
-          c.current = L.map((R) => {
-            const j = R.getBoundingClientRect();
-            if (j.width <= 0 || j.height <= 0) return null;
-            const N = (j.left - k.left) / k.width * A.w, $ = (j.top - k.top) / k.height * A.h, B = j.width / k.width * A.w, K = j.height / k.height * A.h;
+          const P = [];
+          T.svg.querySelectorAll("g").forEach((R) => {
+            R.querySelector(":scope > use") && P.push(R);
+          }), T.svg.querySelectorAll("path").forEach((R) => {
+            R.closest("defs") || P.push(R);
+          }), T.svg.querySelectorAll("image").forEach((R) => P.push(R));
+          const L = T.w * T.h;
+          c.current = P.map((R) => {
+            const I = R.getBoundingClientRect();
+            if (I.width <= 0 || I.height <= 0) return null;
+            const N = (I.left - k.left) / k.width * T.w, $ = (I.top - k.top) / k.height * T.h, B = I.width / k.width * T.w, K = I.height / k.height * T.h;
             return {
               el: R,
               x: N,
@@ -24003,7 +24003,7 @@ ${t.stack}` : s;
               h: K,
               area: B * K
             };
-          }).filter((R) => R && R.w > 1.5 && R.h > 1.5 && !(R.w > A.w * 0.95 && R.h > A.h * 0.95) && R.area < P * 0.9);
+          }).filter((R) => R && R.w > 1.5 && R.h > 1.5 && !(R.w > T.w * 0.95 && R.h > T.h * 0.95) && R.area < L * 0.9);
         }
         function b() {
           u.current && (clearTimeout(u.current), u.current = null);
@@ -24013,56 +24013,56 @@ ${t.stack}` : s;
             u.current = null, h.current = null, p(null);
           }, 220));
         }
-        function D(A) {
+        function D(T) {
           const k = a.current;
           if (!k) return;
           S();
-          const L = k.svg.getBoundingClientRect(), P = (A.clientX - L.left) / L.width * k.w, R = (A.clientY - L.top) / L.height * k.h;
-          let j = null;
-          for (const N of c.current) P >= N.x && P <= N.x + N.w && R >= N.y && R <= N.y + N.h && (!j || N.area < j.area) && (j = N);
-          j ? (b(), j !== h.current && (h.current = j, p({
-            x: j.x,
-            y: j.y,
-            w: j.w,
-            h: j.h
+          const P = k.svg.getBoundingClientRect(), L = (T.clientX - P.left) / P.width * k.w, R = (T.clientY - P.top) / P.height * k.h;
+          let I = null;
+          for (const N of c.current) L >= N.x && L <= N.x + N.w && R >= N.y && R <= N.y + N.h && (!I || N.area < I.area) && (I = N);
+          I ? (b(), I !== h.current && (h.current = I, p({
+            x: I.x,
+            y: I.y,
+            w: I.w,
+            h: I.h
           }))) : x();
         }
-        function M(A) {
+        function M(T) {
           const k = a.current;
           if (!k) return null;
           S();
-          const L = k.svg.getBoundingClientRect();
-          if (!L.width || !L.height) return null;
-          const P = (A.clientX - L.left) / L.width * k.w, R = (A.clientY - L.top) / L.height * k.h;
-          let j = null;
-          for (const N of c.current) P >= N.x && P <= N.x + N.w && R >= N.y && R <= N.y + N.h && (!j || N.area < j.area) && (j = N);
+          const P = k.svg.getBoundingClientRect();
+          if (!P.width || !P.height) return null;
+          const L = (T.clientX - P.left) / P.width * k.w, R = (T.clientY - P.top) / P.height * k.h;
+          let I = null;
+          for (const N of c.current) L >= N.x && L <= N.x + N.w && R >= N.y && R <= N.y + N.h && (!I || N.area < I.area) && (I = N);
           return {
-            best: j,
-            px: P,
+            best: I,
+            px: L,
             py: R
           };
         }
-        async function C(A, k) {
-          let L = await r(e, A, k);
-          return L && L.ok || (L = await r(e, A, k)), L && L.ok ? {
-            start: L.start,
-            end: L.end
+        async function C(T, k) {
+          let P = await r(e, T, k);
+          return P && P.ok || (P = await r(e, T, k)), P && P.ok ? {
+            start: P.start,
+            end: P.end
           } : null;
         }
-        async function E(A) {
-          const k = M(A);
+        async function E(T) {
+          const k = M(T);
           if (!k || !k.best) return;
-          const L = k.best, P = await C(L.x + L.w / 2, L.y + L.h / 2);
-          P && n(P);
+          const P = k.best, L = await C(P.x + P.w / 2, P.y + P.h / 2);
+          L && n(L);
         }
-        async function T(A) {
-          A.stopPropagation();
+        async function A(T) {
+          T.stopPropagation();
           const k = d;
           if (!k) return;
-          const L = await C(k.x + k.w / 2, k.y + k.h / 2);
-          L && o(L, e);
+          const P = await C(k.x + k.w / 2, k.y + k.h / 2);
+          P && o(P, e);
         }
-        const O = (A, k) => `${A / k * 100}%`;
+        const O = (T, k) => `${T / k * 100}%`;
         return f.jsxs("div", {
           className: "svg-wrap",
           ref: v,
@@ -24099,10 +24099,10 @@ ${t.stack}` : s;
                     top: O(d.y + d.h / 2, g.h)
                   },
                   onMouseEnter: b,
-                  onMouseMove: (A) => {
-                    A.stopPropagation(), b();
+                  onMouseMove: (T) => {
+                    T.stopPropagation(), b();
                   },
-                  onClick: T,
+                  onClick: A,
                   children: "+ add"
                 })
               ]
@@ -24242,18 +24242,18 @@ ${t.stack}` : s;
         const S = Array.isArray(o) && o.length > 0, b = w.useRef(null), x = w.useRef(null), [D, M] = w.useState(0), C = w.useRef(0), E = w.useCallback(() => {
           const R = b.current;
           if (!R) return;
-          const j = R.querySelectorAll("figure.page");
-          if (!j.length) {
+          const I = R.querySelectorAll("figure.page");
+          if (!I.length) {
             M(0);
             return;
           }
           const N = R.scrollTop + R.clientHeight / 2;
           let $ = 1, B = 1 / 0;
-          j.forEach((K, G) => {
+          I.forEach((K, G) => {
             const H = K.offsetTop + K.offsetHeight / 2, se = Math.abs(H - N);
             se < B && (B = se, $ = G + 1);
           }), M($);
-        }, []), T = w.useCallback(() => {
+        }, []), A = w.useCallback(() => {
           C.current || (C.current = requestAnimationFrame(() => {
             C.current = 0, E();
           }));
@@ -24268,25 +24268,25 @@ ${t.stack}` : s;
         ]), w.useEffect(() => {
           const R = b.current;
           if (!R || typeof ResizeObserver > "u") return;
-          const j = new ResizeObserver(() => E());
-          return j.observe(R), () => j.disconnect();
+          const I = new ResizeObserver(() => E());
+          return I.observe(R), () => I.disconnect();
         }, [
           E
         ]);
         const O = w.useCallback((R) => {
-          const j = b.current;
-          if (!j || !R) return;
-          const N = j.querySelectorAll("figure.page")[R - 1];
-          N && j.scrollTo({
-            top: N.offsetTop - (j.clientHeight - N.offsetHeight) / 2,
+          const I = b.current;
+          if (!I || !R) return;
+          const N = I.querySelectorAll("figure.page")[R - 1];
+          N && I.scrollTo({
+            top: N.offsetTop - (I.clientHeight - N.offsetHeight) / 2,
             behavior: "smooth"
           });
-        }, []), A = t ? t.length : 0, k = s && A > 0, L = Math.min(Math.max(i || 1, 1), A || 1), P = w.useCallback((R) => {
-          const j = b.current;
-          if (j) {
-            const N = j.scrollTop + j.clientHeight / 2;
+        }, []), T = t ? t.length : 0, k = s && T > 0, P = Math.min(Math.max(i || 1, 1), T || 1), L = w.useCallback((R) => {
+          const I = b.current;
+          if (I) {
+            const N = I.scrollTop + I.clientHeight / 2;
             let $ = null, B = 1 / 0;
-            for (const K of j.querySelectorAll("figure.page")) {
+            for (const K of I.querySelectorAll("figure.page")) {
               const G = K.offsetTop + K.offsetHeight / 2, H = Math.abs(G - N);
               H < B && (B = H, $ = K);
             }
@@ -24303,10 +24303,10 @@ ${t.stack}` : s;
           const R = x.current;
           if (!R) return;
           x.current = null;
-          const j = b.current;
-          if (!j) return;
+          const I = b.current;
+          if (!I) return;
           const N = R.el.offsetTop + R.el.offsetHeight / 2;
-          j.scrollTop = N - j.clientHeight / 2 - R.offset;
+          I.scrollTop = N - I.clientHeight / 2 - R.offset;
         }, [
           a
         ]), f.jsxs("section", {
@@ -24318,14 +24318,14 @@ ${t.stack}` : s;
                 f.jsx("span", {
                   children: "Preview"
                 }),
-                A > 0 && f.jsxs("span", {
+                T > 0 && f.jsxs("span", {
                   className: "pb-cur",
                   title: "the slide currently centered in your view",
                   children: [
                     "\u25B8 ",
                     D || "\u2014",
                     " / ",
-                    A
+                    T
                   ]
                 }),
                 S && f.jsx("span", {
@@ -24357,7 +24357,7 @@ ${t.stack}` : s;
                         f.jsx("input", {
                           type: "checkbox",
                           checked: a,
-                          onChange: (R) => P(R.target.checked)
+                          onChange: (R) => L(R.target.checked)
                         }),
                         f.jsx("span", {
                           className: "switch-track",
@@ -24374,7 +24374,7 @@ ${t.stack}` : s;
                     f.jsx("button", {
                       className: "pb-btn icon",
                       disabled: !k,
-                      onClick: () => O(L),
+                      onClick: () => O(P),
                       title: "Pin to Presentation \u2014 scroll this preview to the slide the presentation is currently showing",
                       children: "\u21E4"
                     }),
@@ -24424,9 +24424,9 @@ ${t.stack}` : s;
                   children: "\u26A0 Source does not compile \u2014 showing the last good render (stale)"
                 }),
                 f.jsx("ul", {
-                  children: o.map((R, j) => f.jsx("li", {
+                  children: o.map((R, I) => f.jsx("li", {
                     children: R
-                  }, j))
+                  }, I))
                 })
               ]
             }),
@@ -24442,27 +24442,27 @@ ${t.stack}` : s;
                   children: "self.subslide == k"
                 }),
                 " beyond the slide's subslide count):",
-                u.slice(0, 3).map((R, j) => f.jsxs("span", {
+                u.slice(0, 3).map((R, I) => f.jsxs("span", {
                   className: "no-chip",
                   children: [
                     "\u201C",
                     R.text,
                     "\u201D"
                   ]
-                }, j))
+                }, I))
               ]
             }),
             f.jsxs("div", {
               ref: b,
               className: "page-list" + (a ? " with-notes" : ""),
-              onScroll: T,
+              onScroll: A,
               children: [
                 (!t || t.length === 0) && f.jsx("div", {
                   className: "empty",
                   children: "No pages yet. Hit Refresh."
                 }),
-                t && t.map((R, j) => {
-                  const N = j + 1, $ = h && h[N - 1] || {};
+                t && t.map((R, I) => {
+                  const N = I + 1, $ = h && h[N - 1] || {};
                   return f.jsxs("figure", {
                     className: "page",
                     children: [
@@ -24845,26 +24845,26 @@ ${t.stack}` : s;
           c = URL.createObjectURL(b), M.src = c, await M.decode(), r == null ? void 0 : r.throwIfAborted();
           const C = document.createElement("canvas");
           C.width = 1920, C.height = 1080;
-          const E = C.getContext("2d"), T = uy(C.width, C.height, M.naturalWidth, M.naturalHeight);
+          const E = C.getContext("2d"), A = uy(C.width, C.height, M.naturalWidth, M.naturalHeight);
           let O = null;
-          const A = [], k = () => {
-            if (E.fillStyle = "#000", E.fillRect(0, 0, C.width, C.height), E.drawImage(M, T.left, T.top, T.width, T.height), O) {
-              const z = T.left + O.x * T.width, X = T.top + O.y * T.height;
+          const T = [], k = () => {
+            if (E.fillStyle = "#000", E.fillRect(0, 0, C.width, C.height), E.drawImage(M, A.left, A.top, A.width, A.height), O) {
+              const z = A.left + O.x * A.width, X = A.top + O.y * A.height;
               O8(E, z, X, C.height / 720);
             }
           };
           k(), a = C.captureStream(30);
-          const L = new MediaStream([
+          const P = new MediaStream([
             ...a.getVideoTracks(),
             ...l.getAudioTracks()
           ]);
-          d = new MediaRecorder(L, {
+          d = new MediaRecorder(P, {
             mimeType: o,
             videoBitsPerSecond: 6e6,
             audioBitsPerSecond: 192e3
           });
-          const P = [];
-          let R = 0, j = null, N = null;
+          const L = [];
+          let R = 0, I = null, N = null;
           const $ = performance.now(), B = () => (performance.now() - $) / 1e3;
           let K, G;
           const H = new Promise((z, X) => {
@@ -24872,14 +24872,14 @@ ${t.stack}` : s;
           });
           return H.catch(() => {
           }), d.ondataavailable = (z) => {
-            z.data.size && (P.push(z.data), R += z.data.size), R > 500 * 1024 * 1024 && d.state === "recording" && n("This page reached the recording size limit and was stopped.");
+            z.data.size && (L.push(z.data), R += z.data.size), R > 500 * 1024 * 1024 && d.state === "recording" && n("This page reached the recording size limit and was stopped.");
           }, d.onerror = (z) => {
-            j = z.error || new Error("The browser could not finish recording. The previous take is preserved."), n(j.message);
+            I = z.error || new Error("The browser could not finish recording. The previous take is preserved."), n(I.message);
           }, d.onstop = () => {
             N === null && n("The browser stopped recording. Review this take before exporting.");
             const z = N ?? B();
-            _(), j ? G(j) : !P.length || z < 0.1 ? G(new Error("The recording was too short. Please record again.")) : K({
-              video: new Blob(P, {
+            _(), I ? G(I) : !L.length || z < 0.1 ? G(new Error("The recording was too short. Please record again.")) : K({
+              video: new Blob(L, {
                 type: d.mimeType
               }),
               metadata: {
@@ -24888,7 +24888,7 @@ ${t.stack}` : s;
                 recording_id: s,
                 duration: z,
                 mime: d.mimeType,
-                pointer: A
+                pointer: T
               }
             });
           }, d.start(1e3), h = setInterval(k, 1e3 / 30), u = setTimeout(() => n("This page reached the two-hour limit and was stopped."), 7200 * 1e3), l.getAudioTracks().forEach((z) => {
@@ -24913,8 +24913,8 @@ ${t.stack}` : s;
                 t: Math.round(X * 1e3) / 1e3,
                 x: O ? Math.round(O.x * 1e4) / 1e4 : null,
                 y: O ? Math.round(O.y * 1e4) / 1e4 : null
-              }, Ye = A[A.length - 1];
-              Ye && Ye.x === pe.x && Ye.y === pe.y || (Ye && Math.floor(Ye.t * 30) === Math.floor(pe.t * 30) ? A[A.length - 1] = pe : A.push(pe));
+              }, Ye = T[T.length - 1];
+              Ye && Ye.x === pe.x && Ye.y === pe.y || (Ye && Math.floor(Ye.t * 30) === Math.floor(pe.t * 30) ? T[T.length - 1] = pe : T.push(pe));
             }
           };
         } catch (v) {
@@ -24923,11 +24923,11 @@ ${t.stack}` : s;
       }
       function $8({ enabled: t, page: e, pages: i, tokens: s, renderVersion: r }) {
         var _a3, _b3, _c3;
-        const [n, o] = w.useState({}), [l, a] = w.useState("idle"), [c, h] = w.useState(0), [u, d] = w.useState(null), [p, g] = w.useState(""), [m, y] = w.useState(false), [_, v] = w.useState(null), [S, b] = w.useState(false), [x, D] = w.useState(null), [M, C] = w.useState(false), [E, T] = w.useState(null), O = w.useRef(null), A = w.useRef("idle"), k = w.useRef(true), L = w.useRef(null), P = w.useRef(null), R = w.useRef(null), j = w.useRef(null), N = w.useRef(0), $ = JSON.stringify(i.map((ne) => [
+        const [n, o] = w.useState({}), [l, a] = w.useState("idle"), [c, h] = w.useState(0), [u, d] = w.useState(null), [p, g] = w.useState(""), [m, y] = w.useState(false), [_, v] = w.useState(null), [S, b] = w.useState(false), [x, D] = w.useState(null), [M, C] = w.useState(false), [E, A] = w.useState(null), O = w.useRef(null), T = w.useRef("idle"), k = w.useRef(true), P = w.useRef(null), L = w.useRef(null), R = w.useRef(null), I = w.useRef(null), N = w.useRef(0), $ = JSON.stringify(i.map((ne) => [
           ne,
           s[ne]
         ])), B = (ne) => {
-          A.current = ne, k.current && a(ne);
+          T.current = ne, k.current && a(ne);
         }, K = [
           "starting",
           "recording",
@@ -24959,7 +24959,7 @@ ${t.stack}` : s;
           r
         ]), w.useEffect(() => (k.current = true, () => {
           var _a4, _b4;
-          k.current = false, (_a4 = L.current) == null ? void 0 : _a4.abort(), (_b4 = O.current) == null ? void 0 : _b4.stop().catch(() => {
+          k.current = false, (_a4 = P.current) == null ? void 0 : _a4.abort(), (_b4 = O.current) == null ? void 0 : _b4.stop().catch(() => {
           });
         }), []), w.useEffect(() => {
           if (l !== "recording") {
@@ -24979,7 +24979,7 @@ ${t.stack}` : s;
             ce.preventDefault(), ce.returnValue = "";
           }, ae = () => {
             var _a4;
-            document.hidden && A.current === "recording" && (g("Recording stopped because this tab was hidden. Review the take before exporting."), (_a4 = j.current) == null ? void 0 : _a4.call(j));
+            document.hidden && T.current === "recording" && (g("Recording stopped because this tab was hidden. Review the take before exporting."), (_a4 = I.current) == null ? void 0 : _a4.call(I));
           };
           return window.addEventListener("beforeunload", ne), document.addEventListener("visibilitychange", ae), () => {
             window.removeEventListener("beforeunload", ne), document.removeEventListener("visibilitychange", ae);
@@ -24989,14 +24989,14 @@ ${t.stack}` : s;
           E
         ]), w.useEffect(() => {
           var _a4, _b4, _c4;
-          C(false), A.current === "recording" && (e !== P.current || i[e - 1] !== ((_a4 = R.current) == null ? void 0 : _a4.name) || s[i[e - 1]] !== ((_b4 = R.current) == null ? void 0 : _b4.previewToken)) && (g("The slide changed during recording. This take was stopped; re-record the updated page."), (_c4 = j.current) == null ? void 0 : _c4.call(j));
+          C(false), T.current === "recording" && (e !== L.current || i[e - 1] !== ((_a4 = R.current) == null ? void 0 : _a4.name) || s[i[e - 1]] !== ((_b4 = R.current) == null ? void 0 : _b4.previewToken)) && (g("The slide changed during recording. This take was stopped; re-record the updated page."), (_c4 = I.current) == null ? void 0 : _c4.call(I));
         }, [
           e,
           i[e - 1],
           s[i[e - 1]]
         ]), w.useEffect(() => {
           var _a4, _b4, _c4;
-          A.current === "recording" && ((_a4 = _ == null ? void 0 : _.slides[e - 1]) == null ? void 0 : _a4.recording_id) !== ((_b4 = R.current) == null ? void 0 : _b4.recording_id) && (g("This slide moved during recording. Review the take before saving it to the current page."), (_c4 = j.current) == null ? void 0 : _c4.call(j));
+          T.current === "recording" && ((_a4 = _ == null ? void 0 : _.slides[e - 1]) == null ? void 0 : _a4.recording_id) !== ((_b4 = R.current) == null ? void 0 : _b4.recording_id) && (g("This slide moved during recording. Review the take before saving it to the current page."), (_c4 = I.current) == null ? void 0 : _c4.call(I));
         }, [
           _
         ]), w.useEffect(() => {
@@ -25025,8 +25025,8 @@ ${t.stack}` : s;
         ]);
         async function H() {
           var _a4, _b4;
-          if (!(A.current !== "idle" || E)) {
-            B("starting"), C(false), g(""), h(0), L.current = new AbortController(), P.current = e, R.current = {
+          if (!(T.current !== "idle" || E)) {
+            B("starting"), C(false), g(""), h(0), P.current = new AbortController(), L.current = e, R.current = {
               name: i[e - 1],
               token: (_a4 = _ == null ? void 0 : _.slides[e - 1]) == null ? void 0 : _a4.token,
               recording_id: (_b4 = _ == null ? void 0 : _.slides[e - 1]) == null ? void 0 : _b4.recording_id,
@@ -25036,10 +25036,10 @@ ${t.stack}` : s;
               const ne = await F8({
                 ...R.current,
                 url: zn(R.current.name, R.current.previewToken),
-                signal: L.current.signal,
+                signal: P.current.signal,
                 onInterrupted: (ae) => {
                   var _a5;
-                  k.current && (g(ae), (_a5 = j.current) == null ? void 0 : _a5.call(j));
+                  k.current && (g(ae), (_a5 = I.current) == null ? void 0 : _a5.call(I));
                 }
               });
               if (!k.current) {
@@ -25057,36 +25057,36 @@ ${t.stack}` : s;
           var _a4;
           B("saving");
           try {
-            const ae = await lL(ne.page, ne.video, ne.metadata, (_a4 = L.current) == null ? void 0 : _a4.signal);
+            const ae = await lL(ne.page, ne.video, ne.metadata, (_a4 = P.current) == null ? void 0 : _a4.signal);
             if (!k.current) return;
             o((ce) => ({
               ...ce,
               [ne.page]: ae
-            })), T(null), D((ce) => (ce == null ? void 0 : ce.status) === "running" ? ce : null);
+            })), A(null), D((ce) => (ce == null ? void 0 : ce.status) === "running" ? ce : null);
           } catch (ae) {
-            k.current && (T(ne), g(`${ae.message} Your take is kept here; retry saving or download a backup.`));
+            k.current && (A(ne), g(`${ae.message} Your take is kept here; retry saving or download a backup.`));
           } finally {
             k.current && B("idle");
           }
         }
         async function z() {
-          if (A.current === "recording") {
+          if (T.current === "recording") {
             B("saving");
             try {
               const ne = await O.current.stop();
               O.current = null, k.current && await se({
                 ...ne,
-                page: P.current
+                page: L.current
               });
             } catch (ne) {
               k.current && (g(ne.message), B("idle"));
             }
           }
         }
-        j.current = z;
+        I.current = z;
         async function X() {
           var _a4;
-          if (A.current !== "idle" || E) return;
+          if (T.current !== "idle" || E) return;
           B("clearing"), g("");
           const ne = e;
           try {
@@ -25104,7 +25104,7 @@ ${t.stack}` : s;
           }
         }
         async function pe(ne = [], ae = void 0, ce = null) {
-          if (!(A.current !== "idle" || E || (x == null ? void 0 : x.status) === "running")) {
+          if (!(T.current !== "idle" || E || (x == null ? void 0 : x.status) === "running")) {
             B("exporting"), g(""), C(false);
             try {
               const lt = await hL({
@@ -25159,7 +25159,7 @@ ${t.stack}` : s;
             g(""), se(E);
           },
           discard: () => {
-            T(null), g("");
+            A(null), g("");
           },
           movePointer: (ne) => {
             var _a4;
@@ -25358,85 +25358,109 @@ ${t.stack}` : s;
           children: U8[t]
         });
       }
-      function V8({ missingPages: t, recordedCount: e, disabled: i, triggerRef: s, onCancel: r, onExport: n, takes: o, pageStates: l }) {
-        var _a3;
-        const a = w.useRef(null), c = w.useRef(null), [h, u] = w.useState(null), [d, p] = w.useState("basic"), [g, m] = w.useState(false), y = Object.values(o).filter((P) => l[P.page - 1] === "recorded" && P.duration >= 1), [_, v] = w.useState(String(((_a3 = y[0]) == null ? void 0 : _a3.page) || "upload")), [S, b] = w.useState(null), x = y.find((P) => P.page === Number(_)), [D, M] = w.useState(""), [C, E] = w.useState(true), T = w.useRef(0);
-        async function O() {
-          const P = ++T.current;
-          E(true);
+      function V8({ missingPages: t, disabled: e, triggerRef: i, onCancel: s, onExport: r, takes: n, pageStates: o }) {
+        var _a3, _b3, _c3, _d2, _e2;
+        const l = w.useRef(null), a = w.useRef(null), [c, h] = w.useState(null), [u, d] = w.useState("basic"), [p, g] = w.useState(false), m = Object.values(n).filter((L) => o[L.page - 1] === "recorded" && L.duration >= 1), [y, _] = w.useState(String(((_a3 = m[0]) == null ? void 0 : _a3.page) || "upload")), [v, S] = w.useState(null), b = m.find((L) => L.page === Number(y)), [x, D] = w.useState(""), [M, C] = w.useState(true), E = w.useRef(0);
+        async function A(L = false) {
+          const R = ++E.current;
+          C(true);
           try {
-            const R = await cL();
-            P === T.current && (u(R), R.denoise || p("basic"), (!R.seed_vc || !R.denoise) && m(false));
+            const I = await cL(L);
+            R === E.current && (h(I), I.denoise || d("basic"), (!I.seed_vc || !I.denoise) && g(false));
           } catch {
-            P === T.current && (u({
+            R === E.current && (h({
               denoise: false,
               seed_vc: false
-            }), p("basic"), m(false));
+            }), d("basic"), g(false));
           } finally {
-            P === T.current && E(false);
+            R === E.current && C(false);
           }
         }
         w.useEffect(() => {
-          const P = a.current;
-          return P.showModal(), c.current.focus(), O(), () => {
+          const L = l.current;
+          return L.showModal(), a.current.focus(), A(), () => {
             var _a4;
-            ++T.current, P.close(), (_a4 = s.current) == null ? void 0 : _a4.focus();
+            ++E.current, L.close(), (_a4 = i.current) == null ? void 0 : _a4.focus();
           };
-        }, []);
-        function A(P) {
-          if (P.stopPropagation(), P.key !== "Tab") return;
+        }, []), w.useEffect(() => {
+          if (!Object.values((c == null ? void 0 : c.checks) || {}).some((R) => R.state === "checking")) return;
+          const L = setTimeout(A, 1500);
+          return () => clearTimeout(L);
+        }, [
+          c
+        ]);
+        function O(L) {
+          var _a4, _b4, _c4, _d3;
+          const R = ((_b4 = (_a4 = c == null ? void 0 : c.checks) == null ? void 0 : _a4[L]) == null ? void 0 : _b4.state) || ((c == null ? void 0 : c[L]) ? "ready" : M ? "checking" : "unavailable"), I = {
+            ready: "Ready",
+            checking: "Checking",
+            unavailable: "Unavailable"
+          }[R] || "Unavailable";
+          return f.jsx("span", {
+            className: `pr-model-state ${R}`,
+            title: ((_d3 = (_c4 = c == null ? void 0 : c.checks) == null ? void 0 : _c4[L]) == null ? void 0 : _d3.message) || I,
+            children: I
+          });
+        }
+        function T(L) {
+          if (L.stopPropagation(), L.key !== "Tab") return;
           const R = [
-            ...a.current.querySelectorAll("button, input, select, a[href], summary")
-          ].filter(($) => !$.disabled && $.getClientRects().length), j = R[0], N = R[R.length - 1];
-          P.shiftKey && document.activeElement === j ? (P.preventDefault(), N.focus()) : !P.shiftKey && document.activeElement === N && (P.preventDefault(), j.focus());
+            ...l.current.querySelectorAll("button, input, select, a[href], summary")
+          ].filter(($) => !$.disabled && $.getClientRects().length), I = R[0], N = R[R.length - 1];
+          L.shiftKey && document.activeElement === I ? (L.preventDefault(), N.focus()) : !L.shiftKey && document.activeElement === N && (L.preventDefault(), I.focus());
         }
         function k() {
-          const P = {
-            denoise: d,
-            voice: g ? "seed-vc" : "original"
+          const L = {
+            denoise: u,
+            voice: p ? "seed-vc" : "original"
           };
-          if (g && _ !== "upload") {
-            const R = x;
-            P.reference_page = R.page, P.reference_take = R.take;
+          if (p && y !== "upload") {
+            const R = b;
+            L.reference_page = R.page, L.reference_take = R.take;
           }
-          n(P, g && _ === "upload" ? S : null);
+          r(L, p && y === "upload" ? v : null);
         }
-        const L = !i && (!g || (h == null ? void 0 : h.seed_vc) && (_ === "upload" ? S : x)) && (d !== "model" || (h == null ? void 0 : h.denoise));
+        const P = !e && (!p || (c == null ? void 0 : c.seed_vc) && (y === "upload" ? v : b)) && (u !== "model" || (c == null ? void 0 : c.denoise));
         return f.jsxs("dialog", {
-          ref: a,
+          ref: l,
           className: "pr-export-dialog",
           "aria-labelledby": "pr-export-title",
-          "aria-describedby": "pr-export-description",
-          onCancel: (P) => {
-            P.preventDefault(), r();
+          onCancel: (L) => {
+            L.preventDefault(), s();
           },
-          onKeyDown: A,
+          onKeyDown: T,
           children: [
             f.jsxs("div", {
               className: "pr-export-dialog-heading",
               children: [
                 f.jsx("h2", {
                   id: "pr-export-title",
-                  children: "Export presentation"
+                  children: "Export"
                 }),
-                f.jsx("button", {
-                  className: "pr-btn pr-icon-btn",
-                  "aria-label": "Close export dialog",
-                  title: "Cancel export",
-                  onClick: r,
-                  children: f.jsx(Le, {
-                    name: "close"
-                  })
+                f.jsxs("div", {
+                  className: "pr-export-heading-actions",
+                  children: [
+                    f.jsx("button", {
+                      className: "pr-btn pr-icon-btn",
+                      title: "Check model runtime",
+                      "aria-label": "Check optional models",
+                      disabled: M,
+                      onClick: () => A(true),
+                      children: f.jsx(Le, {
+                        name: "refresh"
+                      })
+                    }),
+                    f.jsx("button", {
+                      className: "pr-btn pr-icon-btn",
+                      "aria-label": "Close export dialog",
+                      title: "Cancel",
+                      onClick: s,
+                      children: f.jsx(Le, {
+                        name: "close"
+                      })
+                    })
+                  ]
                 })
-              ]
-            }),
-            f.jsxs("p", {
-              id: "pr-export-description",
-              children: [
-                e,
-                " recorded ",
-                e === 1 ? "page" : "pages",
-                " \xB7 MP4 \xB7 1080p"
               ]
             }),
             !!t.length && f.jsxs("div", {
@@ -25445,20 +25469,20 @@ ${t.stack}` : s;
                 f.jsxs("div", {
                   className: "pr-export-missing-heading",
                   children: [
+                    "Skip ",
                     t.length,
-                    " ",
-                    t.length === 1 ? "page" : "pages",
-                    " without recording will be skipped"
+                    " unrecorded ",
+                    t.length === 1 ? "page" : "pages"
                   ]
                 }),
                 f.jsx("ul", {
                   "aria-label": "Pages without recordings",
-                  children: t.map((P) => f.jsxs("li", {
+                  children: t.map((L) => f.jsxs("li", {
                     children: [
                       "Page ",
-                      P
+                      L
                     ]
-                  }, P))
+                  }, L))
                 })
               ]
             }),
@@ -25466,150 +25490,90 @@ ${t.stack}` : s;
               className: "pr-audio-options",
               children: [
                 f.jsxs("label", {
-                  className: "pr-audio-field",
+                  className: "pr-audio-voice",
+                  title: ((_c3 = (_b3 = c == null ? void 0 : c.checks) == null ? void 0 : _b3.denoise) == null ? void 0 : _c3.message) || "DPDFNet model noise reduction",
                   children: [
                     f.jsx("span", {
-                      children: "Noise reduction"
+                      children: "AI denoise"
                     }),
-                    f.jsxs("select", {
+                    O("denoise"),
+                    f.jsx("input", {
+                      type: "checkbox",
                       "aria-label": "Noise reduction",
-                      value: d,
-                      disabled: g,
-                      onChange: (P) => p(P.target.value),
-                      children: [
-                        f.jsx("option", {
-                          value: "basic",
-                          children: "Light noise reduction"
-                        }),
-                        f.jsxs("option", {
-                          value: "model",
-                          disabled: !(h == null ? void 0 : h.denoise),
-                          children: [
-                            (h == null ? void 0 : h.denoiser) || "Model noise reduction",
-                            (h == null ? void 0 : h.denoise) ? "" : " (not installed)"
-                          ]
-                        })
-                      ]
+                      checked: u === "model",
+                      disabled: p || !(c == null ? void 0 : c.denoise),
+                      onChange: (L) => d(L.target.checked ? "model" : "basic")
                     })
                   ]
                 }),
                 f.jsxs("label", {
                   className: "pr-audio-voice",
+                  title: ((_e2 = (_d2 = c == null ? void 0 : c.checks) == null ? void 0 : _d2.seed_vc) == null ? void 0 : _e2.message) || "Seed-VC uses one reference voice for all pages; denoising runs first.",
                   children: [
-                    f.jsxs("span", {
-                      children: [
-                        f.jsx("strong", {
-                          children: "Unify voice tone"
-                        }),
-                        f.jsx("small", {
-                          children: (h == null ? void 0 : h.seed_vc) ? "Seed-VC" : "Seed-VC \xB7 not installed"
-                        })
-                      ]
+                    f.jsx("span", {
+                      children: "Unify voice"
                     }),
+                    O("seed_vc"),
                     f.jsx("input", {
                       type: "checkbox",
                       role: "switch",
                       "aria-label": "Unify voice tone",
-                      checked: g,
-                      disabled: !(h == null ? void 0 : h.seed_vc) || !(h == null ? void 0 : h.denoise),
-                      onChange: (P) => {
-                        m(P.target.checked), P.target.checked && p("model");
+                      checked: p,
+                      disabled: !(c == null ? void 0 : c.seed_vc) || !(c == null ? void 0 : c.denoise),
+                      onChange: (L) => {
+                        g(L.target.checked), L.target.checked && d("model");
                       }
                     })
                   ]
                 }),
-                g && f.jsxs("div", {
+                p && f.jsxs("div", {
                   className: "pr-voice-reference",
                   children: [
                     f.jsxs("label", {
                       className: "pr-audio-field",
                       children: [
                         f.jsx("span", {
-                          children: "Reference voice"
+                          children: "Reference"
                         }),
                         f.jsxs("select", {
                           "aria-label": "Reference voice",
-                          value: _,
-                          onChange: (P) => v(P.target.value),
+                          value: y,
+                          onChange: (L) => _(L.target.value),
                           children: [
-                            y.map((P) => f.jsxs("option", {
-                              value: P.page,
+                            m.map((L) => f.jsxs("option", {
+                              value: L.page,
                               children: [
                                 "Page ",
-                                P.page,
-                                " recording"
+                                L.page
                               ]
-                            }, P.take)),
+                            }, L.take)),
                             f.jsx("option", {
                               value: "upload",
-                              children: "Upload reference audio"
+                              children: "Upload audio"
                             })
                           ]
                         })
                       ]
                     }),
-                    _ === "upload" && f.jsxs("label", {
+                    y === "upload" && f.jsx("label", {
                       className: "pr-reference-upload",
-                      children: [
-                        f.jsx("input", {
-                          type: "file",
-                          accept: "audio/*,.wav,.mp3,.m4a,.flac,.ogg,.webm",
-                          "aria-label": "Upload reference audio",
-                          onChange: (P) => {
-                            const R = P.target.files[0];
-                            b(R && R.size <= 20 * 1024 * 1024 ? R : null), M((R == null ? void 0 : R.size) > 20 * 1024 * 1024 ? "Choose an audio file under 20 MB." : "");
-                          }
-                        }),
-                        f.jsx("span", {
-                          children: "Use a clean sample of 1\u201325 seconds."
-                        })
-                      ]
+                      title: "A voiced sample of 1\u201325 seconds, under 20 MB",
+                      children: f.jsx("input", {
+                        type: "file",
+                        accept: "audio/*,.wav,.mp3,.m4a,.flac,.ogg,.webm",
+                        "aria-label": "Upload reference audio",
+                        onChange: (L) => {
+                          const R = L.target.files[0];
+                          S(R && R.size <= 20 * 1024 * 1024 ? R : null), D((R == null ? void 0 : R.size) > 20 * 1024 * 1024 ? "Choose an audio file under 20 MB." : "");
+                        }
+                      })
                     }),
-                    D && f.jsx("div", {
+                    x && f.jsx("div", {
                       className: "pr-recording-error",
                       role: "alert",
-                      children: D
+                      children: x
                     })
                   ]
-                }),
-                f.jsxs("div", {
-                  className: "pr-model-status",
-                  children: [
-                    f.jsx("span", {
-                      children: C ? "Checking optional models\u2026" : (h == null ? void 0 : h.seed_vc) || (h == null ? void 0 : h.denoise) ? "Optional models connected" : "Optional models not installed or connected"
-                    }),
-                    f.jsx("button", {
-                      className: "pr-btn pr-icon-btn",
-                      title: "Check optional models again",
-                      "aria-label": "Check optional models",
-                      disabled: C,
-                      onClick: O,
-                      children: f.jsx(Le, {
-                        name: "refresh"
-                      })
-                    })
-                  ]
-                }),
-                f.jsxs("details", {
-                  className: "pr-model-help",
-                  children: [
-                    f.jsx("summary", {
-                      children: "Optional model setup"
-                    }),
-                    f.jsx("p", {
-                      children: "Install audio models on the computer that exports videos. A compatible GPU or Apple Silicon is recommended. The original voice option works without models."
-                    }),
-                    f.jsx("a", {
-                      href: "https://github.com/JoelYYoung/vibe-typst/blob/main/docs/audio-models.md",
-                      target: "_blank",
-                      rel: "noreferrer",
-                      children: "Installation guide"
-                    })
-                  ]
-                }),
-                f.jsx("p", {
-                  className: "pr-audio-note",
-                  children: "Noise reduction runs first. Volume is balanced across pages; original recordings are kept."
                 })
               ]
             }),
@@ -25617,20 +25581,20 @@ ${t.stack}` : s;
               className: "pr-export-dialog-actions",
               children: [
                 f.jsx("button", {
-                  ref: c,
+                  ref: a,
                   className: "pr-btn",
-                  onClick: r,
+                  onClick: s,
                   children: "Cancel"
                 }),
                 f.jsxs("button", {
                   className: "pr-btn pr-export-confirm",
-                  disabled: !L,
+                  disabled: !P,
                   onClick: k,
                   children: [
                     f.jsx(Le, {
                       name: "export"
                     }),
-                    "Continue export"
+                    "Export"
                   ]
                 })
               ]
@@ -25860,7 +25824,6 @@ ${t.stack}` : s;
             }),
             a && f.jsx(V8, {
               missingPages: _,
-              recordedCount: t.completed,
               disabled: x,
               triggerRef: h,
               takes: t.takes,
@@ -25941,16 +25904,16 @@ ${t.stack}` : s;
         }
       }
       function yM({ onClose: t, onSaved: e, onPointer: i, page: s, setPage: r, pages: n, tokens: o, slideMap: l, generation: a, renderVersion: c }) {
-        const [h, u] = w.useState([]), d = Array.isArray(l) ? l : h, [p, g] = w.useState(0), [m, y] = w.useState(true), [_, v] = w.useState(q8), { showNextPreview: S, fontSize: b } = _, x = w.useRef(null), D = w.useRef(null), M = w.useRef(null), C = w.useRef(null), [E, T] = w.useState(null), [O, A] = w.useState(false), k = $8({
+        const [h, u] = w.useState([]), d = Array.isArray(l) ? l : h, [p, g] = w.useState(0), [m, y] = w.useState(true), [_, v] = w.useState(q8), { showNextPreview: S, fontSize: b } = _, x = w.useRef(null), D = w.useRef(null), M = w.useRef(null), C = w.useRef(null), [E, A] = w.useState(null), [O, T] = w.useState(false), k = $8({
           enabled: O,
           page: s,
           pages: n,
           tokens: o,
           renderVersion: c
-        }), L = w.useRef(k);
-        L.current = k;
-        const P = () => {
-          L.current.locked || t();
+        }), P = w.useRef(k);
+        P.current = k;
+        const L = () => {
+          P.current.locked || t();
         };
         w.useEffect(() => {
           try {
@@ -25973,10 +25936,10 @@ ${t.stack}` : s;
           const J = setInterval(() => g((he) => he + 1), 1e3);
           return () => clearInterval(J);
         }, []);
-        const R = n.length, j = (J) => {
-          L.current.locked || r((he) => Math.min(Math.max(R, 1), Math.max(1, he + J)));
+        const R = n.length, I = (J) => {
+          P.current.locked || r((he) => Math.min(Math.max(R, 1), Math.max(1, he + J)));
         }, N = P8(s, n, o, a), $ = w.useCallback(() => {
-          T(null), i && i(null), L.current.movePointer(null);
+          A(null), i && i(null), P.current.movePointer(null);
         }, [
           i
         ]), B = w.useCallback(() => {
@@ -25997,7 +25960,7 @@ ${t.stack}` : s;
         function G(J) {
           if (!J.isPrimary || J.button !== 0) return;
           const he = K(J);
-          he && (J.preventDefault(), C.current = J.pointerId, J.currentTarget.setPointerCapture && J.currentTarget.setPointerCapture(J.pointerId), T(he), L.current.movePointer(he), i && i({
+          he && (J.preventDefault(), C.current = J.pointerId, J.currentTarget.setPointerCapture && J.currentTarget.setPointerCapture(J.pointerId), A(he), P.current.movePointer(he), i && i({
             page: s,
             x: he.x,
             y: he.y
@@ -26014,7 +25977,7 @@ ${t.stack}` : s;
             $();
             return;
           }
-          T(he), L.current.movePointer(he), i && i({
+          A(he), P.current.movePointer(he), i && i({
             page: s,
             x: he.x,
             y: he.y
@@ -26037,10 +26000,10 @@ ${t.stack}` : s;
           const J = (he) => {
             const V = he.target && he.target.tagName || "", ee = V === "TEXTAREA" || V === "INPUT";
             if (he.key === "Escape") {
-              ee ? he.target.blur() : P();
+              ee ? he.target.blur() : L();
               return;
             }
-            ee || (he.key === "ArrowRight" || he.key === "PageDown" || he.key === " " ? (he.preventDefault(), j(1)) : (he.key === "ArrowLeft" || he.key === "PageUp") && (he.preventDefault(), j(-1)));
+            ee || (he.key === "ArrowRight" || he.key === "PageDown" || he.key === " " ? (he.preventDefault(), I(1)) : (he.key === "ArrowLeft" || he.key === "PageUp") && (he.preventDefault(), I(-1)));
           };
           return window.addEventListener("keydown", J), () => window.removeEventListener("keydown", J);
         }, [
@@ -26105,7 +26068,7 @@ ${t.stack}` : s;
               children: [
                 f.jsx("button", {
                   className: "pr-btn pr-icon-btn",
-                  onClick: P,
+                  onClick: L,
                   disabled: k.locked,
                   "aria-label": "Exit presenter",
                   title: "Exit presenter (Esc)",
@@ -26132,7 +26095,7 @@ ${t.stack}` : s;
                 f.jsx("button", {
                   className: "pr-btn pr-icon-btn pr-record-mode" + (O ? " on" : ""),
                   disabled: k.locked,
-                  onClick: () => A((J) => !J),
+                  onClick: () => T((J) => !J),
                   "aria-label": O ? "Close recording mode" : "Record presentation",
                   "aria-pressed": O,
                   title: O ? "Close recording mode" : "Record presentation page by page",
@@ -26425,7 +26388,7 @@ ${t.stack}` : s;
               children: [
                 f.jsx("button", {
                   className: "pr-nav-btn",
-                  onClick: () => j(-1),
+                  onClick: () => I(-1),
                   disabled: k.locked || s <= 1,
                   "aria-label": "Previous page",
                   title: "Previous page (\u2190)",
@@ -26443,7 +26406,7 @@ ${t.stack}` : s;
                 }),
                 f.jsx("button", {
                   className: "pr-nav-btn",
-                  onClick: () => j(1),
+                  onClick: () => I(1),
                   disabled: k.locked || s >= R,
                   "aria-label": "Next page",
                   title: "Next page (\u2192)",
@@ -26640,8 +26603,8 @@ ${t.stack}` : s;
         }, [
           g
         ]);
-        const D = i ? i.split("/").pop().split("\\").pop() : "", M = t.type === "file" && t.name === D, C = t.type === "file" && t.name === s, E = t.type === "file" ? SM(t.name) : "", T = G8.has(E), O = wM.has(E);
-        async function A(H) {
+        const D = i ? i.split("/").pop().split("\\").pop() : "", M = t.type === "file" && t.name === D, C = t.type === "file" && t.name === s, E = t.type === "file" ? SM(t.name) : "", A = G8.has(E), O = wM.has(E);
+        async function T(H) {
           H.preventDefault();
           const se = y.trim();
           if (!se || se === t.name) {
@@ -26673,14 +26636,14 @@ ${t.stack}` : s;
             }
           });
         }
-        const L = X8.has(E);
-        async function P() {
+        const P = X8.has(E);
+        async function L() {
           if (t.type === "file") {
-            if (T) {
+            if (A) {
               n(t);
               return;
             }
-            if (L) {
+            if (P) {
               o(t);
               return;
             }
@@ -26697,7 +26660,7 @@ ${t.stack}` : s;
             }
           }
         }
-        const R = e * 14, j = t.is_typ || T || L, N = t.type === "file" ? j ? "Click to open \xB7 double-click to rename" : "Double-click to rename" : d ? "Collapse" : "Expand";
+        const R = e * 14, I = t.is_typ || A || P, N = t.type === "file" ? I ? "Click to open \xB7 double-click to rename" : "Double-click to rename" : d ? "Collapse" : "Expand";
         function $(H) {
           if (g) {
             H.preventDefault();
@@ -26769,11 +26732,11 @@ ${t.stack}` : s;
                 }),
                 f.jsx("span", {
                   className: "fm-icon",
-                  children: t.type === "dir" ? "\u{1F4C1}" : O ? "\u{1F5BC}" : E === "pdf" ? "\u{1F4D1}" : L ? "\u{1F4DD}" : t.is_typ ? "\u{1F4C4}" : "\u{1F4CE}"
+                  children: t.type === "dir" ? "\u{1F4C1}" : O ? "\u{1F5BC}" : E === "pdf" ? "\u{1F4D1}" : P ? "\u{1F4DD}" : t.is_typ ? "\u{1F4C4}" : "\u{1F4CE}"
                 }),
                 g ? f.jsx("form", {
                   className: "fm-rename-form",
-                  onSubmit: A,
+                  onSubmit: T,
                   children: f.jsx("input", {
                     ref: b,
                     className: "fm-rename-input",
@@ -26785,9 +26748,9 @@ ${t.stack}` : s;
                     }
                   })
                 }) : f.jsxs("button", {
-                  className: "fm-name" + (j ? " clickable" : ""),
+                  className: "fm-name" + (I ? " clickable" : ""),
                   onClick: (H) => {
-                    u.selMode && !C ? (H.preventDefault(), H.shiftKey ? u.selectRange(t.path) : u.toggleSelect(t.path)) : P();
+                    u.selMode && !C ? (H.preventDefault(), H.shiftKey ? u.selectRange(t.path) : u.toggleSelect(t.path)) : L();
                   },
                   onDoubleClick: () => {
                     u.selMode || (m(true), _(t.name));
@@ -27091,7 +27054,7 @@ ${t.stack}` : s;
         });
       }
       function sF({ activeFile: t, mainFile: e, onOpenFile: i, onClose: s, onRoomChange: r }) {
-        const [n, o] = w.useState([]), [l, a] = w.useState(true), [c, h] = w.useState(false), [u, d] = w.useState(""), [p, g] = w.useState(null), [m, y] = w.useState(""), [_, v] = w.useState(null), [S, b] = w.useState(null), [x, D] = w.useState(null), [M, C] = w.useState(false), [E, T] = w.useState(/* @__PURE__ */ new Set()), [O, A] = w.useState(null), [k, L] = w.useState(null), [P, R] = w.useState(""), [j, N] = w.useState(false), $ = w.useRef(null), B = w.useRef(null), K = w.useRef(null), G = w.useRef([]), H = w.useCallback(async () => {
+        const [n, o] = w.useState([]), [l, a] = w.useState(true), [c, h] = w.useState(false), [u, d] = w.useState(""), [p, g] = w.useState(null), [m, y] = w.useState(""), [_, v] = w.useState(null), [S, b] = w.useState(null), [x, D] = w.useState(null), [M, C] = w.useState(false), [E, A] = w.useState(/* @__PURE__ */ new Set()), [O, T] = w.useState(null), [k, P] = w.useState(null), [L, R] = w.useState(""), [I, N] = w.useState(false), $ = w.useRef(null), B = w.useRef(null), K = w.useRef(null), G = w.useRef([]), H = w.useCallback(async () => {
           try {
             const V = await fC();
             o(V.items || []);
@@ -27102,10 +27065,10 @@ ${t.stack}` : s;
           }
         }, []);
         function se(V) {
-          T((ee) => {
+          A((ee) => {
             const ye = new Set(ee);
             return ye.has(V) ? ye.delete(V) : ye.add(V), ye;
-          }), A(V);
+          }), T(V);
         }
         function z(V) {
           const ee = G.current, ye = O == null ? -1 : ee.indexOf(O), it = ee.indexOf(V);
@@ -27117,7 +27080,7 @@ ${t.stack}` : s;
             Math.min(ye, it),
             Math.max(ye, it)
           ];
-          T(new Set(ee.slice(tr, Uf + 1)));
+          A(new Set(ee.slice(tr, Uf + 1)));
         }
         async function X(V, ee) {
           d("");
@@ -27127,13 +27090,13 @@ ${t.stack}` : s;
               const it = await DL(ye, ee);
               it.collision_renamed && me.info(`A same-named item already existed; moved as ${it.name}`);
             }
-            T(/* @__PURE__ */ new Set()), await H();
+            A(/* @__PURE__ */ new Set()), await H();
           } catch (ye) {
             d(ye.message || "Move failed");
           }
         }
         function pe() {
-          C(false), T(/* @__PURE__ */ new Set()), A(null);
+          C(false), A(/* @__PURE__ */ new Set()), T(null);
         }
         async function Ye(V, ee = "") {
           const ye = [
@@ -27183,7 +27146,7 @@ ${t.stack}` : s;
                   const ye = n.find((it) => it.path === ee);
                   ye && ye.type === "dir" ? await gC(ee) : await pC(ee);
                 }
-                T(/* @__PURE__ */ new Set()), A(null), await H();
+                A(/* @__PURE__ */ new Set()), T(null), await H();
               } catch (ee) {
                 d(ee.message || "Delete failed");
               } finally {
@@ -27197,9 +27160,9 @@ ${t.stack}` : s;
             h(true), d("");
             try {
               const ee = await CL(V.path);
-              await H(), T(new Set(ee ? [
+              await H(), A(new Set(ee ? [
                 ee.path
-              ] : [])), A(ee ? ee.path : null);
+              ] : [])), T(ee ? ee.path : null);
             } catch (ee) {
               d(ee.message || "Duplicate failed");
             } finally {
@@ -27208,22 +27171,22 @@ ${t.stack}` : s;
           }
         }
         function ae(V) {
-          V && (L(V), R(V.name), setTimeout(() => {
+          V && (P(V), R(V.name), setTimeout(() => {
             var _a3, _b3;
             (_a3 = B.current) == null ? void 0 : _a3.focus(), (_b3 = B.current) == null ? void 0 : _b3.select();
           }, 30));
         }
         async function ce(V) {
           V.preventDefault();
-          const ee = P.trim();
+          const ee = L.trim();
           if (!k || !ee || ee === k.name) {
-            L(null);
+            P(null);
             return;
           }
           h(true), d("");
           try {
             const ye = await mC(k.path, ee), it = k.type === "file" && k.abs_path === t;
-            if (L(null), R(""), T(/* @__PURE__ */ new Set()), A(null), await H(), it && ye && ye.abs_path) {
+            if (P(null), R(""), A(/* @__PURE__ */ new Set()), T(null), await H(), it && ye && ye.abs_path) {
               const tr = await i0(ye.abs_path);
               i && i(tr);
             }
@@ -27443,21 +27406,21 @@ ${t.stack}` : s;
                       }),
                       f.jsx("input", {
                         ref: B,
-                        value: P,
+                        value: L,
                         onChange: (V) => R(V.target.value),
-                        onKeyDown: (V) => V.key === "Escape" && (L(null), R(""))
+                        onKeyDown: (V) => V.key === "Escape" && (P(null), R(""))
                       }),
                       f.jsx("button", {
                         type: "submit",
                         className: "mini primary",
-                        disabled: c || !P.trim(),
+                        disabled: c || !L.trim(),
                         children: c ? "\u2026" : "Rename"
                       }),
                       f.jsx("button", {
                         type: "button",
                         className: "mini",
                         onClick: () => {
-                          L(null), R("");
+                          P(null), R("");
                         },
                         children: "\u2715"
                       })
@@ -27467,12 +27430,12 @@ ${t.stack}` : s;
                     className: "filemgr-loading",
                     children: "Loading\u2026"
                   }) : f.jsxs("div", {
-                    className: "filemgr-list" + (j ? " fm-upload-hover" : ""),
+                    className: "filemgr-list" + (I ? " fm-upload-hover" : ""),
                     onDragOver: (V) => {
                       const ee = [
                         ...V.dataTransfer.types
                       ];
-                      ee.includes("Files") ? (V.preventDefault(), j || N(true)) : ee.includes("application/x-fm-move") && (V.preventDefault(), V.dataTransfer.dropEffect = "move");
+                      ee.includes("Files") ? (V.preventDefault(), I || N(true)) : ee.includes("application/x-fm-move") && (V.preventDefault(), V.dataTransfer.dropEffect = "move");
                     },
                     onDragLeave: (V) => {
                       V.currentTarget.contains(V.relatedTarget) || N(false);
@@ -27510,7 +27473,7 @@ ${t.stack}` : s;
                         setConfirm: D,
                         dnd: mt
                       }, V.path)),
-                      j && f.jsx("div", {
+                      I && f.jsx("div", {
                         className: "fm-drop-hint",
                         children: "Drop to upload"
                       })
@@ -28485,73 +28448,73 @@ WARNING: This link could potentially be dangerous`)) {
       }, Kt;
       ((t) => {
         t.None = () => be.None;
-        function e(A, k) {
-          return u(A, () => {
+        function e(T, k) {
+          return u(T, () => {
           }, 0, void 0, true, void 0, k);
         }
         t.defer = e;
-        function i(A) {
-          return (k, L = null, P) => {
-            let R = false, j;
-            return j = A((N) => {
-              if (!R) return j ? j.dispose() : R = true, k.call(L, N);
-            }, null, P), R && j.dispose(), j;
+        function i(T) {
+          return (k, P = null, L) => {
+            let R = false, I;
+            return I = T((N) => {
+              if (!R) return I ? I.dispose() : R = true, k.call(P, N);
+            }, null, L), R && I.dispose(), I;
           };
         }
         t.once = i;
-        function s(A, k, L) {
-          return c((P, R = null, j) => A((N) => P.call(R, k(N)), null, j), L);
+        function s(T, k, P) {
+          return c((L, R = null, I) => T((N) => L.call(R, k(N)), null, I), P);
         }
         t.map = s;
-        function r(A, k, L) {
-          return c((P, R = null, j) => A((N) => {
-            k(N), P.call(R, N);
-          }, null, j), L);
+        function r(T, k, P) {
+          return c((L, R = null, I) => T((N) => {
+            k(N), L.call(R, N);
+          }, null, I), P);
         }
         t.forEach = r;
-        function n(A, k, L) {
-          return c((P, R = null, j) => A((N) => k(N) && P.call(R, N), null, j), L);
+        function n(T, k, P) {
+          return c((L, R = null, I) => T((N) => k(N) && L.call(R, N), null, I), P);
         }
         t.filter = n;
-        function o(A) {
-          return A;
+        function o(T) {
+          return T;
         }
         t.signal = o;
-        function l(...A) {
-          return (k, L = null, P) => {
-            let R = EF(...A.map((j) => j((N) => k.call(L, N))));
-            return h(R, P);
+        function l(...T) {
+          return (k, P = null, L) => {
+            let R = EF(...T.map((I) => I((N) => k.call(P, N))));
+            return h(R, L);
           };
         }
         t.any = l;
-        function a(A, k, L, P) {
-          let R = L;
-          return s(A, (j) => (R = k(R, j), R), P);
+        function a(T, k, P, L) {
+          let R = P;
+          return s(T, (I) => (R = k(R, I), R), L);
         }
         t.reduce = a;
-        function c(A, k) {
-          let L, P = {
+        function c(T, k) {
+          let P, L = {
             onWillAddFirstListener() {
-              L = A(R.fire, R);
+              P = T(R.fire, R);
             },
             onDidRemoveLastListener() {
-              L == null ? void 0 : L.dispose();
+              P == null ? void 0 : P.dispose();
             }
-          }, R = new Y(P);
+          }, R = new Y(L);
           return k == null ? void 0 : k.add(R), R.event;
         }
-        function h(A, k) {
-          return k instanceof Array ? k.push(A) : k && k.add(A), A;
+        function h(T, k) {
+          return k instanceof Array ? k.push(T) : k && k.add(T), T;
         }
-        function u(A, k, L = 100, P = false, R = false, j, N) {
+        function u(T, k, P = 100, L = false, R = false, I, N) {
           let $, B, K, G = 0, H, se = {
-            leakWarningThreshold: j,
+            leakWarningThreshold: I,
             onWillAddFirstListener() {
-              $ = A((X) => {
-                G++, B = k(B, X), P && !K && (z.fire(B), B = void 0), H = () => {
+              $ = T((X) => {
+                G++, B = k(B, X), L && !K && (z.fire(B), B = void 0), H = () => {
                   let pe = B;
-                  B = void 0, K = void 0, (!P || G > 1) && z.fire(pe), G = 0;
-                }, typeof L == "number" ? (clearTimeout(K), K = setTimeout(H, L)) : K === void 0 && (K = 0, queueMicrotask(H));
+                  B = void 0, K = void 0, (!L || G > 1) && z.fire(pe), G = 0;
+                }, typeof P == "number" ? (clearTimeout(K), K = setTimeout(H, P)) : K === void 0 && (K = 0, queueMicrotask(H));
               });
             },
             onWillRemoveListener() {
@@ -28564,54 +28527,54 @@ WARNING: This link could potentially be dangerous`)) {
           return N == null ? void 0 : N.add(z), z.event;
         }
         t.debounce = u;
-        function d(A, k = 0, L) {
-          return t.debounce(A, (P, R) => P ? (P.push(R), P) : [
+        function d(T, k = 0, P) {
+          return t.debounce(T, (L, R) => L ? (L.push(R), L) : [
             R
-          ], k, void 0, true, void 0, L);
+          ], k, void 0, true, void 0, P);
         }
         t.accumulate = d;
-        function p(A, k = (P, R) => P === R, L) {
-          let P = true, R;
-          return n(A, (j) => {
-            let N = P || !k(j, R);
-            return P = false, R = j, N;
-          }, L);
+        function p(T, k = (L, R) => L === R, P) {
+          let L = true, R;
+          return n(T, (I) => {
+            let N = L || !k(I, R);
+            return L = false, R = I, N;
+          }, P);
         }
         t.latch = p;
-        function g(A, k, L) {
+        function g(T, k, P) {
           return [
-            t.filter(A, k, L),
-            t.filter(A, (P) => !k(P), L)
+            t.filter(T, k, P),
+            t.filter(T, (L) => !k(L), P)
           ];
         }
         t.split = g;
-        function m(A, k = false, L = [], P) {
-          let R = L.slice(), j = A((B) => {
+        function m(T, k = false, P = [], L) {
+          let R = P.slice(), I = T((B) => {
             R ? R.push(B) : $.fire(B);
           });
-          P && P.add(j);
+          L && L.add(I);
           let N = () => {
             R == null ? void 0 : R.forEach((B) => $.fire(B)), R = null;
           }, $ = new Y({
             onWillAddFirstListener() {
-              j || (j = A((B) => $.fire(B)), P && P.add(j));
+              I || (I = T((B) => $.fire(B)), L && L.add(I));
             },
             onDidAddFirstListener() {
               R && (k ? setTimeout(N) : N());
             },
             onDidRemoveLastListener() {
-              j && j.dispose(), j = null;
+              I && I.dispose(), I = null;
             }
           });
-          return P && P.add($), $.event;
+          return L && L.add($), $.event;
         }
         t.buffer = m;
-        function y(A, k) {
-          return (L, P, R) => {
-            let j = k(new v());
-            return A(function(N) {
-              let $ = j.evaluate(N);
-              $ !== _ && L.call(P, $);
+        function y(T, k) {
+          return (P, L, R) => {
+            let I = k(new v());
+            return T(function(N) {
+              let $ = I.evaluate(N);
+              $ !== _ && P.call(L, $);
             }, void 0, R);
           };
         }
@@ -28625,51 +28588,51 @@ WARNING: This link could potentially be dangerous`)) {
             return this.steps.push(k), this;
           }
           forEach(k) {
-            return this.steps.push((L) => (k(L), L)), this;
+            return this.steps.push((P) => (k(P), P)), this;
           }
           filter(k) {
-            return this.steps.push((L) => k(L) ? L : _), this;
+            return this.steps.push((P) => k(P) ? P : _), this;
           }
-          reduce(k, L) {
-            let P = L;
-            return this.steps.push((R) => (P = k(P, R), P)), this;
+          reduce(k, P) {
+            let L = P;
+            return this.steps.push((R) => (L = k(L, R), L)), this;
           }
-          latch(k = (L, P) => L === P) {
-            let L = true, P;
+          latch(k = (P, L) => P === L) {
+            let P = true, L;
             return this.steps.push((R) => {
-              let j = L || !k(R, P);
-              return L = false, P = R, j ? R : _;
+              let I = P || !k(R, L);
+              return P = false, L = R, I ? R : _;
             }), this;
           }
           evaluate(k) {
-            for (let L of this.steps) if (k = L(k), k === _) break;
+            for (let P of this.steps) if (k = P(k), k === _) break;
             return k;
           }
         }
-        function S(A, k, L = (P) => P) {
-          let P = (...$) => N.fire(L(...$)), R = () => A.on(k, P), j = () => A.removeListener(k, P), N = new Y({
+        function S(T, k, P = (L) => L) {
+          let L = (...$) => N.fire(P(...$)), R = () => T.on(k, L), I = () => T.removeListener(k, L), N = new Y({
             onWillAddFirstListener: R,
-            onDidRemoveLastListener: j
+            onDidRemoveLastListener: I
           });
           return N.event;
         }
         t.fromNodeEventEmitter = S;
-        function b(A, k, L = (P) => P) {
-          let P = (...$) => N.fire(L(...$)), R = () => A.addEventListener(k, P), j = () => A.removeEventListener(k, P), N = new Y({
+        function b(T, k, P = (L) => L) {
+          let L = (...$) => N.fire(P(...$)), R = () => T.addEventListener(k, L), I = () => T.removeEventListener(k, L), N = new Y({
             onWillAddFirstListener: R,
-            onDidRemoveLastListener: j
+            onDidRemoveLastListener: I
           });
           return N.event;
         }
         t.fromDOMEventEmitter = b;
-        function x(A) {
-          return new Promise((k) => i(A)(k));
+        function x(T) {
+          return new Promise((k) => i(T)(k));
         }
         t.toPromise = x;
-        function D(A) {
+        function D(T) {
           let k = new Y();
-          return A.then((L) => {
-            k.fire(L);
+          return T.then((P) => {
+            k.fire(P);
           }, () => {
             k.fire(void 0);
           }).finally(() => {
@@ -28677,18 +28640,18 @@ WARNING: This link could potentially be dangerous`)) {
           }), k.event;
         }
         t.fromPromise = D;
-        function M(A, k) {
-          return A((L) => k.fire(L));
+        function M(T, k) {
+          return T((P) => k.fire(P));
         }
         t.forward = M;
-        function C(A, k, L) {
-          return k(L), A((P) => k(P));
+        function C(T, k, P) {
+          return k(P), T((L) => k(L));
         }
         t.runAndSubscribe = C;
         class E {
-          constructor(k, L) {
+          constructor(k, P) {
             this._observable = k, this._counter = 0, this._hasChanged = false;
-            let P = {
+            let L = {
               onWillAddFirstListener: () => {
                 k.addObserver(this);
               },
@@ -28696,46 +28659,46 @@ WARNING: This link could potentially be dangerous`)) {
                 k.removeObserver(this);
               }
             };
-            this.emitter = new Y(P), L && L.add(this.emitter);
+            this.emitter = new Y(L), P && P.add(this.emitter);
           }
           beginUpdate(k) {
             this._counter++;
           }
           handlePossibleChange(k) {
           }
-          handleChange(k, L) {
+          handleChange(k, P) {
             this._hasChanged = true;
           }
           endUpdate(k) {
             this._counter--, this._counter === 0 && (this._observable.reportChanges(), this._hasChanged && (this._hasChanged = false, this.emitter.fire(this._observable.get())));
           }
         }
-        function T(A, k) {
-          return new E(A, k).emitter.event;
+        function A(T, k) {
+          return new E(T, k).emitter.event;
         }
-        t.fromObservable = T;
-        function O(A) {
-          return (k, L, P) => {
-            let R = 0, j = false, N = {
+        t.fromObservable = A;
+        function O(T) {
+          return (k, P, L) => {
+            let R = 0, I = false, N = {
               beginUpdate() {
                 R++;
               },
               endUpdate() {
-                R--, R === 0 && (A.reportChanges(), j && (j = false, k.call(L)));
+                R--, R === 0 && (T.reportChanges(), I && (I = false, k.call(P)));
               },
               handlePossibleChange() {
               },
               handleChange() {
-                j = true;
+                I = true;
               }
             };
-            A.addObserver(N), A.reportChanges();
+            T.addObserver(N), T.reportChanges();
             let $ = {
               dispose() {
-                A.removeObserver(N);
+                T.removeObserver(N);
               }
             };
-            return P instanceof nn ? P.add($) : Array.isArray(P) && P.push($), $;
+            return L instanceof nn ? L.add($) : Array.isArray(L) && L.push($), $;
           };
         }
         t.fromObservableLight = O;
@@ -31307,28 +31270,28 @@ WARNING: This link could potentially be dangerous`)) {
         createRow(t, e, i, s, r, n, o, l, a, c, h) {
           let u = [], d = this._characterJoinerService.getJoinedCharacters(e), p = this._themeService.colors, g = t.getNoBgTrimmedLength();
           i && g < n + 1 && (g = n + 1);
-          let m, y = 0, _ = "", v = 0, S = 0, b = 0, x = 0, D = false, M = 0, C = false, E = 0, T = 0, O = [], A = c !== -1 && h !== -1;
+          let m, y = 0, _ = "", v = 0, S = 0, b = 0, x = 0, D = false, M = 0, C = false, E = 0, A = 0, O = [], T = c !== -1 && h !== -1;
           for (let k = 0; k < g; k++) {
             t.loadCell(k, this._workCell);
-            let L = this._workCell.getWidth();
-            if (L === 0) continue;
-            let P = false, R = k >= T, j = k, N = this._workCell;
+            let P = this._workCell.getWidth();
+            if (P === 0) continue;
+            let L = false, R = k >= A, I = k, N = this._workCell;
             if (d.length > 0 && k === d[0][0] && R) {
               let ce = d.shift(), lt = this._isCellInSelection(ce[0], e);
               for (v = ce[0] + 1; v < ce[1]; v++) R && (R = lt === this._isCellInSelection(v, e));
-              R && (R = !i || n < ce[0] || n >= ce[1]), R ? (P = true, N = new B$(this._workCell, t.translateToString(true, ce[0], ce[1]), ce[1] - ce[0]), j = ce[1] - 1, L = N.getWidth()) : T = ce[1];
+              R && (R = !i || n < ce[0] || n >= ce[1]), R ? (L = true, N = new B$(this._workCell, t.translateToString(true, ce[0], ce[1]), ce[1] - ce[0]), I = ce[1] - 1, P = N.getWidth()) : A = ce[1];
             }
-            let $ = this._isCellInSelection(k, e), B = i && k === n, K = A && k >= c && k <= h, G = false;
+            let $ = this._isCellInSelection(k, e), B = i && k === n, K = T && k >= c && k <= h, G = false;
             this._decorationService.forEachDecorationAtCell(k, e, void 0, (ce) => {
               G = true;
             });
             let H = N.getChars() || qr;
-            if (H === " " && (N.isUnderline() || N.isOverline()) && (H = "\xA0"), E = L * l - a.get(H, N.isBold(), N.isItalic()), !m) m = this._document.createElement("span");
-            else if (y && ($ && C || !$ && !C && N.bg === S) && ($ && C && p.selectionForeground || N.fg === b) && N.extended.ext === x && K === D && E === M && !B && !P && !G && R) {
+            if (H === " " && (N.isUnderline() || N.isOverline()) && (H = "\xA0"), E = P * l - a.get(H, N.isBold(), N.isItalic()), !m) m = this._document.createElement("span");
+            else if (y && ($ && C || !$ && !C && N.bg === S) && ($ && C && p.selectionForeground || N.fg === b) && N.extended.ext === x && K === D && E === M && !B && !L && !G && R) {
               N.isInvisible() ? _ += qr : _ += H, y++;
               continue;
             } else y && (m.textContent = _), m = this._document.createElement("span"), y = 0, _ = "";
-            if (S = N.bg, b = N.fg, x = N.extended.ext, D = K, M = E, C = $, P && n >= k && n <= j && (n = k), !this._coreService.isCursorHidden && B && this._coreService.isCursorInitialized) {
+            if (S = N.bg, b = N.fg, x = N.extended.ext, D = K, M = E, C = $, L && n >= k && n <= I && (n = k), !this._coreService.isCursorHidden && B && this._coreService.isCursorInitialized) {
               if (O.push("xterm-cursor"), this._coreBrowserService.isFocused) o && O.push("xterm-cursor-blink"), O.push(s === "bar" ? "xterm-cursor-bar" : s === "underline" ? "xterm-cursor-underline" : "xterm-cursor-block");
               else if (r) switch (r) {
                 case "outline":
@@ -31388,7 +31351,7 @@ WARNING: This link could potentially be dangerous`)) {
               default:
                 this._applyMinimumContrast(m, ae, p.foreground, N, mt, Ge) || Ye && O.push("xterm-fg-257");
             }
-            O.length && (m.className = O.join(" "), O.length = 0), !B && !P && !G && R ? y++ : m.textContent = _, E !== this.defaultSpacing && (m.style.letterSpacing = `${E}px`), u.push(m), k = j;
+            O.length && (m.className = O.join(" "), O.length = 0), !B && !L && !G && R ? y++ : m.textContent = _, E !== this.defaultSpacing && (m.style.letterSpacing = `${E}px`), u.push(m), k = I;
           }
           return m && y && (m.textContent = _), u;
         }
@@ -37980,7 +37943,7 @@ WARNING: This link could potentially be dangerous`)) {
           main: "",
           room: "",
           store: ""
-        }), [r, n] = w.useState([]), [o, l] = w.useState({}), [a, c] = w.useState(120), [h, u] = w.useState(Zh), [d, p] = w.useState(0), [g, m] = w.useState(null), [y, _] = w.useState(null), [v, S] = w.useState(false), [b, x] = w.useState(false), [D, M] = w.useState([]), [C, E] = w.useState([]), [T, O] = w.useState(false), [A, k] = w.useState(1), [L, P] = w.useState(false), [R, j] = w.useState(null), [N, $] = w.useState(""), [B, K] = w.useState([]), G = w.useRef(null), H = w.useRef({
+        }), [r, n] = w.useState([]), [o, l] = w.useState({}), [a, c] = w.useState(120), [h, u] = w.useState(Zh), [d, p] = w.useState(0), [g, m] = w.useState(null), [y, _] = w.useState(null), [v, S] = w.useState(false), [b, x] = w.useState(false), [D, M] = w.useState([]), [C, E] = w.useState([]), [A, O] = w.useState(false), [T, k] = w.useState(1), [P, L] = w.useState(false), [R, I] = w.useState(null), [N, $] = w.useState(""), [B, K] = w.useState([]), G = w.useRef(null), H = w.useRef({
           page: 1,
           pages: [],
           tokens: {},
@@ -37991,17 +37954,17 @@ WARNING: This link could potentially be dangerous`)) {
           codex: false,
           agent: false
         }), kr = w.useRef(null), Cr = w.useRef(null), Hl = i.project || "";
-        async function Cy(I) {
-          if (Vf(false), !(!I || !I.file) && (s((ie) => ({
+        async function Cy(j) {
+          if (Vf(false), !(!j || !j.file) && (s((ie) => ({
             ...ie,
-            file: I.file,
-            project: I.project,
-            project_name: I.project_name || ie.project_name,
-            mode: I.mode || ie.mode,
-            main: I.main,
-            room: I.room,
-            store: I.store
-          })), n(I.pages || []), l(I.tokens || {}), u(Zh()), ne([]), ce(null), ee("\u2713 " + (I.main || "opened")), Er(), !I.workdir_ready)) try {
+            file: j.file,
+            project: j.project,
+            project_name: j.project_name || ie.project_name,
+            mode: j.mode || ie.mode,
+            main: j.main,
+            room: j.room,
+            store: j.store
+          })), n(j.pages || []), l(j.tokens || {}), u(Zh()), ne([]), ce(null), ee("\u2713 " + (j.main || "opened")), Er(), !j.workdir_ready)) try {
             await zR();
           } catch {
           }
@@ -38014,7 +37977,7 @@ WARNING: This link could potentially be dangerous`)) {
         }
         w.useEffect(() => {
           if (!Wl || go) return;
-          const I = requestAnimationFrame(() => Cr.current && Cr.current.refit && Cr.current.refit());
+          const j = requestAnimationFrame(() => Cr.current && Cr.current.refit && Cr.current.refit());
           let ie = true;
           const de = async () => {
             try {
@@ -38026,21 +37989,21 @@ WARNING: This link could potentially be dangerous`)) {
           de();
           const we = setInterval(de, 1500);
           return () => {
-            ie = false, clearInterval(we), cancelAnimationFrame(I);
+            ie = false, clearInterval(we), cancelAnimationFrame(j);
           };
         }, [
           Wl,
           go
         ]);
-        function NT(I) {
-          I.preventDefault();
+        function NT(j) {
+          j.preventDefault();
           const ie = (we) => kT(Math.max(80, Math.min(window.innerHeight - we.clientY - 40, window.innerHeight - 180))), de = () => {
             window.removeEventListener("mousemove", ie), window.removeEventListener("mouseup", de), document.body.style.cursor = "";
           };
           window.addEventListener("mousemove", ie), window.addEventListener("mouseup", de), document.body.style.cursor = "row-resize";
         }
-        function RT(I) {
-          I.preventDefault();
+        function RT(j) {
+          j.preventDefault();
           const ie = (we) => {
             const St = window.innerWidth - tr - 380 - 14;
             it(Math.max(220, Math.min(we.clientX, St)));
@@ -38049,8 +38012,8 @@ WARNING: This link could potentially be dangerous`)) {
           };
           window.addEventListener("mousemove", ie), window.addEventListener("mouseup", de), document.body.style.cursor = "col-resize";
         }
-        function LT(I) {
-          I.preventDefault();
+        function LT(j) {
+          j.preventDefault();
           const ie = (we) => {
             const St = window.innerWidth - (go ? 26 : ye) - 380 - 14;
             Uf(Math.max(280, Math.min(window.innerWidth - we.clientX, St)));
@@ -38060,22 +38023,22 @@ WARNING: This link could potentially be dangerous`)) {
           window.addEventListener("mousemove", ie), window.addEventListener("mouseup", de), document.body.style.cursor = "col-resize";
         }
         const Ey = w.useCallback(async () => {
-          const I = await aC();
+          const j = await aC();
           s({
-            project: I.project,
-            project_name: I.project_name || "",
-            mode: I.mode || "local",
-            file: I.file,
-            main: I.main,
-            room: I.room,
-            store: I.store
+            project: j.project,
+            project_name: j.project_name || "",
+            mode: j.mode || "local",
+            file: j.file,
+            main: j.main,
+            room: j.room,
+            store: j.store
           });
-          const ie = Number.isFinite(I.external_edit_seq) ? I.external_edit_seq : 0;
+          const ie = Number.isFinite(j.external_edit_seq) ? j.external_edit_seq : 0;
           Ul.current = {
             ...Ul.current,
-            room: I.room || null,
+            room: j.room || null,
             externalEditSeq: ie
-          }, n(I.pages || []), l(I.tokens || {}), c(I.ppi || 120);
+          }, n(j.pages || []), l(j.tokens || {}), c(j.ppi || 120);
         }, []), Er = w.useCallback(async () => {
           pe(await JR());
         }, []);
@@ -38091,10 +38054,10 @@ WARNING: This link could potentially be dangerous`)) {
           externalEditSeq: null
         });
         w.useEffect(() => {
-          let I = false, ie = false;
+          let j = false, ie = false;
           const de = setInterval(async () => {
-            if (!I) {
-              I = true;
+            if (!j) {
+              j = true;
               try {
                 const we = await s0();
                 if (ie) return;
@@ -38115,7 +38078,7 @@ WARNING: This link could potentially be dangerous`)) {
                 });
               } catch {
               } finally {
-                I = false;
+                j = false;
               }
             }
           }, 300);
@@ -38123,14 +38086,14 @@ WARNING: This link could potentially be dangerous`)) {
             ie = true, clearInterval(de);
           };
         }, []), w.useEffect(() => {
-          let I = false;
+          let j = false;
           const ie = setInterval(async () => {
-            if (!I) {
-              I = true;
+            if (!j) {
+              j = true;
               try {
                 await Er();
               } finally {
-                I = false;
+                j = false;
               }
             }
           }, 2500);
@@ -38140,19 +38103,19 @@ WARNING: This link could potentially be dangerous`)) {
         ]);
         async function PT() {
           ee("rendering\u2026");
-          const I = await WR();
-          if (n(I.pages || []), l(I.tokens || {}), u(Zh()), I.ok) m(null), ee(`\u2713 ${I.pages.length} pages`);
+          const j = await WR();
+          if (n(j.pages || []), l(j.tokens || {}), u(Zh()), j.ok) m(null), ee(`\u2713 ${j.pages.length} pages`);
           else {
-            const ie = I.errors && I.errors.length ? I.errors : [
-              I.stderr || "compile failed"
+            const ie = j.errors && j.errors.length ? j.errors : [
+              j.stderr || "compile failed"
             ];
             m(ie), ee(`\u2717 compile error (${ie.length})`);
           }
         }
         const Vl = w.useCallback(async () => {
           try {
-            const I = await rd();
-            M(I.pages || []), E(I.orphans || []);
+            const j = await rd();
+            M(j.pages || []), E(j.orphans || []);
           } catch {
             M([]), E([]);
           }
@@ -38164,39 +38127,39 @@ WARNING: This link could potentially be dangerous`)) {
           Vl
         ]), w.useEffect(() => {
           H.current = {
-            page: A,
+            page: T,
             pages: r,
             tokens: o,
             pointer: se.current
           };
         }, [
-          A,
+          T,
           r,
           o
         ]), w.useEffect(() => {
-          const I = new BroadcastChannel(e0("tcb-present"));
-          G.current = I, I.onmessage = (de) => {
+          const j = new BroadcastChannel(e0("tcb-present"));
+          G.current = j, j.onmessage = (de) => {
             const we = de.data || {};
-            we.hello && I.postMessage(H.current), we.pong && (z.current = Date.now());
+            we.hello && j.postMessage(H.current), we.pong && (z.current = Date.now());
           };
           const ie = setInterval(() => {
-            I.postMessage({
+            j.postMessage({
               ping: true
-            }), P(Date.now() - z.current < 4e3);
+            }), L(Date.now() - z.current < 4e3);
           }, 1500);
           return () => {
-            clearInterval(ie), I.close(), G.current = null;
+            clearInterval(ie), j.close(), G.current = null;
           };
         }, []), w.useEffect(() => {
-          const I = G.current;
-          I && I.postMessage(H.current);
+          const j = G.current;
+          j && j.postMessage(H.current);
         }, [
-          A,
+          T,
           r,
           o
         ]);
-        const BT = w.useCallback((I) => {
-          se.current = I || null, H.current = {
+        const BT = w.useCallback((j) => {
+          se.current = j || null, H.current = {
             ...H.current,
             pointer: se.current
           };
@@ -38208,19 +38171,19 @@ WARNING: This link could potentially be dangerous`)) {
         async function OT() {
           S(true), ee("compiling PDF\u2026");
           try {
-            const I = await fetch(xe("/api/export-pdf"), {
+            const j = await fetch(xe("/api/export-pdf"), {
               method: "POST"
             });
-            if (!I.ok) {
+            if (!j.ok) {
               let St = "";
               try {
-                St = (await I.json()).detail || "";
+                St = (await j.json()).detail || "";
               } catch {
               }
               ee("\u2717 PDF export failed" + (St ? `: ${String(St).slice(0, 60)}` : ""));
               return;
             }
-            const ie = await I.blob(), de = URL.createObjectURL(ie), we = document.createElement("a");
+            const ie = await j.blob(), de = URL.createObjectURL(ie), we = document.createElement("a");
             we.href = de, we.download = (i.main || "deck").replace(/\.typ$/, "") + ".pdf", document.body.appendChild(we), we.click(), we.remove(), URL.revokeObjectURL(de), ee("\u2713 PDF exported");
           } catch {
             ee("\u2717 PDF export error");
@@ -38228,30 +38191,30 @@ WARNING: This link could potentially be dangerous`)) {
             S(false);
           }
         }
-        function Kf(I) {
+        function Kf(j) {
           if (R) {
-            K((ie) => ie.some((de) => Nr(de) === Nr(I)) ? ie : [
+            K((ie) => ie.some((de) => Nr(de) === Nr(j)) ? ie : [
               ...ie,
-              I
+              j
             ]);
             return;
           }
-          ne((ie) => ie.some((de) => Nr(de) === Nr(I)) ? ie : [
+          ne((ie) => ie.some((de) => Nr(de) === Nr(j)) ? ie : [
             ...ie,
-            I
+            j
           ]);
         }
-        function IT(I) {
-          ne((ie) => ie.filter((de) => Nr(de) !== I));
+        function IT(j) {
+          ne((ie) => ie.filter((de) => Nr(de) !== j));
         }
-        function jT(I) {
-          j(I.id), $(I.body || ""), K(Array.isArray(I.selection) ? I.selection : []);
+        function jT(j) {
+          I(j.id), $(j.body || ""), K(Array.isArray(j.selection) ? j.selection : []);
         }
         function qf() {
-          j(null), $(""), K([]);
+          I(null), $(""), K([]);
         }
-        function FT(I) {
-          K((ie) => ie.filter((de) => Nr(de) !== I));
+        function FT(j) {
+          K((ie) => ie.filter((de) => Nr(de) !== j));
         }
         async function $T() {
           R && (await ZR(R, {
@@ -38259,16 +38222,16 @@ WARNING: This link could potentially be dangerous`)) {
             selection: B
           }), qf(), Er());
         }
-        async function zT(I, ie, de) {
+        async function zT(j, ie, de) {
           he(true);
           try {
-            return await HR(I, ie, de);
+            return await HR(j, ie, de);
           } finally {
             he(false);
           }
         }
-        function WT(I) {
-          const [ie, de] = I.start || [], [we, St] = I.end || I.start || [];
+        function WT(j) {
+          const [ie, de] = j.start || [], [we, St] = j.end || j.start || [];
           sh.current = true, kr.current && kr.current.highlight({
             startLine: ie,
             startCol: de,
@@ -38276,8 +38239,8 @@ WARNING: This link could potentially be dangerous`)) {
             endCol: St
           });
         }
-        function HT(I, ie) {
-          const [de, we] = I.start || [], [St, rh] = I.end || I.start || [];
+        function HT(j, ie) {
+          const [de, we] = j.start || [], [St, rh] = j.end || j.start || [];
           sh.current = true;
           const as = kr.current && kr.current.highlight({
             startLine: de,
@@ -38296,10 +38259,10 @@ WARNING: This link could potentially be dangerous`)) {
             page: ie
           });
         }
-        async function UT(I) {
+        async function UT(j) {
           he(true);
           try {
-            const ie = await UR(I);
+            const ie = await UR(j);
             if (!ie.ok) {
               ee("could not locate page start");
               return;
@@ -38314,14 +38277,14 @@ WARNING: This link could potentially be dangerous`)) {
           }
         }
         const Dy = w.useRef(null), sh = w.useRef(false);
-        function VT(I) {
+        function VT(j) {
           if (sh.current) {
             sh.current = false;
             return;
           }
           clearTimeout(Dy.current), Dy.current = setTimeout(async () => {
             try {
-              const ie = await VR(I);
+              const ie = await VR(j);
               if (ie && ie.ok && ie.positions && ie.positions.length) {
                 const de = ie.positions[0];
                 _({
@@ -38335,15 +38298,15 @@ WARNING: This link could potentially be dangerous`)) {
             }
           }, 220);
         }
-        function KT(I) {
+        function KT(j) {
           const ie = kr.current;
-          if (!(!ie || !I)) if (I.kind === "page") {
-            const de = I.slide && I.slide.slide_line;
+          if (!(!ie || !j)) if (j.kind === "page") {
+            const de = j.slide && j.slide.slide_line;
             de && ie.highlight({
               startLine: de - 1,
               startCol: 0
             });
-          } else I.text && ie.jumpToText(I.text);
+          } else j.text && ie.jumpToText(j.text);
         }
         function qT() {
           ae && ae.text && (Kf({
@@ -38357,18 +38320,18 @@ WARNING: This link could potentially be dangerous`)) {
         }
         async function My() {
           if (!lt.trim() || Ge.length === 0) return;
-          const I = Ge.find((de) => de.kind === "element"), ie = Ge.find((de) => de.page != null || de.page_no != null);
+          const j = Ge.find((de) => de.kind === "element"), ie = Ge.find((de) => de.page != null || de.page_no != null);
           await QR([
             {
               kind: Ge.every((de) => de.kind === "page") ? "page" : "element",
               page: ie ? ie.page ?? ie.page_no : null,
-              anchor_text: I ? I.text : "",
+              anchor_text: j ? j.text : "",
               selections: Ge,
               body: lt.trim()
             }
           ]), Cs(""), ne([]), Er();
         }
-        const Ty = X.filter((I) => I.status === "pending").length, Ay = _W(X, Ye), Ny = R ? X.find((I) => I.id === R) : null, Yf = T || L, YT = Math.min(Math.max(A || 1, 1), r.length || 1);
+        const Ty = X.filter((j) => j.status === "pending").length, Ay = _W(X, Ye), Ny = R ? X.find((j) => j.id === R) : null, Yf = A || P, YT = Math.min(Math.max(T || 1, 1), r.length || 1);
         return i.file && i.file.split("/").slice(-2).join("/"), f.jsxs("div", {
           className: "app",
           children: [
@@ -38388,7 +38351,7 @@ WARNING: This link could potentially be dangerous`)) {
                 }),
                 f.jsx("button", {
                   className: "openbtn",
-                  onClick: () => Vf((I) => !I),
+                  onClick: () => Vf((j) => !j),
                   title: "Manage project files",
                   children: "\u{1F4C1} Files"
                 }),
@@ -38470,7 +38433,7 @@ WARNING: This link could potentially be dangerous`)) {
                         f.jsx("button", {
                           className: "termtoggle" + (Wl ? " on" : ""),
                           title: "show/hide terminal",
-                          onClick: () => CT((I) => (I || DT(true), !I)),
+                          onClick: () => CT((j) => (j || DT(true), !j)),
                           children: f.jsx(rv, {
                             size: 15
                           })
@@ -38566,8 +38529,8 @@ WARNING: This link could potentially be dangerous`)) {
                 f.jsx(M8, {
                   pages: r,
                   tokens: o,
-                  presentPage: A,
-                  presentationActive: T || L,
+                  presentPage: T,
+                  presentationActive: A || P,
                   onSetPresentPage: k,
                   busy: J,
                   compileError: g,
@@ -38581,9 +38544,9 @@ WARNING: This link could potentially be dangerous`)) {
                   onJump: WT,
                   onAdd: HT,
                   onJumpPage: UT,
-                  onAddPage: (I) => Kf({
+                  onAddPage: (j) => Kf({
                     kind: "page",
-                    page_no: I
+                    page_no: j
                   }),
                   onCompile: PT
                 }),
@@ -38663,17 +38626,17 @@ WARNING: This link could potentially be dangerous`)) {
                                     ", to select."
                                   ]
                                 }),
-                                Ge.map((I) => f.jsxs("span", {
-                                  className: "chip " + I.kind,
+                                Ge.map((j) => f.jsxs("span", {
+                                  className: "chip " + j.kind,
                                   children: [
-                                    I.kind === "page" ? `page ${I.page_no}` : `${(I.text || "").slice(0, 26)}${(I.text || "").length > 26 ? "\u2026" : ""}${I.line ? ` \xB7L${I.line}` : ""}`,
+                                    j.kind === "page" ? `page ${j.page_no}` : `${(j.text || "").slice(0, 26)}${(j.text || "").length > 26 ? "\u2026" : ""}${j.line ? ` \xB7L${j.line}` : ""}`,
                                     f.jsx("a", {
                                       className: "chip-x",
-                                      onClick: () => IT(Nr(I)),
+                                      onClick: () => IT(Nr(j)),
                                       children: "\u2715"
                                     })
                                   ]
-                                }, Nr(I)))
+                                }, Nr(j)))
                               ]
                             }),
                             ae && ae.text && f.jsxs("button", {
@@ -38688,9 +38651,9 @@ WARNING: This link could potentially be dangerous`)) {
                             f.jsx("textarea", {
                               placeholder: "Describe the change for the selected element(s)\u2026",
                               value: lt,
-                              onChange: (I) => Cs(I.target.value),
-                              onKeyDown: (I) => {
-                                (I.metaKey || I.ctrlKey) && I.key === "Enter" && My();
+                              onChange: (j) => Cs(j.target.value),
+                              onKeyDown: (j) => {
+                                (j.metaKey || j.ctrlKey) && j.key === "Enter" && My();
                               }
                             }),
                             f.jsxs("button", {
@@ -38710,11 +38673,11 @@ WARNING: This link could potentially be dangerous`)) {
                         }),
                         f.jsx("div", {
                           className: "tabs",
-                          children: vW.map((I) => f.jsx("button", {
-                            className: Ye === I ? "tab on" : "tab",
-                            onClick: () => mt(I),
-                            children: I
-                          }, I))
+                          children: vW.map((j) => f.jsx("button", {
+                            className: Ye === j ? "tab on" : "tab",
+                            onClick: () => mt(j),
+                            children: j
+                          }, j))
                         }),
                         f.jsxs("div", {
                           className: "clist",
@@ -38727,19 +38690,19 @@ WARNING: This link could potentially be dangerous`)) {
                                 " comments."
                               ]
                             }),
-                            Ay.map((I) => f.jsx(T8, {
-                              c: I,
+                            Ay.map((j) => f.jsx(T8, {
+                              c: j,
                               onChange: Er,
                               onJumpChip: KT,
-                              isEditing: R === I.id,
+                              isEditing: R === j.id,
                               editBody: N,
                               editSels: B,
-                              onStartEdit: () => jT(I),
+                              onStartEdit: () => jT(j),
                               onChangeBody: $,
                               onRemoveSel: FT,
                               onSaveEdit: $T,
                               onCancelEdit: qf
-                            }, I.id))
+                            }, j.id))
                           ]
                         })
                       ]
@@ -38753,18 +38716,18 @@ WARNING: This link could potentially be dangerous`)) {
               mainFile: i.main,
               onOpenFile: Cy,
               onClose: () => Vf(false),
-              onRoomChange: (I) => s((ie) => ({
+              onRoomChange: (j) => s((ie) => ({
                 ...ie,
-                room: I
+                room: j
               }))
             }),
-            T && f.jsx(yM, {
+            A && f.jsx(yM, {
               onClose: () => {
                 O(false), Vl();
               },
               onSaved: Vl,
               onPointer: BT,
-              page: A,
+              page: T,
               setPage: k,
               pages: r,
               tokens: o,
@@ -39124,8 +39087,8 @@ WARNING: This link could potentially be dangerous`)) {
           }, 0);
           return () => clearTimeout(E);
         }, []), w.useEffect(() => {
-          function E(T) {
-            T.key === "Escape" && !m && !p && t();
+          function E(A) {
+            A.key === "Escape" && !m && !p && t();
           }
           return document.addEventListener("keydown", E), () => document.removeEventListener("keydown", E);
         }, [
@@ -39140,16 +39103,16 @@ WARNING: This link could potentially be dangerous`)) {
           if (E.preventDefault(), !(!l.trim() || p)) {
             g(true), o("");
             try {
-              const T = await RR(l.trim(), c, AW(u));
-              y(typeof T.secret == "string" ? T.secret : ""), i((O) => [
-                T.token,
-                ...O.filter((A) => {
+              const A = await RR(l.trim(), c, AW(u));
+              y(typeof A.secret == "string" ? A.secret : ""), i((O) => [
+                A.token,
+                ...O.filter((T) => {
                   var _a4;
-                  return A.id !== ((_a4 = T.token) == null ? void 0 : _a4.id);
+                  return T.id !== ((_a4 = A.token) == null ? void 0 : _a4.id);
                 })
               ].filter(Boolean)), a("");
-            } catch (T) {
-              o(T.message || "Could not create token");
+            } catch (A) {
+              o(A.message || "Could not create token");
             } finally {
               g(false);
             }
@@ -39166,12 +39129,12 @@ WARNING: This link could potentially be dangerous`)) {
           if (!p) {
             g(true), o("");
             try {
-              await LR(E.id), i((T) => T.map((O) => O.id === E.id ? {
+              await LR(E.id), i((A) => A.map((O) => O.id === E.id ? {
                 ...O,
                 revoked_at: Date.now() / 1e3
               } : O)), v(null), me.success(`Revoked \u201C${E.name}\u201D`);
-            } catch (T) {
-              o(T.message || "Could not revoke token");
+            } catch (A) {
+              o(A.message || "Could not revoke token");
             } finally {
               g(false);
             }
@@ -39337,7 +39300,7 @@ WARNING: This link could potentially be dangerous`)) {
                       }) : f.jsx("div", {
                         className: "token-list",
                         children: e.map((E) => {
-                          const T = RW(E), O = _ === E.id;
+                          const A = RW(E), O = _ === E.id;
                           return f.jsxs("article", {
                             className: "token-row",
                             children: [
@@ -39351,8 +39314,8 @@ WARNING: This link could potentially be dangerous`)) {
                                         children: E.name
                                       }),
                                       f.jsx("span", {
-                                        className: `token-status ${T.toLowerCase()}`,
-                                        children: T
+                                        className: `token-status ${A.toLowerCase()}`,
+                                        children: A
                                       })
                                     ]
                                   }),
@@ -39414,7 +39377,7 @@ WARNING: This link could potentially be dangerous`)) {
                                   type: "button",
                                   className: "mini warn",
                                   "data-action": "revoke-token",
-                                  disabled: T !== "Active" || p,
+                                  disabled: A !== "Active" || p,
                                   onClick: () => v(E.id),
                                   children: "Revoke"
                                 })
@@ -39721,9 +39684,9 @@ WARNING: This link could potentially be dangerous`)) {
         }), [m, y] = w.useState(false), [_, v] = w.useState(""), S = w.useRef(null), b = w.useRef(null);
         w.useEffect(() => {
           if (!u) return;
-          function E(T) {
-            const O = S.current && S.current.contains(T.target), A = b.current && b.current.contains(T.target);
-            !O && !A && d(false);
+          function E(A) {
+            const O = S.current && S.current.contains(A.target), T = b.current && b.current.contains(A.target);
+            !O && !T && d(false);
           }
           return document.addEventListener("mousedown", E), () => document.removeEventListener("mousedown", E);
         }, [
@@ -39735,10 +39698,10 @@ WARNING: This link could potentially be dangerous`)) {
         ]);
         function x(E) {
           if (E.stopPropagation(), a) return;
-          const T = S.current.getBoundingClientRect();
+          const A = S.current.getBoundingClientRect();
           g({
-            top: T.bottom + 4,
-            right: window.innerWidth - T.right
+            top: A.bottom + 4,
+            right: window.innerWidth - A.right
           }), d((O) => !O);
         }
         function D() {
@@ -39892,16 +39855,16 @@ WARNING: This link could potentially be dangerous`)) {
         });
       }
       function WW({ onOpen: t, onOpenAdmin: e, allowWorkspaceTabs: i = false }) {
-        const [s, r] = w.useState([]), [n, o] = w.useState("active"), [l, a] = w.useState(true), [c, h] = w.useState(false), [u, d] = w.useState(""), [p, g] = w.useState("typst"), [m, y] = w.useState(null), [_, v] = w.useState(false), [S, b] = w.useState(null), [x, D] = w.useState(null), [M, C] = w.useState(null), E = w.useRef(null), T = w.useRef(null), O = w.useRef(null), A = w.useRef(0), k = w.useCallback(async () => {
-          const z = ++A.current;
+        const [s, r] = w.useState([]), [n, o] = w.useState("active"), [l, a] = w.useState(true), [c, h] = w.useState(false), [u, d] = w.useState(""), [p, g] = w.useState("typst"), [m, y] = w.useState(null), [_, v] = w.useState(false), [S, b] = w.useState(null), [x, D] = w.useState(null), [M, C] = w.useState(null), E = w.useRef(null), A = w.useRef(null), O = w.useRef(null), T = w.useRef(0), k = w.useCallback(async () => {
+          const z = ++T.current;
           a(true);
           try {
             const X = await gL(n === "archived");
-            z === A.current && r(X.projects || []);
+            z === T.current && r(X.projects || []);
           } catch (X) {
-            z === A.current && me.error(X.message || "Failed to load projects");
+            z === T.current && me.error(X.message || "Failed to load projects");
           } finally {
-            z === A.current && a(false);
+            z === T.current && a(false);
           }
         }, [
           n
@@ -39914,19 +39877,19 @@ WARNING: This link could potentially be dangerous`)) {
         }, [
           c
         ]);
-        function L() {
+        function P() {
           var _a3;
           const z = MW();
-          h(false), d(z.name), g(z.type), y(z.file), (_a3 = T.current) == null ? void 0 : _a3.clear();
+          h(false), d(z.name), g(z.type), y(z.file), (_a3 = A.current) == null ? void 0 : _a3.clear();
         }
-        function P(z) {
+        function L(z) {
           var _a3;
           const X = DW({
             name: u,
             type: p,
             file: m
           }, z);
-          g(X.type), y(X.file), z !== "pdf" && ((_a3 = T.current) == null ? void 0 : _a3.clear());
+          g(X.type), y(X.file), z !== "pdf" && ((_a3 = A.current) == null ? void 0 : _a3.clear());
         }
         async function R(z) {
           z.preventDefault();
@@ -39939,7 +39902,7 @@ WARNING: This link could potentially be dangerous`)) {
           })) {
             v(true);
             try {
-              p === "pdf" ? await _L(X, m) : await mL(X), L(), await k();
+              p === "pdf" ? await _L(X, m) : await mL(X), P(), await k();
             } catch (pe) {
               me.error(pe.message || "Failed to create project");
             } finally {
@@ -39947,7 +39910,7 @@ WARNING: This link could potentially be dangerous`)) {
             }
           }
         }
-        async function j(z) {
+        async function I(z) {
           if (!O.current) {
             O.current = z, b(z);
             try {
@@ -40009,7 +39972,7 @@ WARNING: This link could potentially be dangerous`)) {
           }
         }
         function se(z) {
-          z !== n && (L(), r([]), o(z));
+          z !== n && (P(), r([]), o(z));
         }
         return f.jsxs("div", {
           className: "projects-bg",
@@ -40081,7 +40044,7 @@ WARNING: This link could potentially be dangerous`)) {
                       placeholder: "Project name",
                       value: u,
                       onChange: (z) => d(z.target.value),
-                      onKeyDown: (z) => z.key === "Escape" && L(),
+                      onKeyDown: (z) => z.key === "Escape" && P(),
                       maxLength: 128
                     }),
                     f.jsxs("div", {
@@ -40092,19 +40055,19 @@ WARNING: This link could potentially be dangerous`)) {
                         f.jsx("button", {
                           type: "button",
                           className: p === "typst" ? "selected" : "",
-                          onClick: () => P("typst"),
+                          onClick: () => L("typst"),
                           children: "Typst"
                         }),
                         f.jsx("button", {
                           type: "button",
                           className: p === "pdf" ? "selected" : "",
-                          onClick: () => P("pdf"),
+                          onClick: () => L("pdf"),
                           children: "PDF"
                         })
                       ]
                     }),
                     p === "pdf" && f.jsx(TW, {
-                      ref: T,
+                      ref: A,
                       file: m,
                       onFile: y,
                       onError: (z) => me.error(z)
@@ -40122,7 +40085,7 @@ WARNING: This link could potentially be dangerous`)) {
                     }),
                     f.jsx("button", {
                       type: "button",
-                      onClick: L,
+                      onClick: P,
                       children: "Cancel"
                     })
                   ]
@@ -40146,7 +40109,7 @@ WARNING: This link could potentially be dangerous`)) {
                   className: "projects-grid",
                   children: s.map((z) => f.jsx(zW, {
                     project: z,
-                    onOpen: j,
+                    onOpen: I,
                     onRename: N,
                     onDelete: $,
                     onCopy: B,
@@ -40265,10 +40228,10 @@ WARNING: This link could potentially be dangerous`)) {
       function VW({ onBack: t }) {
         const [e, i] = w.useState([]), [s, r] = w.useState(null), [n, o] = w.useState(true), [l, a] = w.useState(false), [c, h] = w.useState(""), [u, d] = w.useState(""), [p, g] = w.useState("user"), [m, y] = w.useState(null), [_, v] = w.useState(null), S = w.useCallback(async () => {
           try {
-            const T = await PR();
-            i(T.users || []);
-          } catch (T) {
-            me.error(T.message || "Failed to load users");
+            const A = await PR();
+            i(A.users || []);
+          } catch (A) {
+            me.error(A.message || "Failed to load users");
           } finally {
             o(false);
           }
@@ -40279,11 +40242,11 @@ WARNING: This link could potentially be dangerous`)) {
         }, [
           S
         ]), w.useEffect(() => {
-          const T = () => v(null);
-          return window.addEventListener("click", T), () => window.removeEventListener("click", T);
+          const A = () => v(null);
+          return window.addEventListener("click", A), () => window.removeEventListener("click", A);
         }, []);
-        async function b(T) {
-          if (T.preventDefault(), !(!c.trim() || !u.trim())) {
+        async function b(A) {
+          if (A.preventDefault(), !(!c.trim() || !u.trim())) {
             a(true);
             try {
               await BR(c.trim(), u.trim(), p), h(""), d(""), g("user"), me.success(`Created \u201C${c.trim()}\u201D`), await S();
@@ -40294,43 +40257,43 @@ WARNING: This link could potentially be dangerous`)) {
             }
           }
         }
-        async function x(T) {
+        async function x(A) {
           v(null);
-          const O = T.role === "admin" ? "user" : "admin";
+          const O = A.role === "admin" ? "user" : "admin";
           try {
-            await IR(T.id, O), await S();
-          } catch (A) {
-            me.error(A.message || "Failed");
+            await IR(A.id, O), await S();
+          } catch (T) {
+            me.error(T.message || "Failed");
           }
         }
-        async function D(T, O) {
+        async function D(A, O) {
           y(null);
           try {
-            await OR(T.id, O), me.success(`Password reset for \u201C${T.username}\u201D`);
-          } catch (A) {
-            me.error(A.message || "Failed");
+            await OR(A.id, O), me.success(`Password reset for \u201C${A.username}\u201D`);
+          } catch (T) {
+            me.error(T.message || "Failed");
           }
         }
-        async function M(T) {
+        async function M(A) {
           y(null);
           try {
-            await $R(T.id), me.success(`Deleted \u201C${T.username}\u201D`), await S();
+            await $R(A.id), me.success(`Deleted \u201C${A.username}\u201D`), await S();
           } catch (O) {
             me.error(O.message || "Failed");
           }
         }
-        async function C(T, O) {
+        async function C(A, O) {
           y(null);
           try {
-            await jR(T.id, O), me.success(`${O ? "Locked" : "Unlocked"} \u201C${T.username}\u201D`), await S();
-          } catch (A) {
-            me.error(A.message || "Failed");
+            await jR(A.id, O), me.success(`${O ? "Locked" : "Unlocked"} \u201C${A.username}\u201D`), await S();
+          } catch (T) {
+            me.error(T.message || "Failed");
           }
         }
-        async function E(T) {
+        async function E(A) {
           y(null);
           try {
-            await FR(T.id), me.success(`Forced \u201C${T.username}\u201D offline`), await S();
+            await FR(A.id), me.success(`Forced \u201C${A.username}\u201D offline`), await S();
           } catch (O) {
             me.error(O.message || "Failed");
           }
@@ -40395,7 +40358,7 @@ WARNING: This link could potentially be dangerous`)) {
                             f.jsx("input", {
                               placeholder: "e.g. alice",
                               value: c,
-                              onChange: (T) => h(T.target.value),
+                              onChange: (A) => h(A.target.value),
                               autoCapitalize: "off",
                               autoCorrect: "off"
                             })
@@ -40411,7 +40374,7 @@ WARNING: This link could potentially be dangerous`)) {
                               placeholder: "min 6 characters",
                               type: "password",
                               value: u,
-                              onChange: (T) => d(T.target.value)
+                              onChange: (A) => d(A.target.value)
                             })
                           ]
                         }),
@@ -40482,21 +40445,21 @@ WARNING: This link could potentially be dangerous`)) {
                         })
                       ]
                     }),
-                    e.map((T) => f.jsxs("div", {
+                    e.map((A) => f.jsxs("div", {
                       className: "admin-row",
                       children: [
                         f.jsxs("span", {
                           className: "admin-user",
                           children: [
                             f.jsx("span", {
-                              className: "usermenu-avatar" + (T.role === "admin" ? " admin" : ""),
-                              children: (T.username[0] || "?").toUpperCase()
+                              className: "usermenu-avatar" + (A.role === "admin" ? " admin" : ""),
+                              children: (A.username[0] || "?").toUpperCase()
                             }),
                             f.jsx("span", {
                               className: "admin-user-name",
-                              children: T.username
+                              children: A.username
                             }),
-                            s && T.id === s.id && f.jsx("span", {
+                            s && A.id === s.id && f.jsx("span", {
                               className: "admin-you",
                               children: "you"
                             })
@@ -40504,28 +40467,28 @@ WARNING: This link could potentially be dangerous`)) {
                         }),
                         f.jsx("span", {
                           children: f.jsx("span", {
-                            className: "admin-role " + T.role,
-                            children: T.role
+                            className: "admin-role " + A.role,
+                            children: A.role
                           })
                         }),
                         f.jsx("span", {
                           children: f.jsx("span", {
-                            className: "admin-state" + (T.locked ? " locked" : ""),
-                            children: T.locked ? "locked" : "active"
+                            className: "admin-state" + (A.locked ? " locked" : ""),
+                            children: A.locked ? "locked" : "active"
                           })
                         }),
                         f.jsxs("span", {
-                          className: "admin-ws" + (T.running ? " on" : ""),
+                          className: "admin-ws" + (A.running ? " on" : ""),
                           children: [
                             f.jsx("span", {
                               className: "admin-ws-dot"
                             }),
-                            T.running ? "running" : "stopped"
+                            A.running ? "running" : "stopped"
                           ]
                         }),
                         f.jsx("span", {
                           className: "admin-date",
-                          children: HW(T.created_at)
+                          children: HW(A.created_at)
                         }),
                         f.jsxs("span", {
                           className: "admin-actions-col",
@@ -40536,47 +40499,47 @@ WARNING: This link could potentially be dangerous`)) {
                               children: [
                                 f.jsx("button", {
                                   className: "iconbtn",
-                                  onClick: () => v(_ === T.id ? null : T.id),
+                                  onClick: () => v(_ === A.id ? null : A.id),
                                   title: "More actions",
-                                  "aria-label": `More actions for ${T.username}`,
+                                  "aria-label": `More actions for ${A.username}`,
                                   children: "\u22EF"
                                 }),
-                                _ === T.id && f.jsxs("div", {
+                                _ === A.id && f.jsxs("div", {
                                   className: "admin-action-popover",
                                   children: [
                                     f.jsx("button", {
-                                      onClick: () => x(T),
-                                      children: T.role === "admin" ? "Make user" : "Make admin"
+                                      onClick: () => x(A),
+                                      children: A.role === "admin" ? "Make user" : "Make admin"
                                     }),
                                     f.jsx("button", {
                                       onClick: () => {
                                         v(null), y({
                                           kind: "pw",
-                                          user: T
+                                          user: A
                                         });
                                       },
                                       children: "Reset password"
                                     }),
                                     f.jsx("button", {
-                                      disabled: s && T.id === s.id,
+                                      disabled: s && A.id === s.id,
                                       onClick: () => {
                                         v(null), y({
                                           kind: "offline",
-                                          user: T
+                                          user: A
                                         });
                                       },
                                       children: "Force offline"
                                     }),
                                     f.jsx("button", {
-                                      disabled: s && T.id === s.id,
-                                      className: T.locked ? "" : "danger",
+                                      disabled: s && A.id === s.id,
+                                      className: A.locked ? "" : "danger",
                                       onClick: () => {
-                                        v(null), T.locked ? C(T, false) : y({
+                                        v(null), A.locked ? C(A, false) : y({
                                           kind: "lock",
-                                          user: T
+                                          user: A
                                         });
                                       },
-                                      children: T.locked ? "Unlock" : "Lock"
+                                      children: A.locked ? "Unlock" : "Lock"
                                     })
                                   ]
                                 })
@@ -40586,7 +40549,7 @@ WARNING: This link could potentially be dangerous`)) {
                               className: "ghostbtn danger",
                               onClick: () => y({
                                 kind: "del",
-                                user: T
+                                user: A
                               }),
                               title: "Delete user",
                               children: "Delete"
@@ -40594,7 +40557,7 @@ WARNING: This link could potentially be dangerous`)) {
                           ]
                         })
                       ]
-                    }, T.id))
+                    }, A.id))
                   ]
                 })
               ]
@@ -40603,7 +40566,7 @@ WARNING: This link could potentially be dangerous`)) {
               label: `New password for \u201C${m.user.username}\u201D:`,
               password: true,
               confirmLabel: "Reset",
-              onConfirm: (T) => D(m.user, T),
+              onConfirm: (A) => D(m.user, A),
               onCancel: () => y(null)
             }),
             (m == null ? void 0 : m.kind) === "offline" && f.jsx(yg, {
@@ -40833,9 +40796,9 @@ ${a}`;
           m((E) => sH(E, C).drafts);
           try {
             const E = await uC(C.page, C.text);
-            E && E.ok !== false ? (m((T) => wg(T, C, true)), h && h()) : m((T) => wg(T, C, false));
+            E && E.ok !== false ? (m((A) => wg(A, C, true)), h && h()) : m((A) => wg(A, C, false));
           } catch (E) {
-            m((T) => wg(T, C, false)), me.error(E.message || "Could not save transcript");
+            m((A) => wg(A, C, false)), me.error(E.message || "Could not save transcript");
           }
         }
         function M() {
@@ -40843,8 +40806,8 @@ ${a}`;
             C
           ], {
             type: "text/plain;charset=utf-8"
-          })), T = document.createElement("a");
-          T.href = E, T.download = "transcript.txt", document.body.appendChild(T), T.click(), T.remove(), URL.revokeObjectURL(E);
+          })), A = document.createElement("a");
+          A.href = E, A.download = "transcript.txt", document.body.appendChild(A), A.click(), A.remove(), URL.revokeObjectURL(E);
         }
         return f.jsxs("section", {
           className: "pdf-preview-pane",
@@ -41082,7 +41045,7 @@ ${a}`;
           var _a3;
           return (_a3 = _.current) == null ? void 0 : _a3.call(_);
         }, []);
-        const T = w.useCallback((B) => {
+        const A = w.useCallback((B) => {
           n((K) => {
             const G = typeof B == "function" ? B(K) : B;
             return Ac(Number(G), i.pages.length);
@@ -41096,7 +41059,7 @@ ${a}`;
           });
         }, [
           i.pages.length
-        ]), A = w.useRef(null), [k, L] = w.useState(false), P = w.useCallback(async (B) => {
+        ]), T = w.useRef(null), [k, P] = w.useState(false), L = w.useCallback(async (B) => {
           if (!B || B.length === 0) return;
           const K = mT(B, null);
           if (K.error) {
@@ -41104,7 +41067,7 @@ ${a}`;
             return;
           }
           if (K.file) {
-            L(true);
+            P(true);
             try {
               const G = await XR(K.file);
               await C.poll();
@@ -41113,12 +41076,12 @@ ${a}`;
             } catch (G) {
               me.error(G.message || "Could not replace the PDF");
             } finally {
-              L(false), A.current && (A.current.value = "");
+              P(false), T.current && (T.current.value = "");
             }
           }
         }, [
           C
-        ]), R = h || d, j = w.useCallback(() => {
+        ]), R = h || d, I = w.useCallback(() => {
           l((B) => XW(r, B, R, i.pages.length)), u(true);
         }, [
           R,
@@ -41161,17 +41124,17 @@ ${a}`;
                   children: (t == null ? void 0 : t.name) || "PDF project"
                 }),
                 f.jsx("input", {
-                  ref: A,
+                  ref: T,
                   type: "file",
                   accept: "application/pdf,.pdf",
                   hidden: true,
-                  onChange: (B) => P(B.target.files)
+                  onChange: (B) => L(B.target.files)
                 }),
                 f.jsx("button", {
                   className: "openbtn",
                   onClick: () => {
                     var _a3;
-                    return (_a3 = A.current) == null ? void 0 : _a3.click();
+                    return (_a3 = T.current) == null ? void 0 : _a3.click();
                   },
                   disabled: k,
                   title: "upload a new PDF for this project; transcripts stay on their page numbers",
@@ -41179,7 +41142,7 @@ ${a}`;
                 }),
                 f.jsx("button", {
                   className: "openbtn present",
-                  onClick: j,
+                  onClick: I,
                   disabled: !i.pages.length,
                   title: "presenter view (current + next page, transcript, dual-screen)",
                   children: "\u25B6 Present"
@@ -41237,12 +41200,12 @@ ${a}`;
                   pages: i.pages,
                   tokens: i.tokens,
                   page: r,
-                  setPage: T,
+                  setPage: A,
                   slideMap: i.slideMap,
                   orphans: i.orphans,
                   presentPage: o,
                   presentationActive: R,
-                  onFollowPresentation: () => T(o),
+                  onFollowPresentation: () => A(o),
                   onSendPreview: () => O(r),
                   onTranscriptSaved: E
                 })

@@ -75,6 +75,7 @@ def main():
     parser.add_argument('--dpdfnet', action='store_true')
     parser.add_argument('--dpdfnet-model', type=Path)
     parser.add_argument('--seed-vc', action='store_true')
+    parser.add_argument('--torch-index', help='Explicit PyTorch wheel index (CPU wheels for containers)')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda', 'mps'], default='auto')
     parser.add_argument('--host', default='127.0.0.1')
     parser.add_argument('--port', type=int, default=8840)
@@ -85,8 +86,9 @@ def main():
             parser.error('install requires --models-dir and --dpdfnet and/or --seed-vc')
         if not shutil.which('uv') or not shutil.which('ffmpeg'):
             parser.error('install uv and FFmpeg first')
-        runtime = storage(runtime, 3 if args.seed_vc else 1, 'outputs')
-        models = storage(args.models_dir, 10 if args.seed_vc else 1, 'models')
+        cpu_bundle = args.torch_index == 'https://download.pytorch.org/whl/cpu'
+        runtime = storage(runtime, (2 if cpu_bundle else 3) if args.seed_vc else 1, 'outputs')
+        models = storage(args.models_dir, (3 if cpu_bundle else 10) if args.seed_vc else 1, 'models')
         hf_home = storage(args.hf_home, 1, 'models') if args.hf_home else models / 'huggingface'
         hf_cache = storage(args.hf_cache, 8, 'models') if args.hf_cache else hf_home / 'hub'
         dpdfnet_model = args.dpdfnet_model.expanduser().absolute() if args.dpdfnet_model else models / 'dpdfnet/dpdfnet8_48khz_hr.onnx'
@@ -112,6 +114,9 @@ def main():
         if config['dpdfnet']:
             requirements += ['-r', str(ROOT / 'audio_models/requirements-dpdfnet.txt')]
         if config['seed_vc']:
+            if args.torch_index:
+                subprocess.run(['uv', 'pip', 'install', '--python', str(python), '--index', args.torch_index,
+                                'torch==2.11.0', 'torchaudio==2.11.0'], env=env, check=True)
             requirements += ['-r', str(ROOT / 'audio_models/requirements-seed.txt')]
         subprocess.run(['uv', 'pip', 'install', '--python', str(python), *requirements], env=env, check=True)
         source = runtime / 'seed-vc'

@@ -26,6 +26,11 @@ RUN echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/50podman-rootless.co
       python3 ca-certificates curl git bash nodejs npm bubblewrap \
       procps lsof xz-utils libssl3 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /usr/local/bin/uv
+COPY audio_models/ /app/audio_models/
+COPY scripts/audio-models.py scripts/bundle-audio-models.sh /app/scripts/
+ARG TCB_AUDIO_WEIGHTS_URL=
+RUN bash /app/scripts/bundle-audio-models.sh
 # CJK fonts (Noto Sans/Serif CJK) so Chinese/Japanese/Korean text renders instead of tofu.
 # Typst scans /usr/share/fonts directly and does NOT use fontconfig — whose post-install
 # (fc-cache/chown) fails under rootless Podman's single-uid mapping — so we install the font

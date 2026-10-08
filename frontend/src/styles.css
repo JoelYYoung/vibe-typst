@@ -252,6 +252,7 @@ a:hover { text-decoration: underline; }
 .pr-export-dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .pr-export-dialog h2 { margin: 3px 0 0; font-size: 20px; font-weight: 600; line-height: 1.35; }
 .pr-export-dialog-heading .pr-btn { flex: none; }
+.pr-export-heading-actions { display: flex; gap: 8px; }
 .pr-export-dialog p { margin: 14px 0 20px; color: #9fb4cc; font-size: 14px; line-height: 1.6; }
 .pr-export-missing { padding: 14px 16px; background: #0f141b; border-left: 3px solid #ebc36c; border-radius: 6px; }
 .pr-export-missing-heading { color: #ebc36c; font-size: 13px; font-weight: 500; }
@@ -266,20 +267,16 @@ a:hover { text-decoration: underline; }
 .pr-audio-field { display: grid; gap: 8px; font-size: 14px; }
 .pr-audio-field select { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 12px; color: #e7ecf2; background: #0f141b; border: 1px solid #3e4c60; border-radius: 6px; font: inherit; color-scheme: dark; }
 .pr-audio-voice { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 14px; }
-.pr-audio-voice strong { font-weight: 500; }
-.pr-audio-voice small { margin-left: 10px; color: #8094ad; }
+.pr-audio-voice > span:first-child { flex: 1; }
+.pr-model-state { font-size: 12px; color: #8094ad; }
+.pr-model-state.ready { color: #8cc6ad; }
+.pr-model-state.unavailable { color: #ac9c8b; }
 .pr-audio-voice input { width: 18px; height: 18px; accent-color: #488bc9; cursor: pointer; }
 .pr-audio-voice input:disabled { cursor: default; }
 .pr-voice-reference { display: grid; gap: 12px; padding-left: 14px; border-left: 2px solid #488bc9; }
 .pr-reference-upload { display: grid; gap: 8px; color: #9fb4cc; font-size: 12px; }
 .pr-reference-upload input { min-width: 0; width: 100%; color: #e7ecf2; }
-.pr-model-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #9fb4cc; font-size: 12px; }
-.pr-model-status .pr-btn { width: 28px; height: 28px; }
-.pr-model-help { color: #9fb4cc; font-size: 12px; }
-.pr-model-help summary { cursor: pointer; }
-.pr-model-help p { margin: 10px 0; font-size: 12px; }
-.pr-model-help a { color: #75b9f7; }
-.pr-audio-options .pr-audio-note { margin: 0; font-size: 12px; }
+.pr-reference-upload input::file-selector-button { margin-right: 10px; padding: 7px 10px; border: 1px solid #3e4c60; border-radius: 6px; background: #1b2531; color: #e7ecf2; font: inherit; cursor: pointer; }
 .pr-export-dialog :is(input, select, summary, a):focus-visible { outline: 2px solid #75b9f7; outline-offset: 3px; }
 @media (max-width: 480px) { .pr-export-dialog { padding: 20px; } .pr-export-dialog h2 { font-size: 18px; } }
 .pr-recording-preview { margin: 12px auto 0; max-width: 640px; }

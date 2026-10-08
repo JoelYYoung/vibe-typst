@@ -156,11 +156,12 @@ before automatically balancing loudness between page recordings using
 preserves natural speech dynamics where possible; silent or unmeasurably short
 takes are not boosted. Original recordings and single-page previews are preserved.
 
-Optional [audio models](docs/audio-models.md) add DPDFNet8 48 kHz noise reduction and
+[Audio models](docs/audio-models.md) add DPDFNet8 48 kHz noise reduction and
 Seed-VC voice-tone conversion using one recorded page or an uploaded reference.
 Voice conversion runs after model noise reduction and before loudness balancing.
-Model dependencies and weights are installed separately; the standard app and
-original-voice export work without them. The dialog shows available models.
+Docker images include isolated model dependencies and weights by default. The
+dialog checks real inference and enables only runnable models; original-voice
+export stays available. A private host worker can provide GPU acceleration.
 
 Use **Clear page recording** to remove just the current take. The toolbar shows
 current-page and total recording time; a live retake replaces the old page in the

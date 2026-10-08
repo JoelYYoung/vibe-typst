@@ -7,15 +7,36 @@ Choose one recorded page or upload a reference voice; the first 25 seconds are
 used for every page. Use a sample with speech, at least one second long and under
 20 MB. References and source takes are pinned when export starts.
 
-The browser uses the export **server's** hardware. Models are optional: ordinary
-installation, container builds, and original-voice export do not download weights
-or install PyTorch. DPDFNet works on CPU; Seed-VC can use CUDA, Apple Silicon/MPS,
+The browser uses the export **server's** hardware. Model processing is optional. Docker images include an isolated
+model environment and weights; original-voice export does not load them. DPDFNet works on CPU; Seed-VC can use CUDA, Apple Silicon/MPS,
 or CPU (slower). Unsupported or disconnected models appear disabled in the dialog.
 Model failures stop that export with an error; audio is never silently substituted.
 
-## Install explicitly
+## Docker defaults
 
-Install Python 3, [uv](https://docs.astral.sh/uv/) and FFmpeg. Run from this repository:
+Both `Containerfile.native` and `Containerfile` bundle the pinned model source,
+CPU dependencies and all weights by default. No model installation is needed after
+starting a workspace. Builds download the selected assets; runtime is offline.
+The model environment is isolated under `/opt/vibe-audio`; its bundle contains no
+service token. The backend starts a private worker on first capability check and
+generates temporary credentials under `/tmp/tcb-audio-models`.
+
+The dialog reports each model as Checking, Ready or Unavailable. Ready requires
+an actual inference test, not just installed files. A failed/unsupported model is
+disabled. Noise reduction remains available if only voice conversion fails, and
+ordinary export remains available throughout. Hover the status for the reason;
+use the refresh icon to retry failed checks after freeing resources.
+
+The CPU voice check requires 4 GB of available system/cgroup memory before loading.
+The verified ARM64 container used about 4.1 GiB after both checks. CPU conversion
+is slower than the host GPU. Reserve additional memory for normal workspace use,
+longer recordings and simultaneous users. Apple Docker does not expose MPS; the
+existing private host worker can provide MPS acceleration.
+
+## Standalone host worker
+
+For a local backend or host GPU acceleration, install Python 3,
+[uv](https://docs.astral.sh/uv/) and FFmpeg, then run from this repository:
 
 ```sh
 python3 scripts/audio-models.py install --dpdfnet --seed-vc \
@@ -27,26 +48,13 @@ python3 scripts/audio-models.py serve \
   --runtime-dir /path/to/output-storage/vibe-typst/audio-models
 ```
 
-For CPU noise reduction alone, omit `--seed-vc`. A separate Python 3.12 environment
-is created under the runtime directory. `prepare` explicitly downloads/loads the
-selected models; `serve` runs offline. Leave the worker running while exporting.
-Re-run `install` with both flags to add Seed-VC to a denoise-only installation.
-Model/source revisions and dependency versions are fixed in the installer/runtime.
-Existing files with a different source revision are preserved; choose another
-runtime directory to install a different revision.
-
-On this Mac, stable storage roots are `/Users/xavier/External/Models/` and
-`/Users/xavier/External/Outputs/`; check their current disk targets before installing.
-The installer checks the selected destinations separately. Permission denial uses
-project-local `models/audio-models` or `outputs/audio-models` and reports the actual
-path. A missing link, unmounted volume or insufficient space stops installation.
-The runtime directory contains the isolated environment, source checkout, temporary
-audio and caches. Weights and model download caches use model storage.
-
-To reuse an existing Hugging Face cache, pass `--hf-home /existing/hf-home` and
-`--hf-cache /existing/hub-cache` to `install`. To reuse the selected DPDFNet ONNX
-weight, pass `--dpdfnet-model /existing/dpdfnet8_48khz_hr.onnx`; its SHA-256 is checked.
-No existing storage links or cached models are moved or deleted.
+For CPU noise reduction alone, omit `--seed-vc`. `prepare` downloads/loads the
+selected pinned models; `serve` runs offline and checks real inference in the
+background. To reuse weights, pass `--hf-home`, `--hf-cache` and/or
+`--dpdfnet-model`; the selected ONNX checksum is checked. Existing caches remain
+unchanged. The installer checks each selected storage volume; permission denial
+uses project-local `models/audio-models` or `outputs/audio-models`, while missing
+mounts/links or insufficient space stop installation.
 
 ## Connect the application
 

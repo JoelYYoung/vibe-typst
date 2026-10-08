@@ -30,7 +30,9 @@ def create_app(engine, token: str, work_dir: Path):
         return await call_next(request)
 
     @app.get('/health')
-    def health():
+    def health(refresh: bool = False):
+        if refresh and hasattr(engine, 'retry'):
+            engine.retry()
         return engine.status()
 
     @app.post('/process')
@@ -93,11 +95,14 @@ def main():
     parser.add_argument('--prepare', action='store_true')
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
-    from engine import Engine
-    engine = Engine(config)
     if args.prepare:
+        from engine import Engine
+        engine = Engine(config)
         print(json.dumps(engine.status()))
         return
+    from model_runtime import ValidatedRuntime
+    engine = ValidatedRuntime(config)
+    engine.start()
     import uvicorn
     uvicorn.run(create_app(engine, config['token'], Path(config['work_dir'])),
                 host=config.get('host', '127.0.0.1'), port=config.get('port', 8840))

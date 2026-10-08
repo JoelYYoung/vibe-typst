@@ -150,7 +150,7 @@ export const saveRecordingPage = (page, video, metadata, signal) => {
   }).then(J)
 }
 export const recordingPageUrl = (page, take) => workspacePath(scoped(`/api/recording/pages/${page}/video?take=${encodeURIComponent(take)}`))
-export const getRecordingAudioModels = () => trackedFetch(workspacePath('/api/recording/audio-models')).then(J)
+export const getRecordingAudioModels = (refresh = false) => trackedFetch(workspacePath('/api/recording/audio-models' + (refresh ? '?refresh=true' : ''))).then(J)
 export const startRecordingExport = (options = {}, reference = null) => {
   if (!reference) return POST(scoped('/api/recording/exports'), options)
   const form = new FormData()

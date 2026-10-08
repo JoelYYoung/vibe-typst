@@ -229,18 +229,32 @@ try {
     assert.equal(await page.$eval('[aria-label="Target presentation minutes"]', input => input.value), '6')
     assert.equal(await page.$eval('.pr-note-edit', node => getComputedStyle(node).fontSize), '19px', 'font size must survive reload')
     // Exercise optional controls independently of GPU availability on the test host.
+    let modelChecks = 0
     const modelsRequest = request => {
       if (request.interceptResolutionState().action === 'disabled' || request.isInterceptResolutionHandled()) return
       if (request.url().includes('/api/recording/audio-models')) request.respond({ status: 200, contentType: 'application/json',
-        body: JSON.stringify({ seed_vc: true, denoise: true, denoiser: 'DPDFNet8 48 kHz HR', device: 'mps' }) })
+        body: JSON.stringify(++modelChecks === 1
+          ? { seed_vc: false, denoise: false, checks: { denoise: { state: 'checking' }, seed_vc: { state: 'checking' } } }
+          : modelChecks === 2 ? { seed_vc: false, denoise: true, checks: { denoise: { state: 'ready' }, seed_vc: { state: 'unavailable', message: 'Voice inference failed' } } }
+          : { seed_vc: true, denoise: true, denoiser: 'DPDFNet8 48 kHz HR', device: 'mps' }) })
       else request.continue()
     }
     await page.setRequestInterception(true)
     page.on('request', modelsRequest)
     await clickText(page, '.pr-recording button', 'Export full MP4')
+    await page.waitForSelector('.pr-model-state.checking')
+    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.disabled), true)
+    assert.equal(await page.$eval('[aria-label="Unify voice tone"]', node => node.disabled), true)
+    assert.equal(await page.$eval('.pr-export-confirm', node => node.disabled), false, 'ordinary export must stay available during model checks')
+    await waitFor(page, () => document.querySelector('[aria-label="Noise reduction"]')?.disabled === false)
+    assert.equal(await page.$eval('[aria-label="Unify voice tone"]', node => node.disabled), true)
+    assert.equal(await page.$('.pr-model-state.unavailable') !== null, true)
+    await clickText(page, '.pr-export-dialog button', 'Check optional models')
     await waitFor(page, () => document.querySelector('[aria-label="Unify voice tone"]')?.disabled === false)
-    await page.click('[aria-label="Unify voice tone"]')
-    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.value), 'model', 'voice conversion must start with model denoising')
+    assert.equal(await page.$('.pr-model-help'), null)
+    assert.equal(await page.$('.pr-audio-note'), null)
+    await page.$eval('[aria-label="Unify voice tone"]', node => node.click())
+    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.checked), true, 'voice conversion must start with model denoising')
     assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.disabled), true)
     await page.select('[aria-label="Reference voice"]', '2')
     assert.equal(await page.$eval('[aria-label="Reference voice"]', node => node.value), '2')
@@ -271,10 +285,10 @@ try {
     await clickText(page, '.pr-recording button', 'Export full MP4')
     await page.waitForSelector('.pr-export-dialog[open]')
     assert.equal(await page.$('.pr-export-missing'), null, 'fully recorded decks need no missing-page warning')
-    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.value), 'basic')
+    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.checked), false)
     await waitFor(page, () => !document.querySelector('[aria-label="Check optional models"]')?.disabled)
     assert.equal(await page.$eval('[aria-label="Unify voice tone"]', node => node.disabled), true, 'uninstalled models must stay optional')
-    await clickText(page, '.pr-export-dialog button', 'Continue export')
+    await clickText(page, '.pr-export-dialog button', 'Export')
     await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
     const href = await page.$eval('.pr-recording a[download="presentation.mp4"]', link => link.href)
     const response = await fetch(href)
@@ -355,7 +369,7 @@ try {
       await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-partial-export-mobile.png` })
     }
     await page.setViewport({ width: 1440, height: 900 })
-    await clickText(page, '.pr-export-dialog button', 'Continue export')
+    await clickText(page, '.pr-export-dialog button', 'Export')
     await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
     assert.equal(exportRequests, 1)
     const partialHref = await page.$eval('.pr-recording a[download="presentation.mp4"]', node => node.href)

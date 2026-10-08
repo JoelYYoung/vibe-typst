@@ -48,47 +48,63 @@ class Engine:
             from dpdfnet.onnx_backend import build_runtime_model
             self.denoiser = build_runtime_model(model)
         if self.config.get('seed_vc'):
+            self.load_seed()
+
+    def load_seed(self):
+        import torch
+        import yaml
+        from huggingface_hub import hf_hub_download
+        torch.set_num_threads(2)
+        auto = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
+        self.device = self.config.get('device', 'auto')
+        if self.device == 'auto':
+            self.device = auto
+        source = Path(self.config['seed_source'])
+        sys.path.insert(0, str(source))
+        os.chdir(source)
+        def weight(repo_id, filename):
+            return Path(hf_hub_download(repo_id=repo_id, filename=filename,
+                                       revision=SEED_REVISIONS[repo_id], cache_dir=self.config['hf_cache']))
+        seed_config = weight('Plachta/Seed-VC', 'config_dit_mel_seed_uvit_whisper_base_f0_44k.yml')
+        checkpoint = weight('Plachta/Seed-VC', 'DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth')
+        cfg = yaml.safe_load(seed_config.read_text())
+        for key, repo, names in (
+            ('vocoder', 'nvidia/bigvgan_v2_44khz_128band_512x', ('config.json', 'bigvgan_generator.pt')),
+            ('speech_tokenizer', 'openai/whisper-small', ('config.json', 'model.safetensors', 'preprocessor_config.json')),
+        ):
+            paths = [weight(repo, name) for name in names]
+            cfg['model_params'][key]['name'] = str(paths[0].parent)
+        local_config = Path(self.config['runtime_dir']) / 'inference-config.yml'
+        local_config.write_text(yaml.safe_dump(cfg))
+        import inference
+        # Upstream changes HF_HUB_CACHE during import; restore the explicit storage.
+        os.environ['HF_HUB_CACHE'] = self.config['hf_cache']
+        inference.device = torch.device(self.device)
+        def custom(repo_id, model_filename='pytorch_model.bin', config_filename=None):
+            model = str(weight(repo_id, model_filename))
+            return (model, str(weight(repo_id, config_filename))) if config_filename else model
+        inference.load_custom_model_from_hf = custom
+        self.seed_args = dict(diffusion_steps=30, length_adjust=1.0, inference_cfg_rate=.7,
+                              f0_condition=True, auto_f0_adjust=False, semi_tone_shift=0,
+                              checkpoint=str(checkpoint), config=str(local_config), fp16=False)
+        loaded = list(inference.load_models(SimpleNamespace(**self.seed_args)))
+        loaded[2] = bounded_pitch(loaded[2])
+        # Worker serializes jobs: retain models between pages without reloading weights.
+        self.original_loader = inference.load_models
+        inference.load_models = lambda _: tuple(loaded)
+        self.seed = inference
+
+    def release_seed(self):
+        if self.seed:
+            self.seed.load_models = self.original_loader
+            self.seed = None
+            import gc
             import torch
-            import yaml
-            from huggingface_hub import hf_hub_download
-            torch.set_num_threads(2)
-            auto = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
-            self.device = self.config.get('device', 'auto')
-            if self.device == 'auto':
-                self.device = auto
-            source = Path(self.config['seed_source'])
-            sys.path.insert(0, str(source))
-            os.chdir(source)
-            def weight(repo_id, filename):
-                return Path(hf_hub_download(repo_id=repo_id, filename=filename,
-                                           revision=SEED_REVISIONS[repo_id], cache_dir=self.config['hf_cache']))
-            seed_config = weight('Plachta/Seed-VC', 'config_dit_mel_seed_uvit_whisper_base_f0_44k.yml')
-            checkpoint = weight('Plachta/Seed-VC', 'DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth')
-            cfg = yaml.safe_load(seed_config.read_text())
-            for key, repo, names in (
-                ('vocoder', 'nvidia/bigvgan_v2_44khz_128band_512x', ('config.json', 'bigvgan_generator.pt')),
-                ('speech_tokenizer', 'openai/whisper-small', ('config.json', 'model.safetensors', 'preprocessor_config.json')),
-            ):
-                paths = [weight(repo, name) for name in names]
-                cfg['model_params'][key]['name'] = str(paths[0].parent)
-            local_config = Path(self.config['runtime_dir']) / 'inference-config.yml'
-            local_config.write_text(yaml.safe_dump(cfg))
-            import inference
-            # Upstream changes HF_HUB_CACHE during import; restore the explicit storage.
-            os.environ['HF_HUB_CACHE'] = self.config['hf_cache']
-            inference.device = torch.device(self.device)
-            def custom(repo_id, model_filename='pytorch_model.bin', config_filename=None):
-                model = str(weight(repo_id, model_filename))
-                return (model, str(weight(repo_id, config_filename))) if config_filename else model
-            inference.load_custom_model_from_hf = custom
-            self.seed_args = dict(diffusion_steps=30, length_adjust=1.0, inference_cfg_rate=.7,
-                                  f0_condition=True, auto_f0_adjust=False, semi_tone_shift=0,
-                                  checkpoint=str(checkpoint), config=str(local_config), fp16=False)
-            loaded = list(inference.load_models(SimpleNamespace(**self.seed_args)))
-            loaded[2] = bounded_pitch(loaded[2])
-            # Worker serializes jobs: retain models between pages without reloading weights.
-            inference.load_models = lambda _: tuple(loaded)
-            self.seed = inference
+            gc.collect()
+            if self.device == 'cuda':
+                torch.cuda.empty_cache()
+            elif self.device == 'mps':
+                torch.mps.empty_cache()
 
     def status(self):
         return {'seed_vc': self.seed is not None, 'denoise': self.denoiser is not None,

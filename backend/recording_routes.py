@@ -183,8 +183,8 @@ def router(resolve, prepare=None):
                 staged.unlink(missing_ok=True)
 
     @routes.get('/audio-models')
-    def audio_models():
-        return audio_processing.capabilities()
+    def audio_models(refresh: bool = False):
+        return audio_processing.capabilities(refresh=refresh)
 
     @routes.get("/exports/{job_id}")
     def status(job_id: str, project_id: Optional[str] = None):
