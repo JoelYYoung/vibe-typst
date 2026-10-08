@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react'
 import Icon from './PresenterIcon.jsx'
 import { getRecordingAudioModels } from './api.js'
+import RecordingReferenceSelect from './RecordingReferenceSelect.jsx'
 
 export default function RecordingExportDialog({ missingPages, disabled, triggerRef, onCancel, onExport, takes, pageStates }) {
   const dialog = useRef(null)
   const cancel = useRef(null)
+  const upload = useRef(null)
   const [models, setModels] = useState(null)
   const [denoise, setDenoise] = useState('basic')
   const [voice, setVoice] = useState(false)
@@ -98,18 +100,21 @@ export default function RecordingExportDialog({ missingPages, disabled, triggerR
           onChange={event => { setVoice(event.target.checked); if (event.target.checked) setDenoise('model') }} />
       </label>
       {voice && <div className="pr-voice-reference">
-        <label className="pr-audio-field"><span>Reference</span>
-          <select aria-label="Reference voice" value={referencePage} onChange={event => setReferencePage(event.target.value)}>
-            {eligible.map(take => <option key={take.take} value={take.page}>Page {take.page}</option>)}
-            <option value="upload">Upload audio</option>
-          </select>
-        </label>
-        {referencePage === 'upload' && <label className="pr-reference-upload" title="A voiced sample of 1–25 seconds, under 20 MB"><input type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.webm" aria-label="Upload reference audio"
+        <div className="pr-audio-field"><span>Reference</span>
+          <RecordingReferenceSelect takes={eligible} value={referencePage} onChange={setReferencePage} />
+        </div>
+        {referencePage === 'upload' && <div className="pr-reference-upload">
+          <button className="pr-reference-file" type="button" onClick={() => upload.current.click()}
+            aria-label="Choose reference audio" title={reference?.name || 'A voiced sample of 1–25 seconds, under 20 MB'}>
+            <Icon name="upload" /><span>{reference?.name || 'Choose audio'}</span>
+          </button>
+          <input ref={upload} hidden type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg,.webm" aria-label="Upload reference audio"
           onChange={event => {
             const file = event.target.files[0]
             setReference(file && file.size <= 20 * 1024 * 1024 ? file : null)
             setFileError(file?.size > 20 * 1024 * 1024 ? 'Choose an audio file under 20 MB.' : '')
-          }} /></label>}
+          }} />
+        </div>}
         {fileError && <div className="pr-recording-error" role="alert">{fileError}</div>}
       </div>}
     </div>

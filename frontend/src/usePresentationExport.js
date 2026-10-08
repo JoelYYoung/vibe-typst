@@ -9,6 +9,7 @@ export default function usePresentationExport(projectId) {
   const [job, setJob] = useState(null)
   const [connectionError, setConnectionError] = useState('')
   const [dismissed, setDismissed] = useState(null)
+  const [dock, setDock] = useState(null)
   const jobRef = useRef(null)
   jobRef.current = job
   useEffect(() => {
@@ -48,6 +49,6 @@ export default function usePresentationExport(projectId) {
     } catch (error) { setConnectionError(error.message) }
   }
 
-  return { job, setJob, cancel, connectionError, visible: job && job.id !== dismissed,
+  return { job, setJob, cancel, connectionError, dock, setDock, visible: job && job.id !== dismissed,
     dismiss: () => { if (!exportRunning(job)) setDismissed(job.id) } }
 }

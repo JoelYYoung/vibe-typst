@@ -224,7 +224,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
         <span className="pr-clock">⏱ {mmss}</span>
         <button className="pr-btn pr-icon-btn" onClick={openProjection} disabled={recording.busy} aria-label="Open projection" title="Open the audience or projector window"><Icon name="screen" /></button>
       </div>
-      {recordingMode && <RecordingControls recording={recording} page={page} total={total}
+      {recordingMode && <RecordingControls recording={recording} exportController={exportController} page={page} total={total}
         transcripts={pages.map((_, index) => index + 1 === page && ready ? script.draft : map[index]?.note || '')}
         targetMinutes={preferences.targetMinutes}
         onTargetMinutesChange={(targetMinutes) => setPreferences((previous) => ({ ...previous, targetMinutes }))} />}

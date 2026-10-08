@@ -5,7 +5,7 @@ import Icon from './PresenterIcon.jsx'
 import RecordingExportDialog from './RecordingExportDialog.jsx'
 import { exportRunning } from './usePresentationExport.js'
 
-export default function RecordingControls({ recording: r, page, total, transcripts, targetMinutes, onTargetMinutesChange }) {
+export default function RecordingControls({ recording: r, exportController, page, total, transcripts, targetMinutes, onTargetMinutesChange }) {
   const [backup, setBackup] = useState(null)
   const [confirmExport, setConfirmExport] = useState(false)
   const exportTrigger = useRef(null)
@@ -32,6 +32,7 @@ export default function RecordingControls({ recording: r, page, total, transcrip
   }
   return <section className="pr-recording" aria-label="Slide recording">
     <div className="pr-recording-row">
+      <div className="pr-recording-actions">
       <span className={`pr-recording-dot ${r.status === 'recording' ? 'live' : ''}`} aria-hidden="true" />
       <span className="pr-recording-time" aria-label="Current page recording time" title={`Page ${page}: recorded duration`}><Icon name="clock" />{formatRecordingTime(durations.page)}</span>
       <span className="pr-recording-total" aria-label="Total recording time" title={live ? 'Total duration including this take' : 'Total recorded duration'}><Icon name="total" /><strong>{formatRecordingTime(durations.total)}</strong></span>
@@ -66,6 +67,8 @@ export default function RecordingControls({ recording: r, page, total, transcrip
       <button className="pr-btn pr-icon-btn pr-record-reload" onClick={r.load} disabled={r.locked || r.status !== 'idle'}
         aria-label="Reload recordings" title="Reload saved page recordings"><Icon name="refresh" /></button>
       {r.exportUrl && <a className="pr-btn pr-icon-btn" href={r.exportUrl} download="presentation.mp4" aria-label="Download MP4" title="Download the exported MP4 video"><Icon name="download" /></a>}
+      </div>
+      {exportController.visible && <div className="pr-recording-task-slot" ref={exportController.setDock} />}
       {live && <div className="pr-mic-meter" role="meter" aria-label="Microphone input level" aria-valuemin={-60} aria-valuemax={0}
         aria-valuenow={r.audioLevel ?? undefined} aria-valuetext={r.audioLevel === null ? 'Waiting for microphone level' : `${Math.round(r.audioLevel)} dBFS`}
         title="Live microphone input level (dBFS). Higher values mean louder audio; red indicates a level close to clipping.">

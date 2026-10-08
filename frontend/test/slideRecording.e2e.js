@@ -37,6 +37,11 @@ async function clickText(page, selector, text) {
 async function takes(projectId) {
   return fetch(`${baseUrl}/test/takes?project_id=${projectId}`).then(response => response.json())
 }
+async function chooseReference(page, value) {
+  await page.$eval('[aria-label="Reference voice"]', node => node.click())
+  await page.waitForSelector('[role="listbox"][aria-label="Reference voice options"]')
+  await page.$eval(`[role="option"][data-value="${value}"]`, node => node.click())
+}
 async function enterPresenter(page, projectId) {
   console.log(`${projectId}: opening presenter`)
   await page.goto(`${baseUrl}/?openProject=${projectId}`, { waitUntil: 'domcontentloaded' })
@@ -258,9 +263,23 @@ try {
     await page.$eval('[aria-label="Unify voice tone"]', node => node.click())
     assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.checked), true, 'voice conversion must start with model denoising')
     assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.disabled), true)
-    await page.select('[aria-label="Reference voice"]', '2')
-    assert.equal(await page.$eval('[aria-label="Reference voice"]', node => node.value), '2')
-    await page.select('[aria-label="Reference voice"]', 'upload')
+    await chooseReference(page, '2')
+    assert.ok((await page.$eval('[aria-label="Reference voice"]', node => node.textContent)).includes('Page 2'))
+    await page.focus('[aria-label="Reference voice"]')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Enter')
+    assert.ok((await page.$eval('[aria-label="Reference voice"]', node => node.textContent)).includes('Page 1'), 'keyboard navigation selects a recorded page')
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Escape')
+    assert.ok(await page.$('.pr-export-dialog[open]'), 'Escape closes only the reference menu')
+    assert.equal(await page.$('[role="listbox"]'), null)
+    if (process.env.RECORDING_E2E_SCREENSHOTS) {
+      await page.$eval('[aria-label="Reference voice"]', node => node.click())
+      await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-reference-menu.png` })
+      await page.keyboard.press('Escape')
+    }
+    await chooseReference(page, 'upload')
     assert.equal(await page.$eval('.pr-export-confirm', node => node.disabled), true, 'an uploaded reference is required')
     await page.$eval('[aria-label="Upload reference audio"]', node => {
       const files = new DataTransfer()
@@ -323,14 +342,24 @@ try {
       } else request.continue().catch(() => {})
     }
     page.on('request', disconnected)
-    await waitFor(page, () => document.querySelector('.recording-export-task-detail')?.textContent === 'Reconnecting…')
-    assert.notEqual(await page.$eval('.recording-export-task-label', el => el.textContent), 'Export failed')
+    await waitFor(page, () => document.querySelector('.recording-export-task-label')?.textContent === 'Reconnecting…')
+    assert.ok(await page.$('.pr-recording-row .recording-export-task.inline'), 'progress must be docked inside the recording toolbar')
+    assert.ok(await page.$eval('.recording-export-task.inline', el => {
+      const task = el.getBoundingClientRect(), row = el.closest('.pr-recording-row').getBoundingClientRect()
+      return Math.abs(task.right - row.right) < 3 && task.top >= row.top && task.bottom <= row.bottom
+    }), 'export progress must fit at the right of the same row')
     await page.setViewport({ width: 375, height: 667 })
     assert.ok(await page.$eval('.recording-export-task', el => el.getBoundingClientRect().right <= innerWidth && el.getBoundingClientRect().left >= 0))
-    if (process.env.RECORDING_E2E_SCREENSHOTS) await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-background-export.png` })
     await page.setViewport({ width: 1440, height: 900 })
     page.off('request', disconnected)
     await page.setRequestInterception(false)
+    await waitFor(page, () => document.querySelector('.recording-export-task-label')?.textContent !== 'Reconnecting…')
+    if (process.env.RECORDING_E2E_SCREENSHOTS) {
+      await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-background-export.png` })
+      await page.setViewport({ width: 375, height: 667 })
+      await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-background-export-mobile.png` })
+      await page.setViewport({ width: 1440, height: 900 })
+    }
     await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
     const href = await page.$eval('.pr-recording a[download="presentation.mp4"]', link => link.href)
     const response = await fetch(href)
@@ -446,7 +475,8 @@ try {
     page.on('pageerror', error => errors.push(error.message))
     await enterPresenter(page, projectId)
     await page.waitForSelector('[aria-label="Video export task"]')
-    await waitFor(page, () => !!document.querySelector('[aria-label="Download exported video"]'), 60000)
+    await waitFor(page, () => document.querySelector('.recording-export-task-label')?.textContent === 'MP4 ready', 60000)
+    assert.ok(await page.$('[aria-label="Download MP4"]'))
     if (projectId === 'recording-typst') {
       await recordPage(page)
       assert.equal(await page.$('.pr-recording a[download="presentation.mp4"]'), null, 'adding a missing take must invalidate the previous partial export')
