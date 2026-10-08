@@ -174,8 +174,18 @@ def router(resolve, prepare=None):
                 options = json.loads(body) if body else {}
             if not isinstance(options, dict) or set(options) - {'skip_pages', 'audio'}:
                 raise ValueError('invalid export options')
-            return await asyncio.to_thread(recording.start_export, root, pages,
-                                           options.get('skip_pages', []), options.get('audio'), staged)
+            submission = asyncio.create_task(asyncio.to_thread(recording.start_export, root, pages,
+                                             options.get('skip_pages', []), options.get('audio'), staged))
+            try:
+                return await asyncio.shield(submission)
+            except asyncio.CancelledError:
+                # Submission owns its pinned input even if the browser leaves
+                # before the response arrives. Do not remove an uploaded reference
+                # until its hard link has been made.
+                try:
+                    await submission
+                finally:
+                    raise
         except (ValueError, OSError) as exc:
             raise HTTPException(400, str(exc)) from exc
         finally:
@@ -185,6 +195,18 @@ def router(resolve, prepare=None):
     @routes.get('/audio-models')
     def audio_models(refresh: bool = False):
         return audio_processing.capabilities(refresh=refresh)
+
+    @routes.get('/exports/active')
+    def active():
+        return {'active': recording.active_exports()}
+
+    @routes.post('/exports/{job_id}/cancel')
+    def cancel(job_id: str, project_id: Optional[str] = None):
+        root, _ = target(project_id)
+        try:
+            return recording.cancel_export(root, job_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @routes.get("/exports/{job_id}")
     def status(job_id: str, project_id: Optional[str] = None):

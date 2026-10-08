@@ -263,6 +263,18 @@ a:hover { text-decoration: underline; }
 .pr-export-dialog .pr-export-confirm { background: #2f6fb0; border-color: #488bc9; color: #fff; }
 .pr-export-dialog .pr-export-confirm:hover:not(:disabled) { background: #3880c5; }
 .pr-export-dialog .pr-btn:focus-visible { outline: 2px solid #75b9f7; outline-offset: 3px; }
+.recording-export-task { position: fixed; right: 18px; bottom: 64px; z-index: 120; width: 304px; max-width: calc(100vw - 28px); padding: 10px 12px; border: 1px solid #344459; border-radius: 10px; background: #151e29; color: #d9e5f3; box-shadow: 0 6px 24px #0004; font-size: 13px; }
+.recording-export-task-row { display: flex; align-items: center; gap: 10px; }
+.recording-export-task-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recording-export-task-percent { font-variant-numeric: tabular-nums; color: #a9d3f8; }
+.recording-export-task .pr-icon-btn { width: 30px; height: 30px; padding: 5px; flex-shrink: 0; }
+.recording-export-task .recording-export-cancel { color: #efabb0; }
+.recording-export-task-track { height: 6px; margin-top: 9px; border-radius: 3px; background: #293748; overflow: hidden; }
+.recording-export-task-track span { display: block; height: 100%; border-radius: inherit; background: #65afea; transition: width .3s ease; }
+.recording-export-task-detail { margin-top: 8px; font-size: 12px; line-height: 1.4; color: #b7c5d6; }
+.recording-export-task .pr-btn:focus-visible { outline: 2px solid #75b9f7; outline-offset: 3px; }
+@media (max-width: 480px) { .recording-export-task { right: 14px; bottom: 58px; } }
+@media (prefers-reduced-motion: reduce) { .recording-export-task-track span { transition: none; } }
 .pr-audio-options { margin-top: 20px; display: grid; gap: 16px; }
 .pr-audio-field { display: grid; gap: 8px; font-size: 14px; }
 .pr-audio-field select { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 12px; color: #e7ecf2; background: #0f141b; border: 1px solid #3e4c60; border-radius: 6px; font: inherit; color-scheme: dark; }

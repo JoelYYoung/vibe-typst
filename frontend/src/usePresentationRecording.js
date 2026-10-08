@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import { recordingPageState, startSlideRecording } from './slideRecorder.js'
+import { exportRunning } from './usePresentationExport.js'
 
-export default function usePresentationRecording({ enabled, page, pages, tokens, renderVersion }) {
+export default function usePresentationRecording({ enabled, page, pages, tokens, renderVersion, exportController }) {
   const [takes, setTakes] = useState({})
   const [status, setStatus] = useState('idle')
   const [elapsed, setElapsed] = useState(0)
@@ -11,7 +12,7 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
   const [loaded, setLoaded] = useState(false)
   const [snapshot, setSnapshot] = useState(null)
   const [exportAvailable, setExportAvailable] = useState(false)
-  const [job, setJob] = useState(null)
+  const { job, setJob } = exportController
   const [preview, setPreview] = useState(false)
   const [pending, setPending] = useState(null)
   const session = useRef(null)
@@ -87,24 +88,6 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
       stopRef.current?.()
     }
   }, [snapshot])
-  useEffect(() => {
-    if (job?.status !== 'running') return
-    let cancelled = false
-    let timeout
-    async function poll() {
-      try {
-        const next = await api.getRecordingExport(job.id)
-        if (cancelled) return
-        setJob(next)
-        if (next.status === 'running') timeout = setTimeout(poll, 1000)
-      } catch (error) {
-        if (cancelled) return
-        setJob((current) => ({ ...current, status: 'failed', error: error.message }))
-      }
-    }
-    timeout = setTimeout(poll, 1000)
-    return () => { cancelled = true; clearTimeout(timeout) }
-  }, [job?.id, job?.status])
 
   async function start() {
     if (phase.current !== 'idle' || pending) return
@@ -142,8 +125,6 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
       if (!mounted.current) return
       setTakes((previous) => ({ ...previous, [take.page]: saved }))
       setPending(null)
-      // A previous export no longer describes all of the current takes.
-      setJob((previous) => previous?.status === 'running' ? previous : null)
     } catch (error) {
       if (mounted.current) { setPending(take); setError(`${error.message} Your take is kept here; retry saving or download a backup.`) }
     } finally { if (mounted.current) changeStatus('idle') }
@@ -174,19 +155,18 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
         delete next[clearedPage]
         return next
       })
-      setJob((previous) => previous?.status === 'running' ? previous : null)
     } catch (error) { if (mounted.current) setError(error.message) }
     finally { if (mounted.current) changeStatus('idle') }
   }
 
   async function exportVideo(skipPages = [], audio = undefined, reference = null) {
-    if (phase.current !== 'idle' || pending || job?.status === 'running') return
+    if (phase.current !== 'idle' || pending || exportRunning(job)) return
     changeStatus('exporting')
     setError('')
     setPreview(false)
     try {
       const next = await api.startRecordingExport({ skip_pages: skipPages, audio }, reference)
-      if (mounted.current) setJob(next)
+      setJob(next)
     } catch (error) { if (mounted.current) setError(error.message) }
     finally { if (mounted.current) changeStatus('idle') }
   }

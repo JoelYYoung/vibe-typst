@@ -4,6 +4,8 @@ import TypstEditor from './TypstEditor.jsx'
 import PreviewPane from './PreviewPane.jsx'
 import CommentCard from './CommentCard.jsx'
 import Presenter from './Presenter.jsx'
+import usePresentationExport from './usePresentationExport.js'
+import RecordingExportProgress from './RecordingExportProgress.jsx'
 import FileManager from './FileManager.jsx'
 import FilePicker from './FilePicker.jsx'
 import TermPanel from './TermPanel.jsx'
@@ -58,6 +60,7 @@ export default function App({ project, onBackToProjects }) {
   const [slideMap, setSlideMap] = useState([])  // per-page {section, note, note_raw, ...}
   const [noteOrphans, setNoteOrphans] = useState([])  // transcripts that render on no slide
   const [presenting, setPresenting] = useState(false)
+  const exportController = usePresentationExport(project?.id)
   const [presentPage, setPresentPage] = useState(1) // current slide for presenter/projection (persists)
   const [presentationLive, setPresentationLive] = useState(false) // a projection window is open + answering
   // A single "edit session" for ONE comment card: its body text AND its anchors are edited
@@ -641,7 +644,8 @@ export default function App({ project, onBackToProjects }) {
       </main>
 
       {fileMgrOpen && <FileManager activeFile={meta.file} mainFile={meta.main} onOpenFile={onOpened} onClose={() => setFileMgrOpen(false)} onRoomChange={room => setMeta(m => ({ ...m, room }))} />}
-      {presenting && <Presenter onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap} onPointer={sendPresentationPointer} page={presentPage} setPage={setPresentPage} pages={pages} tokens={tokens} renderVersion={rv} />}
+      {presenting && <Presenter exportController={exportController} onClose={() => { setPresenting(false); loadSlideMap() }} onSaved={loadSlideMap} onPointer={sendPresentationPointer} page={presentPage} setPage={setPresentPage} pages={pages} tokens={tokens} renderVersion={rv} />}
+      <RecordingExportProgress controller={exportController} />
     </div>
   )
 }

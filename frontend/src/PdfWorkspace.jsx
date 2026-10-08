@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from './api.js'
 import TermPanel from './TermPanel.jsx'
 import Presenter from './Presenter.jsx'
+import usePresentationExport from './usePresentationExport.js'
+import RecordingExportProgress from './RecordingExportProgress.jsx'
 import PdfPreviewPane from './PdfPreviewPane.jsx'
 import {
   clampPdfPage,
@@ -21,6 +23,7 @@ export default function PdfWorkspace({ project, onBack }) {
   // different project changes which one the workspace calls "active", and without this scope
   // that silently redirected this presenter's reads and transcript saves at the other project.
   api.setProjectScope(project?.id)
+  const exportController = usePresentationExport(project?.id)
   useEffect(() => {
     api.setProjectScope(project?.id)
     return () => api.setProjectScope(null)
@@ -260,7 +263,8 @@ export default function PdfWorkspace({ project, onBack }) {
           onTranscriptSaved={refreshAfterTranscriptSave}
         />
       </main>
-      {presenting && <Presenter onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
+      <RecordingExportProgress controller={exportController} />
+      {presenting && <Presenter exportController={exportController} onClose={() => { setPresenting(false); poller.poll() }} onSaved={refreshAfterTranscriptSave}
         onPointer={sendPointer} page={presentPage} setPage={setPresentation} pages={render.pages} tokens={render.tokens}
         slideMap={render.slideMap} generation={render.generation} />}
     </div>

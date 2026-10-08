@@ -159,6 +159,7 @@ export const startRecordingExport = (options = {}, reference = null) => {
   return trackedFetch(workspacePath(scoped('/api/recording/exports')), { method: 'POST', body: form }).then(J)
 }
 export const getRecordingExport = (id) => trackedFetch(workspacePath(scoped(`/api/recording/exports/${encodeURIComponent(id)}`))).then(J)
+export const cancelRecordingExport = (id) => POST(scoped(`/api/recording/exports/${encodeURIComponent(id)}/cancel`))
 export const recordingExportUrl = (id) => workspacePath(scoped(`/api/recording/exports/${encodeURIComponent(id)}/video`))
 
 // ── app state / config ──────────────────────────────────────────────────────

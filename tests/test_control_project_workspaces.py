@@ -1,4 +1,5 @@
 import importlib.util
+import asyncio
 import os
 import sqlite3
 import subprocess
@@ -17,6 +18,40 @@ sys.path.insert(0, str(CONTROL_DIR))
 
 
 class ProjectWorkspaceControlTest(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_sweeper_keeps_user_sessions_and_project_alive_during_export(self):
+        control = self.control
+        workspace = control._project_workspace_for(self.user, self.project_ids[0])
+        control._last_activity[self.user['username']] = 1
+        control._project_last_activity[workspace['id']] = 1
+        async def tick(*args):
+            if tick.called:
+                raise asyncio.CancelledError()
+            tick.called = True
+        tick.called = False
+        with (patch.object(control, 'IDLE_STOP_SECONDS', 10),
+              patch.object(control.asyncio, 'sleep', side_effect=tick),
+              patch.object(control, '_is_running', side_effect=lambda name: name == self.user['username']),
+              patch.object(control, '_project_workspace_running', return_value=True),
+              patch.object(control, '_port_open', return_value=True),
+              patch.object(control, '_workspace_exporting', side_effect=lambda port: port == workspace['port']),
+              patch.object(control, '_force_user_offline') as stop_user,
+              patch.object(control, '_stop_project_workspace') as stop_project):
+            with self.assertRaises(asyncio.CancelledError):
+                await control._idle_sweeper()
+        stop_user.assert_not_called()
+        stop_project.assert_not_called()
+
+    async def test_export_activity_probe_keeps_unreachable_workspace_and_releases_finished_one(self):
+        for response, expected in [(httpx.Response(200, json={'active': True}), True),
+                                   (httpx.Response(200, json={'active': False}), False),
+                                   (httpx.Response(404), False),
+                                   (httpx.Response(503), True)]:
+            response.request = httpx.Request('GET', 'http://127.0.0.1:9001/')
+            with patch.object(self.control.httpx, 'get', return_value=response):
+                self.assertEqual(self.control._workspace_exporting(9001), expected)
+        with patch.object(self.control.httpx, 'get', side_effect=httpx.ConnectError('offline')):
+            self.assertTrue(self.control._workspace_exporting(9001))
+
     async def asyncSetUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         spec = importlib.util.spec_from_file_location(

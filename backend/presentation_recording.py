@@ -15,12 +15,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import audio_processing
+import export_control
 
 MAX_CLIP_BYTES = 512 * 1024 * 1024
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 _jobs = {}
 _jobs_lock = threading.Lock()
 _export_slot = threading.BoundedSemaphore(1)
+_controls = {}
 _TAKE = re.compile(r"[a-f0-9]{32}$")
 _BINDING = re.compile(r"[a-f0-9]{32}-[0-9]+$")
 
@@ -186,8 +188,7 @@ def list_takes(root: Path, pages):
                 result.append({**{key: value for key, value in data.items() if key != "pointer"},
                                "page": page, "name": slide["name"],
                                "stale": (not recording_id and data["name"] != slide["name"]) or data["token"] != slide["token"]})
-    with _jobs_lock:
-        job = next((dict(job) for job in reversed(list(_jobs.values())) if job["root"] == str(root)), None)
+    job = latest_job(root)
     return {"takes": result, "slides": pages, "export_available": shutil.which("ffmpeg") is not None,
             "export": public_job(job) if job else None}
 
@@ -208,16 +209,84 @@ def public_job(job):
 
 
 def get_job(root: Path, job_id: str):
+    if not _TAKE.fullmatch(job_id):
+        raise ValueError('export not found')
     with _jobs_lock:
         job = _jobs.get(job_id)
-        if not job or job["root"] != str(root):
-            raise ValueError("export not found; retry if the server restarted")
-        return dict(job)
+        if job and job['root'] == str(root):
+            return dict(job)
+    path = root / f'export-{job_id}.json'
+    if path.is_symlink() or not path.is_file():
+        raise ValueError('export not found')
+    job = json.loads(path.read_text())
+    if job.get('id') != job_id:
+        raise ValueError('export not found')
+    job['root'] = str(root)
+    if job['status'] in ('running', 'cancelling'):
+        job.update(status='failed', error='The workspace restarted during export. Please retry.')
+    if job['status'] == 'complete':
+        job['path'] = str(root / f'export-{job_id}.mp4')
+    return job
+
+
+def latest_job(root):
+    with _jobs_lock:
+        jobs = [dict(job) for job in _jobs.values() if job['root'] == str(root)]
+    known = {job['id'] for job in jobs}
+    for path in root.glob('export-*.json'):
+        job_id = path.stem.removeprefix('export-')
+        if job_id not in known:
+            try:
+                jobs.append(get_job(root, job_id))
+            except (ValueError, OSError):
+                continue
+    return max(jobs, key=lambda job: job.get('created_at', 0), default=None)
+
+
+def active_exports():
+    with _jobs_lock:
+        return any(job['status'] in ('running', 'cancelling') for job in _jobs.values())
+
+
+def cancel_export(root, job_id):
+    get_job(root, job_id)  # Check document ownership before accessing a control.
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job and job['root'] == str(root) and job['status'] == 'running':
+            if job_id in _controls:
+                _controls[job_id].event.set()
+            job['status'] = 'cancelling'
+            write_json(root / f'export-{job_id}.json', public_job(job))
+    return public_job(get_job(root, job_id))
 
 
 def _run_ffmpeg(args, loglevel="error"):
-    process = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", loglevel, "-nostats", "-nostdin", "-y", *args],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
+    command = ["ffmpeg", "-hide_banner", "-loglevel", loglevel, "-nostats", "-nostdin", "-y", *args]
+    if not export_control.current():
+        process = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=7200)
+    else:
+        export_control.check()
+        with subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE) as child:
+            deadline = time.monotonic() + 7200
+            try:
+                while True:
+                    export_control.check()
+                    if time.monotonic() > deadline:
+                        raise ValueError('Video conversion timed out.')
+                    try:
+                        _, stderr = child.communicate(timeout=.25)
+                        process = subprocess.CompletedProcess(command, child.returncode, stderr=stderr)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            except BaseException:
+                child.terminate()
+                try:
+                    child.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.communicate()
+                raise
     if process.returncode:
         raise ValueError("Video conversion failed. Check that the page recording has audio and video, then retry.")
     return process.stderr.decode("utf-8", errors="replace")
@@ -294,6 +363,11 @@ def encode_mp4(clips, durations, work: Path, progress=lambda value: None, audio_
             reference = clean_reference
     parts = []
     for index, (clip, duration) in enumerate(zip(clips, durations)):
+        export_control.check()
+        control = export_control.current()
+        if control:
+            control.update(stage='audio' if modeled else 'video', page=index + 1, total=len(clips))
+            control.model_progress = lambda value: progress(round((index + value / 100 * .65) / len(clips) * 90))
         part = work / f"part-{index}.mp4"
         audio_source = clip
         if modeled:
@@ -303,6 +377,8 @@ def encode_mp4(clips, durations, work: Path, progress=lambda value: None, audio_
             audio_processing.process(raw_audio, audio_source, denoise=options['denoise'] == 'model', reference=reference)
             progress(round((index + .5) / len(clips) * 90))
         audio = normalized_audio_filter(audio_source, duration, denoise=not modeled)
+        if control:
+            control.update(stage='video')
         # Re-encode each independently recorded container: raw WebM concatenation does not
         # repair timestamps or changing codec settings. Force one interoperable AV format.
         inputs = ['-i', str(clip)] + (['-i', str(audio_source)] if modeled else [])
@@ -316,6 +392,8 @@ def encode_mp4(clips, durations, work: Path, progress=lambda value: None, audio_
     listing = work / "concat.txt"
     listing.write_text("".join(f"file 'part-{index}.mp4'\n" for index in range(len(parts))))
     output = work / "presentation.mp4"
+    if export_control.current():
+        export_control.current().update(stage='merge', progress=95)
     _run_ffmpeg(["-f", "concat", "-safe", "1", "-i", str(listing), "-c", "copy", "-movflags", "+faststart", str(output)])
     return output
 
@@ -352,6 +430,8 @@ def start_export(root: Path, pages, skip_pages=(), audio_options=None, reference
     if not _export_slot.acquire(blocking=False):
         raise ValueError("another video is exporting; wait for it to finish")
     work = None
+    job_id = None
+    reference_seconds = None
     try:
         work = Path(tempfile.mkdtemp(prefix=".export-", dir=root))
         durations, clips, takes, included, skipped = [], [], [], [], []
@@ -382,9 +462,7 @@ def start_export(root: Path, pages, skip_pages=(), audio_options=None, reference
                     raise ValueError('reference recording must be at least one second')
                 reference = clips[index]
                 # Browser WebM recordings may omit container duration; use take metadata.
-                reference_wav = work / 'reference-page.wav'
-                extract_audio(reference, reference_wav, min(25, durations[index]))
-                reference = reference_wav
+                reference_seconds = min(25, durations[index])
             elif reference:
                 pinned = work / 'reference-upload'
                 os.link(reference, pinned)
@@ -397,39 +475,75 @@ def start_export(root: Path, pages, skip_pages=(), audio_options=None, reference
         with _jobs_lock:
             # Keep one completed output per document; an active download holds its inode.
             for old_id, old in list(_jobs.items()):
-                if old["root"] == str(root) and old["status"] != "running":
+                if old["root"] == str(root) and old["status"] not in ('running', 'cancelling'):
                     if old.get("path"):
                         Path(old["path"]).unlink(missing_ok=True)
                     del _jobs[old_id]
+                    (root / f'export-{old_id}.json').unlink(missing_ok=True)
             _jobs[job_id] = {"id": job_id, "root": str(root), "status": "running", "progress": 0,
                              "takes": takes, "pages": included, "skipped_pages": skipped,
-                             "audio": options,
+                             "audio": options, 'created_at': time.time(), 'stage': 'prepare', 'page': 0, 'total': len(clips),
                              "slides": [{key: slide.get(key) for key in ("name", "token", "recording_id")} for slide in pages]}
 
         def update(**values):
             with _jobs_lock:
+                if 'progress' in values:
+                    values['progress'] = max(_jobs[job_id]['progress'], values['progress'])
                 _jobs[job_id].update(values)
+                write_json(root / f'export-{job_id}.json', public_job(_jobs[job_id]))
+
+        control = export_control.Control(update)
+        with _jobs_lock:
+            _controls[job_id] = control
+            if _jobs[job_id]['status'] == 'cancelling':
+                control.event.set()
+            write_json(root / f'export-{job_id}.json', public_job(_jobs[job_id]))
 
         def run():
+            result = None
+            target = root / f"export-{job_id}.mp4"
             try:
-                if options == {'denoise': 'basic', 'voice': 'original'}:
-                    output = encode_mp4(clips, durations, work, lambda value: update(progress=value))
-                else:
-                    output = encode_mp4(clips, durations, work, lambda value: update(progress=value), options, reference)
-                target = root / f"export-{job_id}.mp4"
-                os.replace(output, target)
-                update(status="complete", progress=100, path=str(target))
+                with export_control.use(control):
+                    pinned_reference = reference
+                    if reference_seconds:
+                        pinned_reference = work / 'reference-page.wav'
+                        extract_audio(reference, pinned_reference, reference_seconds)
+                    if options == {'denoise': 'basic', 'voice': 'original'}:
+                        output = encode_mp4(clips, durations, work, lambda value: update(progress=value))
+                    else:
+                        output = encode_mp4(clips, durations, work, lambda value: update(progress=value), options, pinned_reference)
+                    control.check()
+                    os.replace(output, target)
+                    result = dict(status='complete', progress=100, path=str(target))
+            except export_control.Cancelled:
+                result = dict(status='cancelled')
             except Exception as exc:
                 message = str(exc) if isinstance(exc, ValueError) else "Export failed or timed out; please retry."
-                update(status="failed", error=message)
+                result = dict(status='failed', error=message)
             finally:
                 shutil.rmtree(work, ignore_errors=True)
-                _export_slot.release()
+                with _jobs_lock:
+                    try:
+                        # A terminal status promises that the worker has released
+                        # resources. Serialize it with cancellation and admission.
+                        if control.event.is_set():
+                            target.unlink(missing_ok=True)
+                            result = dict(status='cancelled')
+                        _jobs[job_id].update(result or dict(status='failed', error='Export failed.'))
+                        write_json(root / f'export-{job_id}.json', public_job(_jobs[job_id]))
+                    finally:
+                        _controls.pop(job_id, None)
+                        _export_slot.release()
 
         threading.Thread(target=run, daemon=True, name="presentation-export").start()
         return public_job(get_job(root, job_id))
     except BaseException:
         if work:
             shutil.rmtree(work, ignore_errors=True)
+        if job_id:
+            with _jobs_lock:
+                _controls.pop(job_id, None)
+                _jobs.pop(job_id, None)
+            (root / f'export-{job_id}.json').unlink(missing_ok=True)
         _export_slot.release()
         raise

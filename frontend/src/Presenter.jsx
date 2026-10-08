@@ -29,7 +29,7 @@ function loadPreferences() {
 // (opened here) shows the audience just the current slide and follows via BroadcastChannel.
 // `page`/`setPage`/`pages`/`rv` are owned by the App (so the page survives exiting + re-entering
 // presenter mode, and the App keeps the projection live even when this view is closed).
-export default function Presenter({ onClose, onSaved, onPointer, page, setPage, pages, tokens, slideMap, generation, renderVersion }) {
+export default function Presenter({ onClose, onSaved, onPointer, page, setPage, pages, tokens, slideMap, generation, renderVersion, exportController }) {
   const [localMap, setLocalMap] = useState([])
   const map = Array.isArray(slideMap) ? slideMap : localMap
   const [elapsed, setElapsed] = useState(0)
@@ -42,7 +42,7 @@ export default function Presenter({ onClose, onSaved, onPointer, page, setPage, 
   const activePointerRef = useRef(null)
   const [localPointer, setLocalPointer] = useState(null)
   const [recordingMode, setRecordingMode] = useState(false)
-  const recording = usePresentationRecording({ enabled: recordingMode, page, pages, tokens, renderVersion })
+  const recording = usePresentationRecording({ enabled: recordingMode, page, pages, tokens, renderVersion, exportController })
   const recordingRef = useRef(recording)
   recordingRef.current = recording
   const closePresenter = () => { if (!recordingRef.current.locked) onClose() }

@@ -3,6 +3,7 @@ import { formatRecordingTime } from './slideRecorder.js'
 import { allocateTranscriptTime, recordingDurations } from './presentationTiming.js'
 import Icon from './PresenterIcon.jsx'
 import RecordingExportDialog from './RecordingExportDialog.jsx'
+import { exportRunning } from './usePresentationExport.js'
 
 export default function RecordingControls({ recording: r, page, total, transcripts, targetMinutes, onTargetMinutesChange }) {
   const [backup, setBackup] = useState(null)
@@ -22,9 +23,9 @@ export default function RecordingControls({ recording: r, page, total, transcrip
   const startLabel = r.status === 'starting' ? 'Starting microphone…' : r.status === 'saving' ? 'Saving page…' : current ? 'Re-record page' : 'Start page'
   const missingPages = r.pageStates.flatMap((state, index) => state === 'missing' ? [index + 1] : [])
   const hasStalePages = r.pageStates.includes('stale')
-  const exporting = r.status === 'exporting' || r.job?.status === 'running'
-  const exportProgress = r.job?.status === 'running' ? Math.max(0, Math.min(100, r.job.progress ?? 0)) : 0
-  const exportDisabled = r.locked || !r.loaded || r.status === 'exporting' || r.job?.status === 'running'
+  const exporting = r.status === 'exporting' || exportRunning(r.job)
+  const exportProgress = exportRunning(r.job) ? Math.max(0, Math.min(100, r.job.progress ?? 0)) : 0
+  const exportDisabled = r.locked || !r.loaded || exporting
     || !r.exportAvailable || !r.completed || hasStalePages
   function requestExport() {
     setConfirmExport(true)

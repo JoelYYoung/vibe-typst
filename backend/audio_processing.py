@@ -1,10 +1,13 @@
 """Opt-in audio-model client. Ordinary exports never contact/download models."""
 import os
 import wave
+import threading
+import uuid
 from pathlib import Path
 
 import httpx
 import bundled_audio
+import export_control
 
 MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 MAX_AUDIO_BYTES = 384 * 1024 * 1024
@@ -76,6 +79,26 @@ def process(source: Path, output: Path, *, denoise=False, reference=None):
     url, headers = _settings()
     if not url:
         raise ValueError('Optional audio models are not connected.')
+    control = export_control.current()
+    done = threading.Event()
+    job_id = uuid.uuid4().hex
+    if control:
+        control.check()
+        headers = dict(headers, **{'X-Audio-Job-Id': job_id})
+        def monitor():
+            with httpx.Client(timeout=2, follow_redirects=False) as client:
+                while not done.wait(.5):
+                    try:
+                        if control.event.is_set():
+                            client.post(url + f'/process/{job_id}/cancel', headers=headers)
+                        else:
+                            response = client.get(url + f'/process/{job_id}', headers=headers)
+                            if response.is_success and hasattr(control, 'model_progress'):
+                                control.model_progress(response.json()['progress'])
+                    except (httpx.HTTPError, ValueError, KeyError):
+                        continue
+        watcher = threading.Thread(target=monitor, daemon=True, name='audio-export-progress')
+        watcher.start()
     try:
         with source.open('rb') as audio:
             files = {'audio': ('source.wav', audio, 'audio/wav')}
@@ -107,6 +130,8 @@ def process(source: Path, output: Path, *, denoise=False, reference=None):
                     ref.close()
     except httpx.HTTPStatusError as exc:
         output.unlink(missing_ok=True)
+        if control:
+            control.check()
         if exc.response.status_code == 409:
             raise ValueError('The optional audio model service is busy. Wait for the current export and retry.') from exc
         if exc.response.status_code == 422:
@@ -122,7 +147,15 @@ def process(source: Path, output: Path, *, denoise=False, reference=None):
         raise ValueError('Audio model processing failed. Check the optional model service and retry.') from exc
     except httpx.HTTPError as exc:
         output.unlink(missing_ok=True)
+        if control:
+            control.check()
         raise ValueError('Audio model processing failed or timed out. Check the optional model service and retry, or export with the original voice.') from exc
     except BaseException:
         output.unlink(missing_ok=True)
         raise
+    finally:
+        done.set()
+        if control:
+            watcher.join(timeout=3)
+    if control:
+        control.check()

@@ -12,6 +12,22 @@ model environment and weights; original-voice export does not load them. DPDFNet
 or CPU (slower). Unsupported or disconnected models appear disabled in the dialog.
 Model failures stop that export with an error; audio is never silently substituted.
 
+## Background exports
+
+A submitted export continues when you exit the presenter or close the webpage.
+Reopen the same project to restore its progress or download. The compact task bar
+shows the stage, page count and percentage; its stop icon explicitly cancels the
+export. Temporary connection errors retry without changing the server's job state.
+Active exports keep their workspace and account session from idle shutdown.
+Completed status and MP4 files survive workspace restarts. An unexpected server
+restart during an unfinished export reports a failure that can be retried.
+
+Cancel requests stop FFmpeg and cooperatively stop DPDFNet frames/Seed-VC model
+steps. The task shows Cancelling until processing and cleanup finish. A model call
+already executing on the GPU finishes its current operation before stopping.
+Cancel is scoped to that private model request; the shared model service stays up.
+Update a standalone worker together with the application to use cancellation.
+
 ## Docker defaults
 
 Both `Containerfile.native` and `Containerfile` bundle the pinned model source,

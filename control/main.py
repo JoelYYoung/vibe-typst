@@ -555,6 +555,19 @@ def _force_user_offline(user: dict) -> bool:
     _active_ws.pop(user["username"], None)
     return stopped
 
+def _workspace_exporting(port):
+    # Browser activity is independent of backend work. Fail closed on a transient
+    # health read so an unreachable workspace is not stopped mid-conversion.
+    try:
+        response = httpx.get(f'http://127.0.0.1:{port}/api/recording/exports/active', timeout=2)
+        if response.status_code == 404:  # Older workspace image.
+            return False
+        response.raise_for_status()
+        return response.json().get('active') is True
+    except (httpx.HTTPError, ValueError):
+        return True
+
+
 async def _idle_sweeper():
     if IDLE_STOP_SECONDS <= 0:
         return
@@ -596,6 +609,18 @@ async def _idle_sweeper():
             if idle_for < IDLE_STOP_SECONDS:
                 continue
 
+            related_ports = [user['port']]
+            with _db() as db:
+                related_ports.extend(row['port'] for row in db.execute(
+                    'SELECT port FROM project_workspaces WHERE user_id=?', (user['id'],)))
+            exporting = False
+            for port in related_ports:
+                if _port_open(port) and await asyncio.to_thread(_workspace_exporting, port):
+                    exporting = True
+                    break
+            if exporting:
+                continue
+
             stopped = await loop.run_in_executor(None, _force_user_offline, user)
             if stopped:
                 print(
@@ -634,6 +659,8 @@ async def _idle_sweeper():
                 continue
             idle_for = now - last
             if idle_for < IDLE_STOP_SECONDS:
+                continue
+            if await asyncio.to_thread(_workspace_exporting, workspace['port']):
                 continue
             stopped = await loop.run_in_executor(
                 None, _stop_project_workspace, workspace

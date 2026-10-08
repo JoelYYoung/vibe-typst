@@ -5,6 +5,8 @@ import os
 import shutil
 import tempfile
 import threading
+import asyncio
+import re
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -16,11 +18,27 @@ from starlette.requests import Request as StarletteRequest
 MAX_AUDIO_BYTES = 384 * 1024 * 1024
 
 
+class InferenceControl:
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.progress = 0
+
+    def check(self):
+        if self.cancelled.is_set():
+            raise ValueError('Audio processing cancelled.')
+
+    def report(self, progress):
+        self.check()
+        self.progress = max(self.progress, min(99, int(progress)))
+
+
 def create_app(engine, token: str, work_dir: Path):
     if len(token) < 32:
         raise ValueError('Configure a private audio-model token of at least 32 characters.')
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     slot = threading.BoundedSemaphore(1)
+    jobs = {}
+    jobs_lock = threading.Lock()
 
     @app.middleware('http')
     async def authorize(request, call_next):
@@ -33,13 +51,37 @@ def create_app(engine, token: str, work_dir: Path):
     def health(refresh: bool = False):
         if refresh and hasattr(engine, 'retry'):
             engine.retry()
-        return engine.status()
+        return dict(engine.status(), cancellable=True)
+
+    @app.get('/process/{job_id}')
+    def progress(job_id: str):
+        with jobs_lock:
+            control = jobs.get(job_id)
+        if not control:
+            raise HTTPException(404, 'Audio job not found.')
+        return {'progress': control.progress}
+
+    @app.post('/process/{job_id}/cancel')
+    def cancel(job_id: str):
+        with jobs_lock:
+            control = jobs.get(job_id)
+            if not control:
+                raise HTTPException(404, 'Audio job not found.')
+            control.cancelled.set()
+        return {'cancelled': True}
 
     @app.post('/process')
     async def process(request: Request):
+        job_id = request.headers.get('x-audio-job-id')
+        if job_id and not re.fullmatch('[a-f0-9]{32}', job_id):
+            raise HTTPException(400, 'Invalid audio job identity.')
         if not slot.acquire(blocking=False):
             raise HTTPException(409, 'Another audio model job is running. Retry after it finishes.')
         work = None
+        control = InferenceControl()
+        if job_id:
+            with jobs_lock:
+                jobs[job_id] = control
         try:
             work = Path(tempfile.mkdtemp(prefix='audio-', dir=work_dir))
             received = 0
@@ -71,9 +113,21 @@ def create_app(engine, token: str, work_dir: Path):
                                 raise HTTPException(413, 'Audio is too large.')
                             stream.write(chunk)
                     paths[field] = path
-            import asyncio
             output = work / 'output.wav'
-            await asyncio.to_thread(engine.process, paths['audio'], output, denoise=denoise == 'true', reference=paths.get('reference'))
+            kwargs = {'denoise': denoise == 'true', 'reference': paths.get('reference')}
+            if job_id:
+                kwargs['control'] = control
+            inference = asyncio.create_task(asyncio.to_thread(engine.process, paths['audio'], output, **kwargs))
+            try:
+                await asyncio.shield(inference)
+            except asyncio.CancelledError:
+                # A dropped HTTP connection does not own the submitted computation.
+                # Retain its files and slot until inference exits.
+                try:
+                    await inference
+                finally:
+                    raise
+            control.check()
             # Release memory/GPU slot before the caller downloads the completed immutable file.
             response = FileResponse(output, media_type='audio/wav', background=BackgroundTask(shutil.rmtree, work, True))
             work = None
@@ -83,6 +137,9 @@ def create_app(engine, token: str, work_dir: Path):
         finally:
             if work:
                 shutil.rmtree(work, ignore_errors=True)
+            if job_id:
+                with jobs_lock:
+                    jobs.pop(job_id, None)
             slot.release()
 
     return app

@@ -63,6 +63,26 @@ workspace.projects_mod.get_project = lambda project_id: projects[project_id]
 app = FastAPI()
 app.include_router(recording_routes.router(workspace._recording_target, workspace._prepare_recording))
 
+# Deterministic window for testing view/tab teardown with a real export worker.
+import presentation_recording as recording
+import export_control
+_encode_mp4 = recording.encode_mp4
+_export_delays = {}
+def delayed_encode(clips, durations, work, *args, **kwargs):
+    project_id = next(key for key, info in projects.items() if work.is_relative_to(info['path']))
+    delay = _export_delays.pop(project_id, 0)
+    until = time.monotonic() + delay
+    while time.monotonic() < until:
+        export_control.check()
+        time.sleep(.05)
+    return _encode_mp4(clips, durations, work, *args, **kwargs)
+recording.encode_mp4 = delayed_encode
+
+@app.post('/test/export-delay')
+def export_delay(project_id: str, seconds: float = 12):
+    _export_delays[project_id] = min(30, max(0, seconds))
+    return {'ok': True}
+
 
 def info_for(project_id):
     return projects[project_id or "recording-typst"]

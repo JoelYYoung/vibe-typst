@@ -89,6 +89,7 @@ class Engine:
                               checkpoint=str(checkpoint), config=str(local_config), fp16=False)
         loaded = list(inference.load_models(SimpleNamespace(**self.seed_args)))
         loaded[2] = bounded_pitch(loaded[2])
+        self.seed_modules = loaded
         # Worker serializes jobs: retain models between pages without reloading weights.
         self.original_loader = inference.load_models
         inference.load_models = lambda _: tuple(loaded)
@@ -110,11 +111,13 @@ class Engine:
         return {'seed_vc': self.seed is not None, 'denoise': self.denoiser is not None,
                 'denoiser': 'DPDFNet8 48 kHz HR' if self.denoiser else None, 'device': self.device}
 
-    def process(self, source: Path, output: Path, *, denoise=False, reference=None):
+    def process(self, source: Path, output: Path, *, denoise=False, reference=None, control=None):
         import numpy as np
         import soundfile as sf
         from scipy.signal import resample_poly
         signal, rate = sf.read(source, dtype='float32')
+        if control:
+            control.check()
         if signal.ndim != 1 or rate != 48000 or not len(signal) or not np.isfinite(signal).all():
             raise ValueError('Expected a finite mono 48 kHz WAV.')
         cleaned = source
@@ -122,8 +125,12 @@ class Engine:
             if self.denoiser is None:
                 raise ValueError('DPDFNet is not installed.')
             from dpdfnet.api import _enhance_with_runtime
+            def denoise_progress(done, total):
+                if control:
+                    control.report(done / max(1, total) * (30 if reference else 95))
             clean_signal = _enhance_with_runtime(signal, sample_rate=rate, runtime=self.denoiser,
-                                                model_sample_rate=48000, attn_limit_db=12)
+                                                model_sample_rate=48000, attn_limit_db=12,
+                                                progress_callback=denoise_progress if control else None)
             if len(clean_signal) != len(signal) or not np.isfinite(clean_signal).all():
                 raise ValueError('Noise reduction changed timing or produced invalid audio.')
             cleaned = output.parent / 'cleaned.wav'
@@ -142,7 +149,35 @@ class Engine:
                 converted = output.parent / 'converted'
                 converted.mkdir()
                 args = SimpleNamespace(**self.seed_args, source=str(cleaned), target=str(reference), output=str(converted))
-                self.seed.main(args)
+                hooks = []
+                if control:
+                    import torch
+                    seen = set()
+                    def check_hook(module, inputs):
+                        control.check()
+                    # Check at module boundaries throughout tokenization, pitch,
+                    # diffusion and vocoding. No change to the pinned upstream code.
+                    for item in self.seed_modules:
+                        candidates = item.values() if isinstance(item, dict) else [item]
+                        for candidate in candidates:
+                            if isinstance(candidate, torch.nn.Module):
+                                for module in candidate.modules():
+                                    if id(module) not in seen:
+                                        seen.add(id(module))
+                                        hooks.append(module.register_forward_pre_hook(check_hook))
+                    estimator = self.seed_modules[0].cfm.estimator
+                    steps = [0]
+                    # Upstream emits chunks of at most (30 - reference) seconds.
+                    total_steps = self.seed_args['diffusion_steps'] * max(1, np.ceil(len(signal) / rate / max(.1, 30 - len(ref_signal) / ref_rate - .16)))
+                    def step_hook(module, inputs, value):
+                        steps[0] += 1
+                        control.report(30 + min(65, steps[0] / total_steps * 65))
+                    hooks.append(estimator.register_forward_hook(step_hook))
+                try:
+                    self.seed.main(args)
+                finally:
+                    for hook in hooks:
+                        hook.remove()
                 files = list(converted.glob('*.wav'))
                 if len(files) != 1:
                     raise ValueError('Seed-VC did not return one audio recording.')
@@ -162,4 +197,6 @@ class Engine:
             raise ValueError('Audio model produced invalid samples.')
         # Frame quantization may leave a few ms; do not stretch or re-time speech.
         result = np.pad(result[:len(signal)], (0, max(0, len(signal) - len(result))))
+        if control:
+            control.check()
         sf.write(output, result, rate, subtype='PCM_16')

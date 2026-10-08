@@ -126,10 +126,11 @@ try {
     await sleep(100)
   }
   for (const projectId of ['recording-typst', 'recording-pdf']) {
-    const page = await browser.newPage()
+    let page = await browser.newPage()
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
     await page.evaluate(() => localStorage.removeItem('vibe-typst.presenter-preferences'))
-    await page.evaluateOnNewDocument(() => {
+    const installCapture = async (target) => target.evaluateOnNewDocument(() => {
+      if (!navigator.mediaDevices) return
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
       navigator.mediaDevices.getUserMedia = async (constraints) => {
         const microphone = await capture(constraints)
@@ -158,6 +159,7 @@ try {
         return destination.stream
       }
     })
+    await installCapture(page)
     await page.setViewport({ width: 1440, height: 900 })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
@@ -282,6 +284,17 @@ try {
     await clickText(page, '.pr-export-dialog button', 'Cancel')
     page.off('request', modelsRequest)
     await page.setRequestInterception(false)
+    const preCancelTakes = await takes(projectId)
+    // Explicit cancel must stop a submitted task without losing either take.
+    await fetch(`${baseUrl}/test/export-delay?project_id=${projectId}`, { method: 'POST' })
+    await clickText(page, '.pr-recording button', 'Export full MP4')
+    await page.waitForSelector('.pr-export-dialog[open]')
+    await clickText(page, '.pr-export-dialog button', 'Export')
+    await page.waitForSelector('[aria-label="Cancel video export"]')
+    await page.$eval('[aria-label="Cancel video export"]', node => node.click())
+    await waitFor(page, () => document.querySelector('.recording-export-task-label')?.textContent === 'Cancelled')
+    assert.deepEqual((await takes(projectId)).map(t => t.sha256), preCancelTakes.map(t => t.sha256))
+    await fetch(`${baseUrl}/test/export-delay?project_id=${projectId}`, { method: 'POST' })
     await clickText(page, '.pr-recording button', 'Export full MP4')
     await page.waitForSelector('.pr-export-dialog[open]')
     assert.equal(await page.$('.pr-export-missing'), null, 'fully recorded decks need no missing-page warning')
@@ -289,6 +302,35 @@ try {
     await waitFor(page, () => !document.querySelector('[aria-label="Check optional models"]')?.disabled)
     assert.equal(await page.$eval('[aria-label="Unify voice tone"]', node => node.disabled), true, 'uninstalled models must stay optional')
     await clickText(page, '.pr-export-dialog button', 'Export')
+    await page.waitForSelector('[aria-label="Background video export progress"]')
+    const exportId = (await fetch(`${baseUrl}/api/recording?project_id=${projectId}`).then(r => r.json())).export.id
+    await page.keyboard.press('Escape')
+    await waitFor(page, () => !document.querySelector('.presenter'))
+    assert.ok(await page.$('[aria-label="Cancel video export"]'), 'exiting presenter must retain progress and cancellation')
+    await page.goto('about:blank')
+    await sleep(1200)
+    const backgroundJob = await fetch(`${baseUrl}/api/recording/exports/${exportId}?project_id=${projectId}`).then(r => r.json())
+    assert.equal(backgroundJob.status, 'running', 'closing the webpage must not cancel the server job')
+    await enterPresenter(page, projectId)
+    await page.waitForSelector('[aria-label="Background video export progress"]')
+    let failStatusOnce = true
+    await page.setRequestInterception(true)
+    const disconnected = request => {
+      if (request.isInterceptResolutionHandled()) return
+      if (failStatusOnce && request.method() === 'GET' && request.url().includes(`/api/recording/exports/${exportId}`)) {
+        failStatusOnce = false
+        request.respond({ status: 503, contentType: 'application/json', body: '{"detail":"Temporary network failure"}' }).catch(() => {})
+      } else request.continue().catch(() => {})
+    }
+    page.on('request', disconnected)
+    await waitFor(page, () => document.querySelector('.recording-export-task-detail')?.textContent === 'Reconnecting…')
+    assert.notEqual(await page.$eval('.recording-export-task-label', el => el.textContent), 'Export failed')
+    await page.setViewport({ width: 375, height: 667 })
+    assert.ok(await page.$eval('.recording-export-task', el => el.getBoundingClientRect().right <= innerWidth && el.getBoundingClientRect().left >= 0))
+    if (process.env.RECORDING_E2E_SCREENSHOTS) await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-background-export.png` })
+    await page.setViewport({ width: 1440, height: 900 })
+    page.off('request', disconnected)
+    await page.setRequestInterception(false)
     await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
     const href = await page.$eval('.pr-recording a[download="presentation.mp4"]', link => link.href)
     const response = await fetch(href)
@@ -391,6 +433,20 @@ try {
     await enterPresenter(page, projectId)
     await waitFor(page, () => document.querySelectorAll('.pr-thumb-recorded.recorded').length === 1)
     assert.ok(await page.$('.pr-recording a[download="presentation.mp4"]'), 'partial download remains available after reload')
+    const stateBeforeClose = await fetch(`${baseUrl}/api/recording?project_id=${projectId}`).then(r => r.json())
+    const skip = stateBeforeClose.slides.flatMap((slide, index) => stateBeforeClose.takes.some(take => take.page === index + 1) ? [] : [index + 1])
+    await fetch(`${baseUrl}/test/export-delay?project_id=${projectId}&seconds=6`, { method: 'POST' })
+    const tabJob = await fetch(`${baseUrl}/api/recording/exports?project_id=${projectId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ skip_pages: skip }) }).then(r => r.json())
+    await page.close()
+    await sleep(1200)
+    assert.equal((await fetch(`${baseUrl}/api/recording/exports/${tabJob.id}?project_id=${projectId}`).then(r => r.json())).status, 'running', 'closing the browser tab must leave export running')
+    page = await browser.newPage()
+    await page.setViewport({ width: 1440, height: 900 })
+    await installCapture(page)
+    page.on('pageerror', error => errors.push(error.message))
+    await enterPresenter(page, projectId)
+    await page.waitForSelector('[aria-label="Video export task"]')
+    await waitFor(page, () => !!document.querySelector('[aria-label="Download exported video"]'), 60000)
     if (projectId === 'recording-typst') {
       await recordPage(page)
       assert.equal(await page.$('.pr-recording a[download="presentation.mp4"]'), null, 'adding a missing take must invalidate the previous partial export')
@@ -410,8 +466,9 @@ try {
       assert.equal(remaining[0].page, 1)
     }
     assert.deepEqual(errors, [])
-    console.log(`${projectId}: partial/full H.264/AAC export, custom dialog cancel/Escape/focus, download invalidation, laser, microphone meter, transcript controls, source bindings and recovery passed`)
+    console.log(`${projectId}: presenter exit, actual tab close/reopen, network retry, explicit cancellation, full/partial MP4 and recording regressions passed`)
     await page.close()
+
   }
 } catch (error) {
   console.error(error)

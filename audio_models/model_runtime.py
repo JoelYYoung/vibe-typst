@@ -120,9 +120,12 @@ class ValidatedRuntime:
             if rate != 48000 or output.ndim != 1 or len(output) != len(signal) or not np.isfinite(output).all():
                 raise ValueError('Inference output failed format/timing validation.')
 
-    def process(self, source, output, *, denoise=False, reference=None):
+    def process(self, source, output, *, denoise=False, reference=None, control=None):
         status = self.status()
         if denoise and not status['denoise'] or reference and not status['seed_vc']:
             raise ValueError('The selected audio model is not ready on this server.')
         with self.inference_lock:
+            if control:
+                control.check()
+                return self.engine.process(source, output, denoise=denoise, reference=reference, control=control)
             return self.engine.process(source, output, denoise=denoise, reference=reference)
