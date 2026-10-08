@@ -198,18 +198,22 @@ try {
     // A failed save must preserve both older takes and expose a recoverable local recording.
     let failOnce = true
     await page.setRequestInterception(true)
-    page.on('request', request => {
+    const saveRequest = request => {
+      if (request.interceptResolutionState().action === 'disabled' || request.isInterceptResolutionHandled()) return
       if (failOnce && request.method() === 'PUT' && request.url().includes('/api/recording/pages/1')) {
         failOnce = false
         request.respond({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Temporary save failure' }) }).catch(() => {})
       } else request.continue().catch(() => {})
-    })
+    }
+    page.on('request', saveRequest)
     await recordPage(page, false)
     await page.waitForSelector('.pr-recording-recovery a')
     const failed = await takes(projectId)
     assert.deepEqual(failed.map(take => take.sha256), before.map(take => take.sha256))
     await clickText(page, '.pr-recording-recovery button', 'Retry saving page 1')
     await waitFor(page, () => !document.querySelector('.pr-recording-recovery'))
+    page.off('request', saveRequest)
+    await page.setRequestInterception(false)
     const after = await takes(projectId)
     assert.notEqual(after[0].take, before[0].take)
     assert.equal(after[1].take, before[1].take)
@@ -224,8 +228,53 @@ try {
     assert.equal(await page.$('.pr-next'), null, 'hidden preview preference must survive reload')
     assert.equal(await page.$eval('[aria-label="Target presentation minutes"]', input => input.value), '6')
     assert.equal(await page.$eval('.pr-note-edit', node => getComputedStyle(node).fontSize), '19px', 'font size must survive reload')
+    // Exercise optional controls independently of GPU availability on the test host.
+    const modelsRequest = request => {
+      if (request.interceptResolutionState().action === 'disabled' || request.isInterceptResolutionHandled()) return
+      if (request.url().includes('/api/recording/audio-models')) request.respond({ status: 200, contentType: 'application/json',
+        body: JSON.stringify({ seed_vc: true, denoise: true, denoiser: 'DPDFNet8 48 kHz HR', device: 'mps' }) })
+      else request.continue()
+    }
+    await page.setRequestInterception(true)
+    page.on('request', modelsRequest)
     await clickText(page, '.pr-recording button', 'Export full MP4')
-    assert.equal(await page.$('.pr-export-dialog'), null, 'fully recorded decks export without a warning')
+    await waitFor(page, () => document.querySelector('[aria-label="Unify voice tone"]')?.disabled === false)
+    await page.click('[aria-label="Unify voice tone"]')
+    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.value), 'model', 'voice conversion must start with model denoising')
+    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.disabled), true)
+    await page.select('[aria-label="Reference voice"]', '2')
+    assert.equal(await page.$eval('[aria-label="Reference voice"]', node => node.value), '2')
+    await page.select('[aria-label="Reference voice"]', 'upload')
+    assert.equal(await page.$eval('.pr-export-confirm', node => node.disabled), true, 'an uploaded reference is required')
+    await page.$eval('[aria-label="Upload reference audio"]', node => {
+      const files = new DataTransfer()
+      files.items.add(new File([new Uint8Array(20 * 1024 * 1024 + 1)], 'too-large.wav', { type: 'audio/wav' }))
+      node.files = files.files
+      node.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await page.waitForSelector('.pr-export-dialog [role="alert"]')
+    assert.equal(await page.$eval('.pr-export-confirm', node => node.disabled), true)
+    await page.$eval('[aria-label="Upload reference audio"]', node => {
+      const files = new DataTransfer()
+      files.items.add(new File(['sample'], 'reference.wav', { type: 'audio/wav' }))
+      node.files = files.files
+      node.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    await waitFor(page, () => document.querySelector('.pr-export-confirm')?.disabled === false)
+    if (process.env.RECORDING_E2E_SCREENSHOTS) {
+      await mkdir(process.env.RECORDING_E2E_SCREENSHOTS, { recursive: true })
+      await page.screenshot({ path: `${process.env.RECORDING_E2E_SCREENSHOTS}/${projectId}-audio-models.png` })
+    }
+    await clickText(page, '.pr-export-dialog button', 'Cancel')
+    page.off('request', modelsRequest)
+    await page.setRequestInterception(false)
+    await clickText(page, '.pr-recording button', 'Export full MP4')
+    await page.waitForSelector('.pr-export-dialog[open]')
+    assert.equal(await page.$('.pr-export-missing'), null, 'fully recorded decks need no missing-page warning')
+    assert.equal(await page.$eval('[aria-label="Noise reduction"]', node => node.value), 'basic')
+    await waitFor(page, () => !document.querySelector('[aria-label="Check optional models"]')?.disabled)
+    assert.equal(await page.$eval('[aria-label="Unify voice tone"]', node => node.disabled), true, 'uninstalled models must stay optional')
+    await clickText(page, '.pr-export-dialog button', 'Continue export')
     await waitFor(page, () => !!document.querySelector('.pr-recording a[download="presentation.mp4"]'), 60000)
     const href = await page.$eval('.pr-recording a[download="presentation.mp4"]', link => link.href)
     const response = await fetch(href)

@@ -6,12 +6,13 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from starlette.datastructures import UploadFile
 from starlette.requests import Request as StarletteRequest
 
 import presentation_recording as recording
+import audio_processing
 
 
 def router(resolve, prepare=None):
@@ -134,12 +135,56 @@ def router(resolve, prepare=None):
             raise HTTPException(404, str(exc)) from exc
 
     @routes.post("/exports")
-    def export(project_id: Optional[str] = None, options: Optional[dict] = Body(default=None)):
+    async def export(request: Request, project_id: Optional[str] = None):
         root, pages = target(project_id)
+        staged = None
         try:
-            return recording.start_export(root, pages, skip_pages=(options or {}).get("skip_pages", []))
+            if request.headers.get('content-type', '').startswith('multipart/form-data'):
+                received = 0
+                async def receive():
+                    nonlocal received
+                    message = await request.receive()
+                    received += len(message.get('body', b''))
+                    if received > audio_processing.MAX_REFERENCE_BYTES + 65536:
+                        raise HTTPException(413, 'Reference audio exceeds 20 MB.')
+                    return message
+                bounded = StarletteRequest(request.scope, receive=receive)
+                async with bounded.form(max_files=1, max_fields=1, max_part_size=16384) as form:
+                    upload, raw = form.get('reference'), form.get('options')
+                    if not isinstance(upload, UploadFile) or not isinstance(raw, str) or len(form.multi_items()) != 2:
+                        raise ValueError('send one reference audio file and export options')
+                    options = json.loads(raw)
+                    fd, name = tempfile.mkstemp(prefix='.reference-', dir=root)
+                    staged = Path(name)
+                    size = 0
+                    with os.fdopen(fd, 'wb') as stream:
+                        while chunk := await upload.read(1024 * 1024):
+                            size += len(chunk)
+                            if size > audio_processing.MAX_REFERENCE_BYTES:
+                                raise HTTPException(413, 'Reference audio exceeds 20 MB.')
+                            stream.write(chunk)
+                    if not size:
+                        raise ValueError('Reference audio is empty.')
+            else:
+                body = bytearray()
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > 16384:
+                        raise HTTPException(413, 'Export options are too large.')
+                options = json.loads(body) if body else {}
+            if not isinstance(options, dict) or set(options) - {'skip_pages', 'audio'}:
+                raise ValueError('invalid export options')
+            return await asyncio.to_thread(recording.start_export, root, pages,
+                                           options.get('skip_pages', []), options.get('audio'), staged)
         except (ValueError, OSError) as exc:
             raise HTTPException(400, str(exc)) from exc
+        finally:
+            if staged:
+                staged.unlink(missing_ok=True)
+
+    @routes.get('/audio-models')
+    def audio_models():
+        return audio_processing.capabilities()
 
     @routes.get("/exports/{job_id}")
     def status(job_id: str, project_id: Optional[str] = None):

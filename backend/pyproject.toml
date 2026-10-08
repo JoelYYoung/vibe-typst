@@ -11,4 +11,5 @@ dependencies = [
     "pycrdt-websocket>=0.16,<0.17",
     "pymupdf>=1.26,<2",
     "websockets>=12",
+    "httpx>=0.27,<1",
 ]

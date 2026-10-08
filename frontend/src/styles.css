@@ -262,6 +262,25 @@ a:hover { text-decoration: underline; }
 .pr-export-dialog .pr-export-confirm { background: #2f6fb0; border-color: #488bc9; color: #fff; }
 .pr-export-dialog .pr-export-confirm:hover:not(:disabled) { background: #3880c5; }
 .pr-export-dialog .pr-btn:focus-visible { outline: 2px solid #75b9f7; outline-offset: 3px; }
+.pr-audio-options { margin-top: 20px; display: grid; gap: 16px; }
+.pr-audio-field { display: grid; gap: 8px; font-size: 14px; }
+.pr-audio-field select { width: 100%; min-width: 0; box-sizing: border-box; padding: 10px 12px; color: #e7ecf2; background: #0f141b; border: 1px solid #3e4c60; border-radius: 6px; font: inherit; color-scheme: dark; }
+.pr-audio-voice { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 14px; }
+.pr-audio-voice strong { font-weight: 500; }
+.pr-audio-voice small { margin-left: 10px; color: #8094ad; }
+.pr-audio-voice input { width: 18px; height: 18px; accent-color: #488bc9; cursor: pointer; }
+.pr-audio-voice input:disabled { cursor: default; }
+.pr-voice-reference { display: grid; gap: 12px; padding-left: 14px; border-left: 2px solid #488bc9; }
+.pr-reference-upload { display: grid; gap: 8px; color: #9fb4cc; font-size: 12px; }
+.pr-reference-upload input { min-width: 0; width: 100%; color: #e7ecf2; }
+.pr-model-status { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #9fb4cc; font-size: 12px; }
+.pr-model-status .pr-btn { width: 28px; height: 28px; }
+.pr-model-help { color: #9fb4cc; font-size: 12px; }
+.pr-model-help summary { cursor: pointer; }
+.pr-model-help p { margin: 10px 0; font-size: 12px; }
+.pr-model-help a { color: #75b9f7; }
+.pr-audio-options .pr-audio-note { margin: 0; font-size: 12px; }
+.pr-export-dialog :is(input, select, summary, a):focus-visible { outline: 2px solid #75b9f7; outline-offset: 3px; }
 @media (max-width: 480px) { .pr-export-dialog { padding: 20px; } .pr-export-dialog h2 { font-size: 18px; } }
 .pr-recording-preview { margin: 12px auto 0; max-width: 640px; }
 .pr-recording-preview video { display: block; width: 100%; max-height: 32vh; background: #000; }

@@ -47,6 +47,7 @@ from mcp_transfer import create_transfer_router
 from public_origin import resolve_public_base_url
 from remote_mcp import create_remote_mcp
 from workspace_gateway import WorkspaceGateway
+from audio_model_config import container_env as audio_model_env
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -428,6 +429,7 @@ def _start_project_workspace(user: dict, workspace: dict) -> bool:
         "-e", f"TCB_STATE_PATH={state_path}",
         "-e", "HOME=/root",
     ]
+    env_args += audio_model_env(DATA_DIR)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
         env_args += ["-e", f"ANTHROPIC_API_KEY={api_key}"]
@@ -517,6 +519,7 @@ def _start_workspace(user: dict) -> bool:
         "-e", "TCB_STATE_PATH=/workspace/.tcb/state.json",
         "-e", "HOME=/root",
     ]
+    env_args += audio_model_env(DATA_DIR)
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
         env_args += ["-e", f"ANTHROPIC_API_KEY={api_key}"]

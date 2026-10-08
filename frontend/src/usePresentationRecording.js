@@ -179,13 +179,13 @@ export default function usePresentationRecording({ enabled, page, pages, tokens,
     finally { if (mounted.current) changeStatus('idle') }
   }
 
-  async function exportVideo(skipPages = []) {
+  async function exportVideo(skipPages = [], audio = undefined, reference = null) {
     if (phase.current !== 'idle' || pending || job?.status === 'running') return
     changeStatus('exporting')
     setError('')
     setPreview(false)
     try {
-      const next = await api.startRecordingExport({ skip_pages: skipPages })
+      const next = await api.startRecordingExport({ skip_pages: skipPages, audio }, reference)
       if (mounted.current) setJob(next)
     } catch (error) { if (mounted.current) setError(error.message) }
     finally { if (mounted.current) changeStatus('idle') }

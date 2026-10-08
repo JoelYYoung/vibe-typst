@@ -1,0 +1,4 @@
+-r requirements-base.txt
+dpdfnet==0.6.0
+onnxruntime>=1.20,<2
+librosa==0.11.0

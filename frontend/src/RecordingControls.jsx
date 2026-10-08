@@ -27,8 +27,7 @@ export default function RecordingControls({ recording: r, page, total, transcrip
   const exportDisabled = r.locked || !r.loaded || r.status === 'exporting' || r.job?.status === 'running'
     || !r.exportAvailable || !r.completed || hasStalePages
   function requestExport() {
-    if (missingPages.length) setConfirmExport(true)
-    else r.exportVideo()
+    setConfirmExport(true)
   }
   return <section className="pr-recording" aria-label="Slide recording">
     <div className="pr-recording-row">
@@ -76,7 +75,8 @@ export default function RecordingControls({ recording: r, page, total, transcrip
       </div>}
     </div>
     {confirmExport && <RecordingExportDialog missingPages={missingPages} recordedCount={r.completed} disabled={exportDisabled} triggerRef={exportTrigger}
-      onCancel={() => setConfirmExport(false)} onExport={() => { setConfirmExport(false); r.exportVideo(missingPages) }} />}
+      takes={r.takes} pageStates={r.pageStates}
+      onCancel={() => setConfirmExport(false)} onExport={(audio, reference) => { setConfirmExport(false); r.exportVideo(missingPages, audio, reference) }} />}
     {(r.error || r.job?.status === 'failed') && <div className="pr-recording-error" role="alert">{r.error || r.job.error}</div>}
     {r.pending && <div className="pr-recording-recovery">
       <button className="pr-btn pr-icon-btn" disabled={r.busy} onClick={r.retry} aria-label={`Retry saving page ${r.pending.page}`} title="Retry saving the unsaved recording"><Icon name="save" /></button>

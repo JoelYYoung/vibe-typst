@@ -14,6 +14,8 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+import audio_processing
+
 MAX_CLIP_BYTES = 512 * 1024 * 1024
 MAX_METADATA_BYTES = 16 * 1024 * 1024
 _jobs = {}
@@ -221,7 +223,10 @@ def _run_ffmpeg(args, loglevel="error"):
     return process.stderr.decode("utf-8", errors="replace")
 
 
-def _export_audio_filter(duration):
+def _export_audio_filter(duration, denoise=True):
+    if not denoise:
+        return (f"aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,"
+                f"apad=whole_dur={duration},atrim=duration={duration},asetpts=PTS-STARTPTS")
     # afftdn buffers two 12.5ms hops. Pad and discard that delay so quiet/short
     # takes retain their final samples and speech stays aligned with the slide.
     return (f"aresample=48000:async=1:first_pts=0,aformat=channel_layouts=stereo,atrim=duration={duration},"
@@ -229,10 +234,10 @@ def _export_audio_filter(duration):
             f"atrim=start=0.025:duration={duration},asetpts=PTS-STARTPTS")
 
 
-def normalized_audio_filter(clip: Path, duration):
+def normalized_audio_filter(clip: Path, duration, denoise=True):
     # Measure the same stereo, timed signal that will be encoded. This also accounts
     # for mono microphones and preserves each slide's audio/video alignment.
-    audio = _export_audio_filter(duration)
+    audio = _export_audio_filter(duration, denoise)
     target = "loudnorm=I=-16:TP=-1.5:LRA=50"
     report = _run_ffmpeg(["-i", str(clip), "-map", "0:a:0", "-vn", "-af", audio + "," + target + ":print_format=json",
                           "-t", str(duration), "-f", "null", "-"], loglevel="info")
@@ -269,14 +274,39 @@ def validate_media(path: Path):
         raise ValueError("recording has no valid slide video; the previous take is preserved")
 
 
-def encode_mp4(clips, durations, work: Path, progress=lambda value: None):
+def extract_audio(clip: Path, output: Path, duration, denoise=False):
+    _run_ffmpeg(['-i', str(clip), '-map', '0:a:0', '-vn',
+                 '-af', _export_audio_filter(duration, denoise), '-t', str(duration),
+                 '-ac', '1', '-ar', '48000', '-c:a', 'pcm_s16le', str(output)])
+
+
+def encode_mp4(clips, durations, work: Path, progress=lambda value: None, audio_options=None, reference=None):
+    options = audio_options or {'denoise': 'basic', 'voice': 'original'}
+    modeled = options['denoise'] == 'model' or options['voice'] == 'seed-vc'
+    if modeled and reference:
+        # Clean the one pinned reference once; all pages use exactly this voice.
+        raw_reference = work / 'reference-raw.wav'
+        extract_audio(reference, raw_reference, reference_duration(reference), options['denoise'] == 'basic')
+        reference = raw_reference
+        if options['denoise'] == 'model':
+            clean_reference = work / 'reference-clean.wav'
+            audio_processing.process(reference, clean_reference, denoise=True)
+            reference = clean_reference
     parts = []
     for index, (clip, duration) in enumerate(zip(clips, durations)):
         part = work / f"part-{index}.mp4"
-        audio = normalized_audio_filter(clip, duration)
+        audio_source = clip
+        if modeled:
+            raw_audio = work / f'audio-{index}.wav'
+            extract_audio(clip, raw_audio, duration, options['denoise'] == 'basic')
+            audio_source = work / f'processed-{index}.wav'
+            audio_processing.process(raw_audio, audio_source, denoise=options['denoise'] == 'model', reference=reference)
+            progress(round((index + .5) / len(clips) * 90))
+        audio = normalized_audio_filter(audio_source, duration, denoise=not modeled)
         # Re-encode each independently recorded container: raw WebM concatenation does not
         # repair timestamps or changing codec settings. Force one interoperable AV format.
-        _run_ffmpeg(["-i", str(clip), "-map", "0:v:0", "-map", "0:a:0",
+        inputs = ['-i', str(clip)] + (['-i', str(audio_source)] if modeled else [])
+        _run_ffmpeg([*inputs, "-map", "0:v:0", "-map", "1:a:0" if modeled else "0:a:0",
                      "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,tpad=stop_mode=clone:stop_duration=1",
                      "-af", audio, "-t", str(duration),
                      "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
@@ -290,11 +320,31 @@ def encode_mp4(clips, durations, work: Path, progress=lambda value: None):
     return output
 
 
-def start_export(root: Path, pages, skip_pages=()):
+def reference_duration(path: Path):
+    result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a:0',
+                             '-show_entries', 'stream=codec_type:format=duration', '-of', 'json', str(path)],
+                            capture_output=True, timeout=30)
+    try:
+        data = json.loads(result.stdout)
+        duration = float(data['format']['duration'])
+        valid = not result.returncode and data.get('streams') and math.isfinite(duration) and duration >= 1
+    except (ValueError, TypeError, KeyError):
+        valid = False
+    if not valid:
+        raise ValueError('Reference audio must contain at least one second of readable audio.')
+    return min(25, duration)
+
+
+def start_export(root: Path, pages, skip_pages=(), audio_options=None, reference=None):
     if not shutil.which("ffmpeg"):
         raise ValueError("MP4 export requires FFmpeg on the server")
     if not pages:
         raise ValueError("there are no slides to export")
+    options = audio_processing.validate_options(audio_options)
+    if reference and (options['voice'] != 'seed-vc' or options.get('reference_page')):
+        raise ValueError('choose one reference voice for Seed-VC')
+    if reference:
+        reference_duration(reference)
     if not isinstance(skip_pages, (list, tuple)) or any(
         type(page) is not int or not 1 <= page <= len(pages) for page in skip_pages
     ):
@@ -321,6 +371,26 @@ def start_export(root: Path, pages, skip_pages=()):
                 durations.append(data["duration"])
                 takes.append(data["take"])
                 included.append(page)
+            reference_page = options.get('reference_page')
+            if reference_page:
+                if reference_page not in included:
+                    raise ValueError('the reference page must have a current recording')
+                index = included.index(reference_page)
+                if takes[index] != options['reference_take']:
+                    raise ValueError('reference recording changed; reload before exporting')
+                if durations[index] < 1:
+                    raise ValueError('reference recording must be at least one second')
+                reference = clips[index]
+                # Browser WebM recordings may omit container duration; use take metadata.
+                reference_wav = work / 'reference-page.wav'
+                extract_audio(reference, reference_wav, min(25, durations[index]))
+                reference = reference_wav
+            elif reference:
+                pinned = work / 'reference-upload'
+                os.link(reference, pinned)
+                reference = pinned
+            if options['voice'] == 'seed-vc' and not reference:
+                raise ValueError('choose a recorded page or upload a reference voice')
         if not clips:
             raise ValueError("record at least one page before exporting")
         job_id = uuid.uuid4().hex
@@ -333,6 +403,7 @@ def start_export(root: Path, pages, skip_pages=()):
                     del _jobs[old_id]
             _jobs[job_id] = {"id": job_id, "root": str(root), "status": "running", "progress": 0,
                              "takes": takes, "pages": included, "skipped_pages": skipped,
+                             "audio": options,
                              "slides": [{key: slide.get(key) for key in ("name", "token", "recording_id")} for slide in pages]}
 
         def update(**values):
@@ -341,7 +412,10 @@ def start_export(root: Path, pages, skip_pages=()):
 
         def run():
             try:
-                output = encode_mp4(clips, durations, work, lambda value: update(progress=value))
+                if options == {'denoise': 'basic', 'voice': 'original'}:
+                    output = encode_mp4(clips, durations, work, lambda value: update(progress=value))
+                else:
+                    output = encode_mp4(clips, durations, work, lambda value: update(progress=value), options, reference)
                 target = root / f"export-{job_id}.mp4"
                 os.replace(output, target)
                 update(status="complete", progress=100, path=str(target))

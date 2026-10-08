@@ -143,8 +143,8 @@ fixed full timeline and show buffering separately; original media stays intact.
 
 With at least one page recorded, **Export full MP4** assembles the current takes in
 page order. If some pages have no recording, an in-app dialog lists them before
-you continue; those pages are skipped. With all pages recorded, export starts
-directly. When export finishes, use **Download MP4**. The video contains the slide,
+you continue; those pages are skipped. The export dialog also lets you choose
+optional noise reduction and voice processing. When export finishes, use **Download MP4**. The video contains the slide,
 mouse pointer, and microphone audio at 1920x1080 / 30 fps with H.264/AAC; presenter
 controls and speaker notes stay outside the video. Changed slide content requires
 re-recording the affected pages before export.
@@ -155,6 +155,12 @@ before automatically balancing loudness between page recordings using
 (target -16 LUFS with true-peak headroom), so page transitions have more consistent volume. It
 preserves natural speech dynamics where possible; silent or unmeasurably short
 takes are not boosted. Original recordings and single-page previews are preserved.
+
+Optional [audio models](docs/audio-models.md) add DPDFNet8 48 kHz noise reduction and
+Seed-VC voice-tone conversion using one recorded page or an uploaded reference.
+Voice conversion runs after model noise reduction and before loudness balancing.
+Model dependencies and weights are installed separately; the standard app and
+original-voice export work without them. The dialog shows available models.
 
 Use **Clear page recording** to remove just the current take. The toolbar shows
 current-page and total recording time; a live retake replaces the old page in the

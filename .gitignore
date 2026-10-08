@@ -30,3 +30,7 @@ node-claude.tar.gz
 *.pid
 *.bak.*
 tmp/
+
+# Optional audio-model environments, weights, private configuration and media
+models/audio-models/
+outputs/audio-models/

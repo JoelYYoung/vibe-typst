@@ -13,6 +13,8 @@
 **/*.backup
 workspaces
 control/data
+models/audio-models
+outputs/audio-models
 !resolver/target/native-linux-arm64/
 !resolver/target/native-linux-arm64/release/
 !resolver/target/native-linux-arm64/release/tcb-resolver

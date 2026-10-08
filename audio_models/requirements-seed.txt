@@ -1,0 +1,11 @@
+-r requirements-base.txt
+# Pinned Seed-VC 44.1 kHz F0 inference; application backend never installs this.
+torch==2.11.0
+torchaudio==2.11.0
+librosa==0.11.0
+transformers==4.46.3
+huggingface-hub==0.28.1
+einops==0.8.0
+munch==4.0.0
+pydub==0.25.1
+matplotlib>=3.8,<3.10
