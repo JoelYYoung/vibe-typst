@@ -16,7 +16,7 @@ GLOBAL.md 由当前主 agent 维护，最多 150 行。保留已有未提交修�
 上线完成必须报告可观察的验证结果，区分本地验收和线上部署。
 
 ## 进度与下一步
-当前无进行中的任务；可选模型导出已上线，准备同步本次文档到 GitHub main。
+当前无进行中的任务；可选模型导出已上线并同步 GitHub main。
 公网地址：https://vibetypst.yjwspace.win。
 正式工作区与 latest 使用 optional-audio-models-20261008 原生镜像，包含 FFmpeg，
 不含 PyTorch；默认轻度降噪/响度均衡，可选 DPDFNet→Seed-VC→响度均衡。
