@@ -4,29 +4,31 @@
 维护现有工作区的编辑、演示和逐页录制能力。
 
 ## 架构概要
-macOS control/main.py 在 8090 处理认证与代理；Docker 工作区运行
-backend/app.py 与构建后的前端，workspaces/ 绑定挂载持久保存用户文件。
-录制边界见 backend/presentation_recording.py、recording_routes.py、typst_recording.py
-和 frontend/src/Presenter.jsx。操作说明沿用 README.md、docs/deployment.md；
-可选模型安装/服务/存储见 docs/audio-models.md。
+macOS control/main.py 在8090处理认证与代理；Docker工作区运行
+backend/app.py与构建后的前端，workspaces/绑定挂载持久保存用户文件。
+录制边界见backend/presentation_recording.py、recording_routes.py、typst_recording.py
+和frontend/src/Presenter.jsx。运行说明：README.md、docs/deployment.md；
+内置模型/独立GPU服务说明：docs/audio-models.md。
 
 ## 全局约束
-GLOBAL.md 由当前主 agent 维护，最多 150 行。保留已有未提交修改。
+GLOBAL.md由当前主agent维护，最多150行。保留已有未提交修改。
 诊断输出不得包含认证密钥。工作区维护必须保留挂载及项目内容。
 上线完成必须报告可观察的验证结果，区分本地验收和线上部署。
 
 ## 进度与下一步
-当前无进行中的任务；可选模型导出已上线并同步 GitHub main。
+当前无进行中任务，镜像内置模型及最简导出弹窗已上线。
 公网地址：https://vibetypst.yjwspace.win。
-正式工作区与 latest 使用 optional-audio-models-20261008 原生镜像，包含 FFmpeg，
-不含 PyTorch；默认轻度降噪/响度均衡，可选 DPDFNet→Seed-VC→响度均衡。
-Typst 录制源内UUID绑定保持，原录音和单页预览不处理。
-Mac MPS实际两页导出、CPU-only降噪安装、Linux模型桥接、335后端检查、
-69前端检查、Typst/PDF浏览器与公网模型弹窗通过。
-4工作区挂载/切换状态、950原文件、原用户/会话保持，旧容器回退保留。
-后台worker：com.vibe-typst.audio-models；因macOS后台外置盘权限要求，
-使用 models/audio-models 和 outputs/audio-models 内部回退；外置盘缓存保留。
-control/data/audio-models.json 是私密连接配置，模型服务不经公网代理。
-独立账户草稿保留未提交；线上构建保留草稿，GitHub构建仅含本任务。
-最新部署私密备份入口：control/data/presenter-deployment-backup-path，
-本次子目录 optional-audio-models-fix。
+正式工作区/latest：bundled-audio-models-20261008原生镜像，自带隔离
+DPDFNet/Seed-VC环境与权重。默认原声导出不加载模型；模型先降噪再转换再均衡。
+真实推理检查发布Checking/Ready/Unavailable；不可运行禁用，普通导出仍可用。
+源内UUID绑定、原录音和单页预览保持；模型服务私有且运行离线。
+339后端、69前端、Linux23录制、独立模型边界与Typst/PDF浏览器检查通过。
+断网CPU两页模型MP4/解码通过；2GiB禁用Seed并保留降噪；公网双Ready/窄屏通过。
+4工作区切换状态/挂载与950原文件保持，旧容器回退保留。
+宿主MPS加速worker：com.vibe-typst.audio-models；私密连接在
+control/data/audio-models.json。镜像无配置时自动用内置CPU运行时。
+宿主服务沿用内部models/audio-models、outputs/audio-models权限回退，外置缓存保留。
+新权重归档：External/Outputs/vibe-typst/bundled-audio-build；存储映射未改变。
+独立账户草稿保留未提交；线上构建保留草稿，GitHub构建仅含已提交功能。
+私密部署备份入口：control/data/presenter-deployment-backup-path；
+本次子目录bundled-audio-models-fix。
