@@ -24,7 +24,7 @@ _jobs_lock = threading.Lock()
 _export_slot = threading.BoundedSemaphore(1)
 _controls = {}
 _TAKE = re.compile(r"[a-f0-9]{32}$")
-_BINDING = re.compile(r"[a-f0-9]{32}-[0-9]+$")
+_BINDING = re.compile(r"[a-f0-9]{32}-[0-9]+(?:-[1-9][0-9]*)?$")
 
 
 def directory(project: Path, document: Path) -> Path:

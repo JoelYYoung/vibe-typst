@@ -1,17 +1,23 @@
 """Stable recording anchors travel with a Touying slide's source opener line."""
 import asyncio
 import json
+import os
 import re
+import subprocess
+import tempfile
+import threading
 import uuid
 from collections import Counter
+from pathlib import Path
 
 import docstore
-import notes
 import presentation_recording as recording
 import runtime
 
 _MARKER = re.compile(r"// vibe-typst-recording: ([a-f0-9]{32})\s*$")
+_OPENER = re.compile(r"^[ \t]*#(slide|centered-slide|focus-slide|title-slide)\b")
 _locks = {}
+_binding_locks = {}
 _cache = {}
 
 
@@ -55,7 +61,7 @@ def _openers(source):
                     else:
                         i += 1
             continue
-        if (i == 0 or source[i - 1] == '\n') and notes._OPENER.match(source[i:]):
+        if (i == 0 or source[i - 1] == '\n') and _OPENER.match(source[i:]):
             end = source.find('\n', i)
             yield i, source[i:size if end < 0 else end]
         i += 2 if source[i] == '\\' else 1
@@ -96,7 +102,91 @@ def anchor_edits(source):
     return edits
 
 
+def _query_pages(document, project, source):
+    """Label each call's page preamble in a disposable, otherwise identical deck.
+
+    Touying's displayed counter is neither a source index nor a physical page ID:
+    titles can freeze it and overflowing bodies repeat the header on extra pages.
+    Evaluate the original wrapper with its original config/preamble, adding only
+    invisible metadata. The UUID comments remain the sole persisted source edits.
+    """
+    instrumented = source
+    for offset, line in reversed(list(_openers(source))):
+        opener = _OPENER.match(line)
+        name = opener.group(1)
+        marker = _MARKER.search(line)
+        identity = 'none' if marker is None else json.dumps(marker.group(1))
+        wrapper = '''((..args) => touying-slide-wrapper(self => {
+ let named = args.named()
+ let config = named.remove("config", default: (:))
+ let prior = utils.merge-dicts(self, config).at("page-preamble", default: none)
+ let hook = config-common(page-preamble: me => {
+   utils.call-or-display(me, prior)
+   context [#metadata((id: %s, overlay: me.subslide - 1, page: here().page())) <vibe-typst-recording-page>]
+ })
+ (%s(..args.pos(), ..named, config: utils.merge-dicts(config, hook)).value.fn)(self)
+}))''' % (identity, name)
+        start = offset + opener.start(1)
+        end = offset + opener.end(1)
+        instrumented = instrumented[:start] + wrapper + instrumented[end:]
+    # Keep relative imports/images relative to the original main file, including
+    # documents in subdirectories. Never replace or rewrite the user's document.
+    with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=document.parent,
+                                     prefix='.recording-query-', suffix='.typ', delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(instrumented)
+    try:
+        result = subprocess.run(
+            ['typst', 'query', '--root', str(project), str(temporary),
+             '<vibe-typst-recording-page>', '--field', 'value'],
+            capture_output=True, text=True, cwd=project, timeout=120,
+            env={**os.environ, 'RAYON_NUM_THREADS': '1'})
+        if result.returncode:
+            raise ValueError('could not resolve source slide bindings; check the slide preview and retry')
+        try:
+            rows = json.loads(result.stdout)
+            if not isinstance(rows, list):
+                raise ValueError()
+            return rows
+        except ValueError as exc:
+            raise ValueError('could not read source slide bindings; retry recording mode') from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError('source slide binding timed out; retry recording mode') from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _bindings_from_pages(rows, identities, page_count):
+    pages = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError('invalid source slide binding')
+        page, identity, overlay = row.get('page'), row.get('id'), row.get('overlay')
+        if (type(page) is not int or not 1 <= page <= page_count or page in pages
+                or identity is not None and identity not in identities
+                or type(overlay) is not int or overlay < 0):
+            raise ValueError('ambiguous source slide binding; check the slide preview')
+        pages[page] = (identity, overlay)
+    if set(pages) != set(range(1, page_count + 1)):
+        raise ValueError('some rendered pages have no source slide binding; use explicit Touying slides')
+    ids, counts = [], Counter()
+    for page in range(1, page_count + 1):
+        identity, overlay = pages[page]
+        occurrence = counts[identity, overlay]
+        counts[identity, overlay] += 1
+        # Preserve UUID-overlay for existing decks; overflow gets a local suffix,
+        # never an absolute page number that could shift when another slide moves.
+        ids.append(None if identity is None else f'{identity}-{overlay}' +
+                   (f'-{occurrence}' if occurrence else ''))
+    return ids
+
+
 def page_bindings(document, project, page_count):
+    with _binding_locks.setdefault(str(document), threading.Lock()):
+        return _page_bindings(document, project, page_count)
+
+
+def _page_bindings(document, project, page_count):
     source = document.read_text(encoding='utf-8')
     entries = anchors(source)
     if not any(identity for _, identity in entries):
@@ -111,18 +201,13 @@ def page_bindings(document, project, page_count):
     identities = [identity for _, identity in entries if identity]
     if len(set(identities)) != len(identities):
         raise ValueError('duplicated recording anchor; reopen recording mode to prepare this deck')
-    cache_key = (str(document), source)
+    cache_key = (str(document), source, rendered.get('stamp'))
     if cache_key not in _cache:
-        rows = notes.pdfpc_pages(document, project)
-        if document.read_text(encoding='utf-8') != source:
+        rows = _query_pages(document, project, source)
+        if (document.read_text(encoding='utf-8') != source
+                or json.loads(snapshot.read_text()) != rendered):
             raise ValueError('slides are recompiling; wait for the preview to finish, then retry')
-        ids = []
-        for row in rows:
-            label = str(row.get('label', ''))
-            if not label.isdigit() or not 1 <= int(label) <= len(entries):
-                raise ValueError('cannot match this rendered page to a source slide; use explicit Touying slide openers')
-            identity = entries[int(label) - 1][1]
-            ids.append(f"{identity}-{row.get('overlay') or 0}" if identity else None)
+        ids = _bindings_from_pages(rows, identities, page_count)
         if len([identity for identity in ids if identity]) != len(set(identity for identity in ids if identity)):
             raise ValueError('ambiguous slide recording anchors')
         # Keep only the latest snapshot for each document.

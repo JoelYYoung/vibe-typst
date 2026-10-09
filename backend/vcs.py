@@ -19,6 +19,7 @@ from pathlib import Path
 _IGNORE_PATTERNS = [
     "/*.backup",
     "/.tcb/",
+    ".recording-query-*.typ", # disposable source binding queries, including nested decks
     "/.claude/",
     "/.mcp.json",
     "/.vibe-typst.json",       # app-managed project metadata

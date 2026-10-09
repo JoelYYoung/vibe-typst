@@ -24,6 +24,9 @@ if (!baseUrl) {
   server.stderr.on('data', chunk => process.stderr.write(chunk))
 }
 const browser = await puppeteer.launch({ headless: true, args: [
+  // macOS headless GPU capture can freeze offscreen canvas frames while audio
+  // continues. Software rendering keeps the real captureStream path deterministic.
+  '--disable-gpu',
   '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', '--autoplay-policy=no-user-gesture-required',
 ] })
 
@@ -136,6 +139,13 @@ try {
     await page.evaluate(() => localStorage.removeItem('vibe-typst.presenter-preferences'))
     const installCapture = async (target) => target.evaluateOnNewDocument(() => {
       if (!navigator.mediaDevices) return
+      // Use a software 2D surface for headless pixel assertions. The native
+      // canvas capture, encoder, microphone permission and audio paths stay active.
+      const getContext = HTMLCanvasElement.prototype.getContext
+      HTMLCanvasElement.prototype.getContext = function (kind, options) {
+        return getContext.call(this, kind, kind === '2d'
+          ? { ...options, willReadFrequently: true } : options)
+      }
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
       navigator.mediaDevices.getUserMedia = async (constraints) => {
         const microphone = await capture(constraints)
